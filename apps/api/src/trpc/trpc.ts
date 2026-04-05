@@ -1,6 +1,7 @@
 import { initTRPC, TRPCError } from '@trpc/server';
 import type { Context } from './context';
 import superjson from 'superjson';
+import { prisma } from '@kuratordashboard/db';
 
 const t = initTRPC.context<Context>().create({
   transformer: superjson,
@@ -28,6 +29,16 @@ export const protectedProcedure = t.procedure.use(async (opts) => {
     throw new TRPCError({
       code: 'UNAUTHORIZED',
       message: 'Tizimga kirish talab etiladi',
+    });
+  }
+
+  try {
+    await prisma.$executeRaw`SELECT app.set_tenant_context(${ctx.tenantId}::uuid, ${ctx.user.userId}::uuid)`;
+  } catch (error: any) {
+    console.error('[Auth] Failed to set tenant context for RLS:', error?.message);
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Tenant database context is not configured',
     });
   }
 
