@@ -6,7 +6,7 @@ const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month'
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
-  lifecycleStatus: { not: 'refunded' as const },
+  lifecycleStatus: 'active' as const,
 };
 
 function startOfDayLocal(date: Date): Date {
