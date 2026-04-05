@@ -5,6 +5,78 @@ import { TRPCError } from '@trpc/server';
 import { verifyPassword } from '../../services/auth/password';
 import { signJWT } from '../../services/auth/jwt';
 
+const KD_ALLOWED_ROLES = ['Admin', 'Manager', 'Kurator'] as const;
+
+type LoginUserCandidate = {
+  id: string;
+  tenantId: string;
+  username: string | null;
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  roles: string[];
+  passwordHash: string | null;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+};
+
+function hasKDAccess(roles: string[]): boolean {
+  return roles.some((role) => KD_ALLOWED_ROLES.includes(role as (typeof KD_ALLOWED_ROLES)[number]));
+}
+
+async function chooseLoginCandidate(
+  candidates: LoginUserCandidate[],
+  password: string,
+): Promise<LoginUserCandidate | null> {
+  const passwordMatched: LoginUserCandidate[] = [];
+
+  for (const candidate of candidates) {
+    if (!candidate.passwordHash) continue;
+    if (!hasKDAccess(candidate.roles)) continue;
+
+    const isValid = await verifyPassword(password, candidate.passwordHash);
+    if (isValid) {
+      passwordMatched.push(candidate);
+    }
+  }
+
+  if (passwordMatched.length === 0) return null;
+  if (passwordMatched.length === 1) return passwordMatched[0];
+
+  const tenantIds = Array.from(new Set(passwordMatched.map((candidate) => candidate.tenantId)));
+  const tenantIncomeCounts = await prisma.income.groupBy({
+    by: ['tenantId'],
+    where: {
+      tenantId: { in: tenantIds },
+      type: 'new_sale',
+      lifecycleStatus: 'active',
+    },
+    _count: { id: true },
+  });
+
+  const incomeCountByTenant = new Map(
+    tenantIncomeCounts.map((row) => [row.tenantId, row._count.id]),
+  );
+
+  passwordMatched.sort((left, right) => {
+    const rightIncomeCount = incomeCountByTenant.get(right.tenantId) ?? 0;
+    const leftIncomeCount = incomeCountByTenant.get(left.tenantId) ?? 0;
+    if (rightIncomeCount !== leftIncomeCount) {
+      return rightIncomeCount - leftIncomeCount;
+    }
+
+    const rightLastLogin = right.lastLoginAt?.getTime() ?? 0;
+    const leftLastLogin = left.lastLoginAt?.getTime() ?? 0;
+    if (rightLastLogin !== leftLastLogin) {
+      return rightLastLogin - leftLastLogin;
+    }
+
+    return right.createdAt.getTime() - left.createdAt.getTime();
+  });
+
+  return passwordMatched[0];
+}
+
 export const authRouter = router({
   loginWithPassword: publicProcedure
     .input(
@@ -25,7 +97,7 @@ export const authRouter = router({
         ),
       );
 
-      const user = await prisma.user.findFirst({
+      const candidates = await prisma.user.findMany({
         where: {
           OR: [
             { username: rawLogin },
@@ -45,38 +117,18 @@ export const authRouter = router({
           phone: true,
           roles: true,
           passwordHash: true,
+          lastLoginAt: true,
+          createdAt: true,
         },
+        orderBy: [{ lastLoginAt: 'desc' }, { createdAt: 'desc' }],
+        take: 50,
       });
 
+      const user = await chooseLoginCandidate(candidates, input.password);
       if (!user) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: "Login yoki parol noto'g'ri",
-        });
-      }
-
-      if (!user.passwordHash) {
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: "Bu akkauntda parol orqali kirish sozlanmagan. Admin bilan bog'laning.",
-        });
-      }
-
-      const isValid = await verifyPassword(input.password, user.passwordHash);
-      if (!isValid) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message: "Login yoki parol noto'g'ri",
-        });
-      }
-
-      // Only allow Kuratordashboard roles
-      const allowedRoles = ['Admin', 'Manager', 'Kurator'];
-      const hasAccess = user.roles.some((r) => allowedRoles.includes(r));
-      if (!hasAccess) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: "Sizda bu tizimga kirish huquqi yo'q",
         });
       }
 
