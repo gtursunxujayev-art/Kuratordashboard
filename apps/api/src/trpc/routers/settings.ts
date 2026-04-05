@@ -3,17 +3,21 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 
-// Offline course: starts Saturday, runs 6 weeks
-// Sat + Sun each week = 2 lessons/week × 6 weeks = 12 lessons
-// End date = startDate + 41 days (the last Sunday of the 6th week)
-function computeEndDate(startDate: Date): Date {
+const scheduleTemplateSchema = z.object({
+  courseCategory: z.string().min(1).max(100),
+  durationWeeks: z.number().int().min(1).max(52),
+  baseLessons: z.number().int().min(1).max(200),
+  premiumExtraLessons: z.number().int().min(0).max(50),
+});
+
+function computeEndDate(startDate: Date, durationWeeks: number): Date {
+  // Saturday start + ((weeks * 7) - 6) gives the last Sunday.
   const end = new Date(startDate);
-  end.setDate(end.getDate() + 41); // 6 weeks = 42 days, last day is Sunday at index 41
+  end.setDate(end.getDate() + (durationWeeks * 7 - 6));
   return end;
 }
 
 export const settingsRouter = router({
-  // ── Regions ──────────────────────────────────────────────────────────────
   listRegions: protectedProcedure.query(async ({ ctx }) => {
     return prisma.regionConfig.findMany({
       where: { tenantId: ctx.tenantId },
@@ -36,8 +40,22 @@ export const settingsRouter = router({
     }),
 
   updateRegion: adminProcedure
-    .input(z.object({ id: z.string(), name: z.string().min(1).max(100).optional(), isActive: z.boolean().optional() }))
+    .input(
+      z.object({
+        id: z.string(),
+        name: z.string().min(1).max(100).optional(),
+        isActive: z.boolean().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.regionConfig.findFirst({
+        where: { id: input.id, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Viloyat topilmadi' });
+      }
+
       const { id, ...data } = input;
       return prisma.regionConfig.update({
         where: { id },
@@ -45,7 +63,39 @@ export const settingsRouter = router({
       });
     }),
 
-  // ── Course Runs ───────────────────────────────────────────────────────────
+  listScheduleTemplates: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.courseScheduleTemplate.findMany({
+      where: { tenantId: ctx.tenantId },
+      orderBy: { courseCategory: 'asc' },
+    });
+  }),
+
+  upsertScheduleTemplate: adminProcedure
+    .input(scheduleTemplateSchema)
+    .mutation(async ({ ctx, input }) => {
+      return prisma.courseScheduleTemplate.upsert({
+        where: {
+          tenantId_courseCategory: {
+            tenantId: ctx.tenantId,
+            courseCategory: input.courseCategory,
+          },
+        },
+        create: {
+          tenantId: ctx.tenantId,
+          courseCategory: input.courseCategory,
+          durationWeeks: input.durationWeeks,
+          baseLessons: input.baseLessons,
+          premiumExtraLessons: input.premiumExtraLessons,
+        },
+        update: {
+          durationWeeks: input.durationWeeks,
+          baseLessons: input.baseLessons,
+          premiumExtraLessons: input.premiumExtraLessons,
+          updatedAt: new Date(),
+        },
+      });
+    }),
+
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
     return prisma.courseRun.findMany({
       where: { tenantId: ctx.tenantId },
@@ -59,12 +109,17 @@ export const settingsRouter = router({
       z.object({
         courseId: z.string(),
         name: z.string().min(1).max(200),
-        startDate: z.string(), // ISO date — must be a Saturday
-        baseLessons: z.number().int().min(1).max(20).default(12),
+        startDate: z.string(),
+        durationWeeks: z.number().int().min(1).max(52).optional(),
+        baseLessons: z.number().int().min(1).max(200).optional(),
+        premiumExtraLessons: z.number().int().min(0).max(50).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const start = new Date(input.startDate);
+      if (Number.isNaN(start.getTime())) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Sana noto\'g\'ri formatda' });
+      }
       if (start.getDay() !== 6) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -72,7 +127,23 @@ export const settingsRouter = router({
         });
       }
 
-      const endDate = computeEndDate(start);
+      const course = await prisma.course.findFirst({
+        where: { id: input.courseId, tenantId: ctx.tenantId },
+        select: { id: true, category: true },
+      });
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      const template = await prisma.courseScheduleTemplate.findFirst({
+        where: { tenantId: ctx.tenantId, courseCategory: course.category },
+        select: { durationWeeks: true, baseLessons: true, premiumExtraLessons: true },
+      });
+
+      const durationWeeks = input.durationWeeks ?? template?.durationWeeks ?? 6;
+      const baseLessons = input.baseLessons ?? template?.baseLessons ?? 12;
+      const premiumExtraLessons = input.premiumExtraLessons ?? template?.premiumExtraLessons ?? 2;
+      const endDate = computeEndDate(start, durationWeeks);
 
       return prisma.courseRun.create({
         data: {
@@ -81,12 +152,13 @@ export const settingsRouter = router({
           name: input.name,
           startDate: start,
           endDate,
-          baseLessons: input.baseLessons,
+          durationWeeks,
+          baseLessons,
+          premiumExtraLessons,
         },
       });
     }),
 
-  // ── Exercise Definitions ─────────────────────────────────────────────────
   listExerciseDefinitions: protectedProcedure
     .input(z.object({ courseRunId: z.string() }))
     .query(async ({ ctx, input }) => {
@@ -126,16 +198,24 @@ export const settingsRouter = router({
         isActive: z.boolean().optional(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.exerciseDefinition.findFirst({
+        where: { id: input.id, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
       const { id, ...data } = input;
       return prisma.exerciseDefinition.update({ where: { id }, data });
     }),
 
-  // ── Kurator management ───────────────────────────────────────────────────
   listKurators: protectedProcedure.query(async ({ ctx }) => {
     return prisma.user.findMany({
       where: { tenantId: ctx.tenantId, roles: { has: 'Kurator' }, isActive: true },
       select: { id: true, name: true, username: true, email: true, phone: true },
+      orderBy: [{ name: 'asc' }, { username: 'asc' }],
     });
   }),
 
@@ -148,6 +228,30 @@ export const settingsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const [kurator, customer, courseRun] = await Promise.all([
+        prisma.user.findFirst({
+          where: {
+            id: input.kuratorUserId,
+            tenantId: ctx.tenantId,
+            roles: { has: 'Kurator' },
+            isActive: true,
+          },
+          select: { id: true },
+        }),
+        prisma.customer.findFirst({
+          where: { id: input.customerId, tenantId: ctx.tenantId },
+          select: { id: true },
+        }),
+        prisma.courseRun.findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!kurator) throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
+      if (!customer) throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
+      if (!courseRun) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+
       return prisma.kuratorAssignment.upsert({
         where: {
           tenantId_kuratorUserId_customerId_courseRunId: {
@@ -189,7 +293,6 @@ export const settingsRouter = router({
       return { success: true };
     }),
 
-  // ── Courses (read from shared DB) ────────────────────────────────────────
   listCourses: protectedProcedure.query(async ({ ctx }) => {
     return prisma.course.findMany({
       where: { tenantId: ctx.tenantId, isActive: true },
