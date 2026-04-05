@@ -1,0 +1,19 @@
+{
+  "name": "kuratordashboard",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20 <25"
+  },
+  "scripts": {
+    "dev:web": "npm run dev --workspace @kuratordashboard/web",
+    "dev:api": "npm run dev --workspace @kuratordashboard/api",
+    "build": "npm run build --workspace @kuratordashboard/db && npm run build --workspace @kuratordashboard/api && npm run build --workspace @kuratordashboard/web",
+    "db:generate": "npm run generate --workspace @kuratordashboard/db",
+    "db:migrate": "npm run migrate --workspace @kuratordashboard/db",
+    "db:migrate:deploy": "npm run migrate:deploy --workspace @kuratordashboard/db"
+  }
+}
