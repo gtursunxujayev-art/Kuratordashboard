@@ -36,7 +36,6 @@ export default function DashboardPage() {
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">Bosh sahifa</h1>
 
-      {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">
         <div className="flex bg-white border border-gray-200 rounded-lg overflow-hidden">
           {(Object.keys(DATE_FILTER_LABELS) as DateFilter[]).map((filter) => (
@@ -44,9 +43,7 @@ export default function DashboardPage() {
               key={filter}
               onClick={() => setDateFilter(filter)}
               className={`px-3 py-2 text-sm font-medium transition-colors ${
-                dateFilter === filter
-                  ? 'bg-blue-600 text-white'
-                  : 'text-gray-600 hover:bg-gray-50'
+                dateFilter === filter ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
               }`}
             >
               {DATE_FILTER_LABELS[filter]}
@@ -70,42 +67,33 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Main stats */}
       {statsLoading ? (
         <div className="text-gray-500 text-sm">Yuklanmoqda...</div>
       ) : stats ? (
         <div className="space-y-6">
-          {/* Total count */}
           <div className="bg-white rounded-xl border border-gray-200 p-5">
-            <h2 className="text-sm font-medium text-gray-500 mb-3">Jami o&apos;quvchilar</h2>
-            <p className="text-3xl font-bold text-gray-900">
-              Umumiy {stats.total}
-            </p>
+            <h2 className="text-sm font-medium text-gray-500 mb-3">Jami o'quvchilar</h2>
+            <p className="text-3xl font-bold text-gray-900">Umumiy {stats.total}</p>
             <div className="mt-2 flex gap-4">
               <span className="text-sm text-gray-500">
-                Erkaklar – <span className="font-medium text-gray-700">{stats.male}</span>
+                Erkaklar - <span className="font-medium text-gray-700">{stats.male}</span>
               </span>
               <span className="text-sm text-gray-500">
-                Ayollar – <span className="font-medium text-gray-700">{stats.female}</span>
+                Ayollar - <span className="font-medium text-gray-700">{stats.female}</span>
               </span>
             </div>
           </div>
 
-          {/* Tariff breakdown */}
           {stats.tariffs.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 p-5">
-              <h2 className="text-sm font-medium text-gray-500 mb-3">Tariflar bo&apos;yicha</h2>
+              <h2 className="text-sm font-medium text-gray-500 mb-3">Tariflar bo'yicha</h2>
               <div className="space-y-3">
                 {stats.tariffs.map((tariff) => (
                   <div key={tariff.name} className="flex items-baseline gap-3">
                     <span className="font-semibold text-gray-900 w-28 shrink-0">{tariff.name}</span>
                     <span className="text-gray-900 font-medium">{tariff.total}</span>
-                    <span className="text-sm text-gray-400">
-                      Erkaklar – {tariff.male}
-                    </span>
-                    <span className="text-sm text-gray-400">
-                      Ayollar – {tariff.female}
-                    </span>
+                    <span className="text-sm text-gray-400">Erkaklar - {tariff.male}</span>
+                    <span className="text-sm text-gray-400">Ayollar - {tariff.female}</span>
                   </div>
                 ))}
               </div>
@@ -114,10 +102,11 @@ export default function DashboardPage() {
         </div>
       ) : null}
 
-      {/* Kurator list — Admin & Manager only */}
       {(isAdmin || isManager) && (
         <div className="mt-8">
-          <h2 className="text-base font-semibold text-gray-900 mb-4">Kuratorlar samaradorligi</h2>
+          <h2 className="text-base font-semibold text-gray-900 mb-1">Kuratorlar samaradorligi</h2>
+          <p className="text-xs text-gray-400 mb-4">Samaradorlik foizi: vaqtinchalik formula</p>
+
           {kuratorsLoading ? (
             <div className="text-gray-500 text-sm">Yuklanmoqda...</div>
           ) : kuratorList && kuratorList.length > 0 ? (
@@ -126,34 +115,34 @@ export default function DashboardPage() {
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Kurator</th>
-                    <th className="text-center px-4 py-3 font-medium text-gray-600">O&apos;quvchilar</th>
+                    <th className="text-center px-4 py-3 font-medium text-gray-600">O'quvchilar</th>
                     <th className="text-center px-4 py-3 font-medium text-gray-600">Samaradorlik</th>
                     <th className="text-center px-4 py-3 font-medium text-gray-600">Bajarilgan</th>
                     <th className="text-center px-4 py-3 font-medium text-gray-600">Bajarilmagan</th>
-                    <th className="text-center px-4 py-3 font-medium text-gray-600">Kelmagan/HW yo&apos;q</th>
+                    <th className="text-center px-4 py-3 font-medium text-gray-600">Kelmagan/HW yo'q</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {kuratorList.map((k) => (
-                    <tr key={k.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 font-medium text-gray-900">{k.name}</td>
-                      <td className="px-4 py-3 text-center text-gray-600">{k.studentCount}</td>
+                  {kuratorList.map((kurator) => (
+                    <tr key={kurator.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-900">{kurator.name}</td>
+                      <td className="px-4 py-3 text-center text-gray-600">{kurator.studentCount}</td>
                       <td className="px-4 py-3 text-center">
                         <span
                           className={`font-semibold ${
-                            k.performancePercent >= 80
+                            kurator.performancePercent >= 80
                               ? 'text-green-600'
-                              : k.performancePercent >= 50
+                              : kurator.performancePercent >= 50
                               ? 'text-yellow-600'
                               : 'text-red-600'
                           }`}
                         >
-                          {k.performancePercent}%
+                          {kurator.performancePercent}%
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-center text-green-600">{k.completedTasks}</td>
-                      <td className="px-4 py-3 text-center text-red-600">{k.pendingTasks}</td>
-                      <td className="px-4 py-3 text-center text-orange-600">{k.missedStudents}</td>
+                      <td className="px-4 py-3 text-center text-green-600">{kurator.completedTasks}</td>
+                      <td className="px-4 py-3 text-center text-red-600">{kurator.pendingTasks}</td>
+                      <td className="px-4 py-3 text-center text-orange-600">{kurator.missedStudents}</td>
                     </tr>
                   ))}
                 </tbody>
