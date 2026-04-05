@@ -5,7 +5,7 @@ import { TRPCError } from '@trpc/server';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
-  lifecycleStatus: { not: 'refunded' as const },
+  lifecycleStatus: 'active' as const,
 };
 
 function isClassDay(date: Date): boolean {
