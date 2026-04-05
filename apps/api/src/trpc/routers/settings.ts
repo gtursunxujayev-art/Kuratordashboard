@@ -28,6 +28,23 @@ function isMissingCustomerRegionColumnError(error: unknown): boolean {
   return message.includes('customers.region');
 }
 
+function isMissingCourseRunsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_runs') && message.includes('does not exist');
+  }
+  return message.includes('course_runs');
+}
+
+function throwMissingCourseRunsMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Oqim sozlamalari uchun DB migratsiya qo'llanmagan (`course_runs`). Avval migration deploy qiling.",
+  });
+}
+
 function throwMissingRegionsMigrationError(): never {
   throw new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -171,11 +188,18 @@ export const settingsRouter = router({
     }),
 
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
-    return prisma.courseRun.findMany({
-      where: { tenantId: ctx.tenantId },
-      include: { course: { select: { name: true, category: true } } },
-      orderBy: { startDate: 'desc' },
-    });
+    try {
+      return await prisma.courseRun.findMany({
+        where: { tenantId: ctx.tenantId },
+        include: { course: { select: { name: true, category: true } } },
+        orderBy: { startDate: 'desc' },
+      });
+    } catch (error) {
+      if (!isMissingCourseRunsTableError(error)) {
+        throw error;
+      }
+      return [];
+    }
   }),
 
   createCourseRun: adminProcedure
@@ -219,18 +243,25 @@ export const settingsRouter = router({
       const premiumExtraLessons = input.premiumExtraLessons ?? template?.premiumExtraLessons ?? 2;
       const endDate = computeEndDate(start, durationWeeks);
 
-      return prisma.courseRun.create({
-        data: {
-          tenantId: ctx.tenantId,
-          courseId: input.courseId,
-          name: input.name,
-          startDate: start,
-          endDate,
-          durationWeeks,
-          baseLessons,
-          premiumExtraLessons,
-        },
-      });
+      try {
+        return await prisma.courseRun.create({
+          data: {
+            tenantId: ctx.tenantId,
+            courseId: input.courseId,
+            name: input.name,
+            startDate: start,
+            endDate,
+            durationWeeks,
+            baseLessons,
+            premiumExtraLessons,
+          },
+        });
+      } catch (error) {
+        if (isMissingCourseRunsTableError(error)) {
+          throwMissingCourseRunsMigrationError();
+        }
+        throw error;
+      }
     }),
 
   listExerciseDefinitions: protectedProcedure
@@ -316,10 +347,17 @@ export const settingsRouter = router({
           where: { id: input.customerId, tenantId: ctx.tenantId },
           select: { id: true },
         }),
-        prisma.courseRun.findFirst({
-          where: { id: input.courseRunId, tenantId: ctx.tenantId },
-          select: { id: true },
-        }),
+        prisma.courseRun
+          .findFirst({
+            where: { id: input.courseRunId, tenantId: ctx.tenantId },
+            select: { id: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              throwMissingCourseRunsMigrationError();
+            }
+            throw error;
+          }),
       ]);
 
       if (!kurator) throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
