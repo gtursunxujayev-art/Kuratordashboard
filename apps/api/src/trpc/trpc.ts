@@ -22,6 +22,15 @@ const t = initTRPC.context<Context>().create({
 export const router = t.router;
 export const publicProcedure = t.procedure;
 
+function isMissingTenantContextFunctionError(error: unknown): boolean {
+  const message = String((error as any)?.message || '').toLowerCase();
+  return (
+    message.includes('app.set_tenant_context')
+    || (message.includes('schema') && message.includes('app') && message.includes('does not exist'))
+    || (message.includes('function') && message.includes('set_tenant_context') && message.includes('does not exist'))
+  );
+}
+
 export const protectedProcedure = t.procedure.use(async (opts) => {
   const { ctx } = opts;
 
@@ -35,6 +44,20 @@ export const protectedProcedure = t.procedure.use(async (opts) => {
   try {
     await prisma.$executeRaw`SELECT app.set_tenant_context(${ctx.tenantId}::uuid, ${ctx.user.userId}::uuid)`;
   } catch (error: any) {
+    if (isMissingTenantContextFunctionError(error)) {
+      console.warn(
+        '[Auth] Tenant context function is missing, falling back to explicit tenantId filters only:',
+        error?.message,
+      );
+      return opts.next({
+        ctx: {
+          ...ctx,
+          user: ctx.user,
+          tenantId: ctx.tenantId,
+        },
+      });
+    }
+
     console.error('[Auth] Failed to set tenant context for RLS:', error?.message);
     throw new TRPCError({
       code: 'INTERNAL_SERVER_ERROR',
