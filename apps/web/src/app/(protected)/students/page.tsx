@@ -16,14 +16,14 @@ export default function StudentsPage() {
   const [page, setPage] = useState(1);
   const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
 
-  const { data: filterOptions } = trpc.students.filterOptions.useQuery();
-  const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
+  const { data: filterOptions, error: filterOptionsError } = trpc.students.filterOptions.useQuery();
+  const { data: courseRuns, error: courseRunsError } = trpc.dashboard.courseRuns.useQuery();
 
   const filteredTariffs = selectedCourseId
     ? (filterOptions?.tariffs ?? []).filter((tariff) => tariff.courseId === selectedCourseId)
     : (filterOptions?.tariffs ?? []);
 
-  const { data, isLoading } = trpc.students.list.useQuery(
+  const { data, isLoading, error } = trpc.students.list.useQuery(
     {
       courseRunId: selectedCourseRunId || undefined,
       courseId: selectedCourseId || undefined,
@@ -41,6 +41,12 @@ export default function StudentsPage() {
   return (
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">O'quvchilar</h1>
+
+      {(filterOptionsError || courseRunsError || error) && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {filterOptionsError?.message || courseRunsError?.message || error?.message || "Ma'lumotni yuklashda xatolik"}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-3 mb-4">
         {courseRuns && courseRuns.length > 0 && (
