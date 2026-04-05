@@ -14,13 +14,25 @@ export const authRouter = router({
       }),
     )
     .mutation(async ({ input }) => {
-      const normalizedLogin = input.login.trim().toLowerCase();
+      const rawLogin = input.login.trim();
+      const normalizedLogin = rawLogin.toLowerCase();
+      const normalizedPhone = rawLogin.replace(/[^\d+]/g, '');
+      const phoneCandidates = Array.from(
+        new Set(
+          [rawLogin, normalizedPhone, normalizedPhone.replace(/^\+/, ''), `+${normalizedPhone.replace(/^\+/, '')}`]
+            .map((v) => v.trim())
+            .filter((v) => v.length > 0),
+        ),
+      );
 
       const user = await prisma.user.findFirst({
         where: {
           OR: [
+            { username: rawLogin },
             { username: normalizedLogin },
+            { email: rawLogin },
             { email: normalizedLogin },
+            ...phoneCandidates.map((phone) => ({ phone })),
           ],
           isActive: true,
         },
@@ -36,10 +48,17 @@ export const authRouter = router({
         },
       });
 
-      if (!user || !user.passwordHash) {
+      if (!user) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: "Login yoki parol noto'g'ri",
+        });
+      }
+
+      if (!user.passwordHash) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: "Bu akkauntda parol orqali kirish sozlanmagan. Admin bilan bog'laning.",
         });
       }
 
