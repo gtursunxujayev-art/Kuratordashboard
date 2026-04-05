@@ -8,6 +8,15 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isMissingCourseRunsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_runs') && message.includes('does not exist');
+  }
+  return message.includes('course_runs');
+}
+
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
   return day === 0 || day === 6;
@@ -45,18 +54,25 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
   const dayEnd = new Date(dayStart);
   dayEnd.setDate(dayEnd.getDate() + 1);
 
-  return prisma.courseRun.findFirst({
-    where: {
-      tenantId,
-      ...(courseRunId ? { id: courseRunId } : {}),
-      ...(courseRunId
-        ? {}
-        : {
-            startDate: { lte: dayEnd },
-            endDate: { gte: dayStart },
-          }),
-    },
-  });
+  try {
+    return await prisma.courseRun.findFirst({
+      where: {
+        tenantId,
+        ...(courseRunId ? { id: courseRunId } : {}),
+        ...(courseRunId
+          ? {}
+          : {
+              startDate: { lte: dayEnd },
+              endDate: { gte: dayStart },
+            }),
+      },
+    });
+  } catch (error) {
+    if (!isMissingCourseRunsTableError(error)) {
+      throw error;
+    }
+    return null;
+  }
 }
 
 async function getStudentPremiumEligibility(tenantId: string, customerId: string): Promise<boolean> {
