@@ -9,6 +9,15 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isMissingCourseRunsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_runs') && message.includes('does not exist');
+  }
+  return message.includes('course_runs');
+}
+
 function isMissingCustomerGenderColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -61,39 +70,46 @@ function getCalendarDateRange(filter: Exclude<z.infer<typeof dateFilterSchema>, 
 }
 
 async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Promise<{ from: Date; to: Date } | null> {
-  const now = new Date();
+  try {
+    const now = new Date();
 
-  const selectedRun = courseRunId
-    ? await prisma.courseRun.findFirst({
-        where: { id: courseRunId, tenantId },
-        select: { startDate: true, endDate: true },
-      })
-    : null;
+    const selectedRun = courseRunId
+      ? await prisma.courseRun.findFirst({
+          where: { id: courseRunId, tenantId },
+          select: { startDate: true, endDate: true },
+        })
+      : null;
 
-  const fallbackRun = selectedRun
-    ? null
-    : await prisma.courseRun.findFirst({
-        where: {
-          tenantId,
-          startDate: { lte: now },
-          endDate: { gte: now },
-        },
+    const fallbackRun = selectedRun
+      ? null
+      : await prisma.courseRun.findFirst({
+          where: {
+            tenantId,
+            startDate: { lte: now },
+            endDate: { gte: now },
+          },
+          orderBy: { startDate: 'desc' },
+          select: { startDate: true, endDate: true },
+        });
+
+    const latestRun = selectedRun || fallbackRun ||
+      (await prisma.courseRun.findFirst({
+        where: { tenantId },
         orderBy: { startDate: 'desc' },
         select: { startDate: true, endDate: true },
-      });
+      }));
 
-  const latestRun = selectedRun || fallbackRun ||
-    (await prisma.courseRun.findFirst({
-      where: { tenantId },
-      orderBy: { startDate: 'desc' },
-      select: { startDate: true, endDate: true },
-    }));
+    if (!latestRun) return null;
 
-  if (!latestRun) return null;
-
-  const from = startOfDayLocal(latestRun.startDate);
-  const to = addDays(startOfDayLocal(latestRun.endDate), 1);
-  return { from, to };
+    const from = startOfDayLocal(latestRun.startDate);
+    const to = addDays(startOfDayLocal(latestRun.endDate), 1);
+    return { from, to };
+  } catch (error) {
+    if (!isMissingCourseRunsTableError(error)) {
+      throw error;
+    }
+    return null;
+  }
 }
 
 export const dashboardRouter = router({
@@ -332,10 +348,17 @@ export const dashboardRouter = router({
     }),
 
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
-    return prisma.courseRun.findMany({
-      where: { tenantId: ctx.tenantId },
-      include: { course: { select: { name: true, category: true } } },
-      orderBy: { startDate: 'desc' },
-    });
+    try {
+      return await prisma.courseRun.findMany({
+        where: { tenantId: ctx.tenantId },
+        include: { course: { select: { name: true, category: true } } },
+        orderBy: { startDate: 'desc' },
+      });
+    } catch (error) {
+      if (!isMissingCourseRunsTableError(error)) {
+        throw error;
+      }
+      return [];
+    }
   }),
 });
