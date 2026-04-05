@@ -3,6 +3,16 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 
+const ACTIVE_ENROLLMENT_FILTER = {
+  type: 'new_sale' as const,
+  lifecycleStatus: { not: 'refunded' as const },
+};
+
+function isPremiumTariffName(name: string | null | undefined): boolean {
+  const value = (name || '').toLowerCase();
+  return value.includes('premium') || value.includes('vip');
+}
+
 export const studentsRouter = router({
   list: protectedProcedure
     .input(
@@ -23,24 +33,40 @@ export const studentsRouter = router({
         !user.roles.includes('Admin') &&
         !user.roles.includes('Manager');
 
-      // Kurators only see assigned students
-      let allowedCustomerIds: string[] | undefined;
-      if (isKurator) {
+      let scopedCustomerIds: string[] | undefined;
+
+      if (input.courseRunId) {
+        const assignments = await prisma.kuratorAssignment.findMany({
+          where: {
+            tenantId,
+            courseRunId: input.courseRunId,
+            isActive: true,
+            ...(isKurator ? { kuratorUserId: user.userId } : {}),
+          },
+          select: { customerId: true },
+        });
+        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
+      } else if (isKurator) {
         const assignments = await prisma.kuratorAssignment.findMany({
           where: {
             tenantId,
             kuratorUserId: user.userId,
             isActive: true,
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
           },
           select: { customerId: true },
         });
-        allowedCustomerIds = assignments.map((a) => a.customerId);
+        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
-      const where = {
+      const incomeFilter: Record<string, unknown> = {
+        ...ACTIVE_ENROLLMENT_FILTER,
+      };
+      if (input.tariffId) incomeFilter.tariffId = input.tariffId;
+      if (input.courseId) incomeFilter.courseId = input.courseId;
+
+      const where: Record<string, unknown> = {
         tenantId,
-        ...(allowedCustomerIds ? { id: { in: allowedCustomerIds } } : {}),
+        ...(scopedCustomerIds ? { id: { in: scopedCustomerIds } } : {}),
         ...(input.region ? { region: input.region } : {}),
         ...(input.search
           ? {
@@ -51,33 +77,16 @@ export const studentsRouter = router({
               ],
             }
           : {}),
-        // Filter by tariff via income records
-        ...(input.tariffId
+        ...(input.courseId || input.tariffId
           ? {
               incomes: {
-                some: {
-                  tariffId: input.tariffId,
-                  type: 'new_sale',
-                  lifecycleStatus: { not: 'refunded' },
-                },
-              },
-            }
-          : {}),
-        // Filter by course via income records
-        ...(input.courseId
-          ? {
-              incomes: {
-                some: {
-                  courseId: input.courseId,
-                  type: 'new_sale',
-                  lifecycleStatus: { not: 'refunded' },
-                },
+                some: incomeFilter,
               },
             }
           : {}),
       };
 
-      const [customers, total] = await Promise.all([
+      const [customers, total, courseRun] = await Promise.all([
         prisma.customer.findMany({
           where,
           select: {
@@ -87,10 +96,12 @@ export const studentsRouter = router({
             telegramUsername: true,
             gender: true,
             region: true,
-            profileTariffId: true,
             incomes: {
-              where: { type: 'new_sale', lifecycleStatus: { not: 'refunded' } },
-              select: { tariffId: true, tariff: { select: { name: true } } },
+              where: ACTIVE_ENROLLMENT_FILTER,
+              select: {
+                tariffId: true,
+                tariff: { select: { name: true } },
+              },
               take: 1,
               orderBy: { entryDate: 'desc' },
             },
@@ -100,55 +111,139 @@ export const studentsRouter = router({
           orderBy: { name: 'asc' },
         }),
         prisma.customer.count({ where }),
+        input.courseRunId
+          ? prisma.courseRun.findFirst({
+              where: { id: input.courseRunId, tenantId },
+              select: { id: true, baseLessons: true, premiumExtraLessons: true },
+            })
+          : Promise.resolve(null),
       ]);
 
-      // For each customer, get exercise stats and attendance
-      const courseRunId = input.courseRunId;
-      const enriched = await Promise.all(
-        customers.map(async (c) => {
-          // Get exercise definitions for this course run (if specified)
-          let exerciseStats: Array<{ name: string; done: number; total: number }> = [];
-          let attendanceStat: { attended: number; total: number } = { attended: 0, total: 0 };
+      const customerIds = customers.map((c) => c.id);
+      let exerciseStatsByCustomer = new Map<string, Array<{ name: string; done: number; total: number }>>();
+      let attendanceByCustomer = new Map<
+        string,
+        {
+          attended: number;
+          total: number;
+          base: { attended: number; total: number };
+          premiumExtra: { attended: number; total: number };
+          isPremiumEligible: boolean;
+        }
+      >();
 
-          if (courseRunId) {
-            const exerciseDefs = await prisma.exerciseDefinition.findMany({
-              where: { tenantId, courseRunId, isActive: true },
-              select: { id: true, name: true, targetCount: true },
-            });
+      if (input.courseRunId && customerIds.length > 0) {
+        const exerciseDefs = await prisma.exerciseDefinition.findMany({
+          where: { tenantId, courseRunId: input.courseRunId, isActive: true },
+          select: { id: true, name: true, targetCount: true },
+          orderBy: { orderIndex: 'asc' },
+        });
 
-            exerciseStats = await Promise.all(
-              exerciseDefs.map(async (def) => {
-                const done = await prisma.studentExerciseLog.count({
-                  where: { tenantId, customerId: c.id, exerciseDefinitionId: def.id },
-                });
-                return { name: def.name, done, total: def.targetCount };
-              }),
-            );
+        const exerciseDefIds = exerciseDefs.map((def) => def.id);
 
-            const [totalLessons, attendedLessons] = await Promise.all([
-              prisma.classAttendance.count({
-                where: { tenantId, customerId: c.id, courseRunId },
-              }),
-              prisma.classAttendance.count({
-                where: { tenantId, customerId: c.id, courseRunId, attended: true },
-              }),
-            ]);
-            attendanceStat = { attended: attendedLessons, total: totalLessons };
-          }
+        const [exerciseCounts, attendanceTotals, attendanceAttended] = await Promise.all([
+          exerciseDefIds.length > 0
+            ? prisma.studentExerciseLog.groupBy({
+                by: ['customerId', 'exerciseDefinitionId'],
+                where: {
+                  tenantId,
+                  customerId: { in: customerIds },
+                  exerciseDefinitionId: { in: exerciseDefIds },
+                },
+                _count: { id: true },
+              })
+            : Promise.resolve([]),
+          prisma.classAttendance.groupBy({
+            by: ['customerId', 'lessonType'],
+            where: {
+              tenantId,
+              courseRunId: input.courseRunId,
+              customerId: { in: customerIds },
+            },
+            _count: { id: true },
+          }),
+          prisma.classAttendance.groupBy({
+            by: ['customerId', 'lessonType'],
+            where: {
+              tenantId,
+              courseRunId: input.courseRunId,
+              customerId: { in: customerIds },
+              attended: true,
+            },
+            _count: { id: true },
+          }),
+        ]);
 
-          return {
-            id: c.id,
-            name: c.name,
-            phone: c.phone,
-            telegramUsername: c.telegramUsername,
-            gender: c.gender,
-            region: c.region,
-            tariffName: c.incomes[0]?.tariff?.name ?? null,
-            exerciseStats,
-            attendance: attendanceStat,
-          };
-        }),
-      );
+        const doneByCustomerDef = new Map<string, number>();
+        for (const row of exerciseCounts) {
+          doneByCustomerDef.set(`${row.customerId}:${row.exerciseDefinitionId}`, row._count.id);
+        }
+
+        for (const customerId of customerIds) {
+          exerciseStatsByCustomer.set(
+            customerId,
+            exerciseDefs.map((def) => ({
+              name: def.name,
+              done: doneByCustomerDef.get(`${customerId}:${def.id}`) ?? 0,
+              total: def.targetCount,
+            })),
+          );
+        }
+
+        const totalByCustomerLessonType = new Map<string, number>();
+        const attendedByCustomerLessonType = new Map<string, number>();
+
+        for (const row of attendanceTotals) {
+          totalByCustomerLessonType.set(`${row.customerId}:${row.lessonType}`, row._count.id);
+        }
+        for (const row of attendanceAttended) {
+          attendedByCustomerLessonType.set(`${row.customerId}:${row.lessonType}`, row._count.id);
+        }
+
+        for (const customer of customers) {
+          const tariffName = customer.incomes[0]?.tariff?.name ?? null;
+          const premiumEligible = isPremiumTariffName(tariffName);
+          const baseTotalTarget = courseRun?.baseLessons ?? 0;
+          const premiumTotalTarget = premiumEligible ? (courseRun?.premiumExtraLessons ?? 0) : 0;
+
+          const baseAttended = attendedByCustomerLessonType.get(`${customer.id}:base`) ?? 0;
+          const premiumAttended = attendedByCustomerLessonType.get(`${customer.id}:premium_extra`) ?? 0;
+
+          attendanceByCustomer.set(customer.id, {
+            attended: baseAttended + premiumAttended,
+            total: baseTotalTarget + premiumTotalTarget,
+            base: {
+              attended: baseAttended,
+              total: baseTotalTarget,
+            },
+            premiumExtra: {
+              attended: premiumAttended,
+              total: premiumTotalTarget,
+            },
+            isPremiumEligible: premiumEligible,
+          });
+        }
+      }
+
+      const enriched = customers.map((customer) => ({
+        id: customer.id,
+        name: customer.name,
+        phone: customer.phone,
+        telegramUsername: customer.telegramUsername,
+        gender: customer.gender,
+        region: customer.region,
+        tariffName: customer.incomes[0]?.tariff?.name ?? null,
+        exerciseStats: exerciseStatsByCustomer.get(customer.id) ?? [],
+        attendance:
+          attendanceByCustomer.get(customer.id) ??
+          {
+            attended: 0,
+            total: 0,
+            base: { attended: 0, total: 0 },
+            premiumExtra: { attended: 0, total: 0 },
+            isPremiumEligible: false,
+          },
+      }));
 
       return {
         data: enriched,
@@ -173,9 +268,10 @@ export const studentsRouter = router({
             customerId: input.customerId,
             isActive: true,
           },
+          select: { id: true },
         });
         if (!assignment) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: 'Ruxsat yo\'q' });
+          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
 
@@ -183,7 +279,7 @@ export const studentsRouter = router({
         where: { id: input.customerId, tenantId },
         include: {
           incomes: {
-            where: { type: 'new_sale', lifecycleStatus: { not: 'refunded' } },
+            where: ACTIVE_ENROLLMENT_FILTER,
             include: { tariff: true, course: true },
             orderBy: { entryDate: 'desc' },
           },
@@ -197,7 +293,6 @@ export const studentsRouter = router({
       return customer;
     }),
 
-  // Admin only: update student info, syncing name/phone/telegram back to shared DB
   update: adminProcedure
     .input(
       z.object({
@@ -215,31 +310,27 @@ export const studentsRouter = router({
 
       const existing = await prisma.customer.findFirst({
         where: { id: customerId, tenantId },
+        select: { id: true },
       });
       if (!existing) {
         throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
       }
 
-      // Fields that sync to Dashboarduz's customers table (same DB)
       const syncFields: Record<string, unknown> = {};
       if (data.name !== undefined) syncFields.name = data.name;
       if (data.phone !== undefined) syncFields.phone = data.phone;
       if (data.telegramUsername !== undefined) syncFields.telegramUsername = data.telegramUsername;
 
-      // KD-only fields
       const kdFields: Record<string, unknown> = {};
       if (data.gender !== undefined) kdFields.gender = data.gender;
       if (data.region !== undefined) kdFields.region = data.region;
 
-      const updated = await prisma.customer.update({
+      return prisma.customer.update({
         where: { id: customerId },
         data: { ...syncFields, ...kdFields, updatedAt: new Date() },
       });
-
-      return updated;
     }),
 
-  // Get courses and tariffs for filter dropdowns
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
     const { tenantId } = ctx;
     const [courses, tariffs, regions] = await Promise.all([
@@ -259,6 +350,7 @@ export const studentsRouter = router({
         orderBy: { name: 'asc' },
       }),
     ]);
+
     return { courses, tariffs, regions };
   }),
 });
