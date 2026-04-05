@@ -9,6 +9,15 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isMissingCustomerGenderColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('customers.gender') && message.includes('does not exist');
+  }
+  return message.includes('customers.gender');
+}
+
 function startOfDayLocal(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -131,34 +140,62 @@ export const dashboardRouter = router({
         scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
-      const incomes = await prisma.income.findMany({
-        where: {
-          tenantId,
-          ...ACTIVE_ENROLLMENT_FILTER,
-          ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
-          ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
-        },
-        select: {
-          customerId: true,
-          tariffId: true,
-          customer: {
-            select: {
-              gender: true,
+      const incomeWhere = {
+        tenantId,
+        ...ACTIVE_ENROLLMENT_FILTER,
+        ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+        ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+      };
+
+      let incomes: Array<{
+        customerId: string;
+        tariffId: string | null;
+        tariff: { name: string } | null;
+        customer?: { gender: string | null } | null;
+      }>;
+      try {
+        incomes = await prisma.income.findMany({
+          where: incomeWhere,
+          select: {
+            customerId: true,
+            tariffId: true,
+            customer: {
+              select: {
+                gender: true,
+              },
+            },
+            tariff: {
+              select: {
+                name: true,
+              },
             },
           },
-          tariff: {
-            select: {
-              name: true,
+        });
+      } catch (error) {
+        if (!isMissingCustomerGenderColumnError(error)) {
+          throw error;
+        }
+
+        const fallbackIncomes = await prisma.income.findMany({
+          where: incomeWhere,
+          select: {
+            customerId: true,
+            tariffId: true,
+            tariff: {
+              select: {
+                name: true,
+              },
             },
           },
-        },
-      });
+        });
+        incomes = fallbackIncomes.map((income) => ({ ...income, customer: null }));
+      }
 
       const seenCustomers = new Map<string, { gender: string | null; tariffId: string | null; tariffName: string | null }>();
       for (const income of incomes) {
         if (!seenCustomers.has(income.customerId)) {
           seenCustomers.set(income.customerId, {
-            gender: income.customer.gender,
+            gender: income.customer?.gender ?? null,
             tariffId: income.tariffId,
             tariffName: income.tariff?.name ?? null,
           });
