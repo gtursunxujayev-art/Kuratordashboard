@@ -8,6 +8,15 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isMissingRegionConfigsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('region_configs') && message.includes('does not exist');
+  }
+  return message.includes('region_configs');
+}
+
 function isPremiumTariffName(name: string | null | undefined): boolean {
   const value = (name || '').toLowerCase();
   return value.includes('premium') || value.includes('vip');
@@ -333,7 +342,7 @@ export const studentsRouter = router({
 
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
     const { tenantId } = ctx;
-    const [courses, tariffs, regions] = await Promise.all([
+    const [courses, tariffs] = await Promise.all([
       prisma.course.findMany({
         where: { tenantId, isActive: true },
         select: { id: true, name: true },
@@ -344,12 +353,35 @@ export const studentsRouter = router({
         select: { id: true, name: true, courseId: true },
         orderBy: { name: 'asc' },
       }),
-      prisma.regionConfig.findMany({
+    ]);
+
+    let regions: Array<{ id: string; name: string }> = [];
+    try {
+      regions = await prisma.regionConfig.findMany({
         where: { tenantId, isActive: true },
         select: { id: true, name: true },
         orderBy: { name: 'asc' },
-      }),
-    ]);
+      });
+    } catch (error) {
+      if (!isMissingRegionConfigsTableError(error)) {
+        throw error;
+      }
+
+      const customerRegions = await prisma.customer.findMany({
+        where: {
+          tenantId,
+          region: { not: null },
+        },
+        select: { region: true },
+        distinct: ['region'],
+        orderBy: { region: 'asc' },
+      });
+
+      regions = customerRegions
+        .map((row) => row.region?.trim())
+        .filter((region): region is string => Boolean(region))
+        .map((region) => ({ id: `legacy-${region}`, name: region }));
+    }
 
     return { courses, tariffs, regions };
   }),
