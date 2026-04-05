@@ -19,6 +19,15 @@ function isMissingRegionConfigsTableError(error: unknown): boolean {
   return message.includes('region_configs');
 }
 
+function isMissingCustomerRegionColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('customers.region') && message.includes('does not exist');
+  }
+  return message.includes('customers.region');
+}
+
 function throwMissingRegionsMigrationError(): never {
   throw new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -45,28 +54,34 @@ export const settingsRouter = router({
       if (!isMissingRegionConfigsTableError(error)) {
         throw error;
       }
+      try {
+        const customerRegions = await prisma.customer.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            region: { not: null },
+          },
+          select: { region: true },
+          distinct: ['region'],
+          orderBy: { region: 'asc' },
+        });
 
-      const customerRegions = await prisma.customer.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          region: { not: null },
-        },
-        select: { region: true },
-        distinct: ['region'],
-        orderBy: { region: 'asc' },
-      });
-
-      return customerRegions
-        .map((row) => row.region?.trim())
-        .filter((region): region is string => Boolean(region))
-        .map((name) => ({
-          id: `legacy-${name}`,
-          tenantId: ctx.tenantId,
-          name,
-          isActive: true,
-          createdAt: new Date(0),
-          updatedAt: new Date(0),
-        }));
+        return customerRegions
+          .map((row) => row.region?.trim())
+          .filter((region): region is string => Boolean(region))
+          .map((name) => ({
+            id: `legacy-${name}`,
+            tenantId: ctx.tenantId,
+            name,
+            isActive: true,
+            createdAt: new Date(0),
+            updatedAt: new Date(0),
+          }));
+      } catch (fallbackError) {
+        if (!isMissingCustomerRegionColumnError(fallbackError)) {
+          throw fallbackError;
+        }
+        return [];
+      }
     }
   }),
 
