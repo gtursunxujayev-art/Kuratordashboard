@@ -16,7 +16,7 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./src/*"],
-      "@kuratordashboard/api-types": ["../../apps/api/dist/trpc/routers/index"]
+      "@kuratordashboard/api-types": ["../../apps/api/src/trpc/routers/index"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
