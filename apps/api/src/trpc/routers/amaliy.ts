@@ -3,30 +3,84 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 
-// Returns true if the given date is a Saturday (6) or Sunday (0)
+const ACTIVE_ENROLLMENT_FILTER = {
+  type: 'new_sale' as const,
+  lifecycleStatus: { not: 'refunded' as const },
+};
+
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
   return day === 0 || day === 6;
 }
 
-// Checks if the given date falls within a course run's class schedule
-async function getActiveCourseRun(tenantId: string, date: Date, courseRunId?: string) {
-  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
+function parseDateInput(dateInput: string): Date {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
+  const match = dateOnly.exec(dateInput.trim());
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const parsed = new Date(year, month - 1, day);
+    if (!Number.isNaN(parsed.getTime())) return parsed;
+  }
+
+  const fallback = new Date(dateInput);
+  if (Number.isNaN(fallback.getTime())) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Sana noto\'g\'ri formatda' });
+  }
+  return fallback;
+}
+
+function startOfDayLocal(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function isPremiumTariffName(name: string | null | undefined): boolean {
+  const value = (name || '').toLowerCase();
+  return value.includes('premium') || value.includes('vip');
+}
+
+async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: string) {
+  const dayStart = startOfDayLocal(date);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
 
   return prisma.courseRun.findFirst({
     where: {
       tenantId,
       ...(courseRunId ? { id: courseRunId } : {}),
-      startDate: { lte: end },
-      endDate: { gte: start },
+      ...(courseRunId
+        ? {}
+        : {
+            startDate: { lte: dayEnd },
+            endDate: { gte: dayStart },
+          }),
     },
   });
 }
 
+async function getStudentPremiumEligibility(tenantId: string, customerId: string): Promise<boolean> {
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, tenantId },
+    select: {
+      id: true,
+      incomes: {
+        where: ACTIVE_ENROLLMENT_FILTER,
+        select: { tariff: { select: { name: true } } },
+        orderBy: { entryDate: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (!customer) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
+  }
+
+  return isPremiumTariffName(customer.incomes[0]?.tariff?.name);
+}
+
 export const amaliyRouter = router({
-  // Get students for amaliy page (respects kurator filter)
   studentList: protectedProcedure
     .input(z.object({ courseRunId: z.string().optional() }))
     .query(async ({ ctx, input }) => {
@@ -37,17 +91,18 @@ export const amaliyRouter = router({
         !user.roles.includes('Manager');
 
       let customerIds: string[] | undefined;
-      if (isKurator) {
+
+      if (input.courseRunId || isKurator) {
         const assignments = await prisma.kuratorAssignment.findMany({
           where: {
             tenantId,
-            kuratorUserId: user.userId,
             isActive: true,
             ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+            ...(isKurator ? { kuratorUserId: user.userId } : {}),
           },
           select: { customerId: true },
         });
-        customerIds = assignments.map((a) => a.customerId);
+        customerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
       return prisma.customer.findMany({
@@ -60,12 +115,12 @@ export const amaliyRouter = router({
       });
     }),
 
-  // Get exercises for a student on a specific date
   getStudentExercises: protectedProcedure
     .input(
       z.object({
         customerId: z.string(),
-        date: z.string(), // ISO date string
+        date: z.string(),
+        mode: z.enum(['day', 'all']).default('day'),
         courseRunId: z.string().optional(),
       }),
     )
@@ -77,6 +132,10 @@ export const amaliyRouter = router({
         !user.roles.includes('Manager');
       const isAdmin = user.roles.includes('Admin');
 
+      if (input.mode === 'all' && !isAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat adminlar uchun' });
+      }
+
       if (isKurator) {
         const assignment = await prisma.kuratorAssignment.findFirst({
           where: {
@@ -85,73 +144,114 @@ export const amaliyRouter = router({
             customerId: input.customerId,
             isActive: true,
           },
+          select: { id: true },
         });
         if (!assignment) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
 
-      const date = new Date(input.date);
+      const date = parseDateInput(input.date);
       const classDay = isClassDay(date);
-
-      // 'all' filter: only for admins
-      const exerciseType = classDay ? 'class' : 'homework';
-
-      const courseRun = await getActiveCourseRun(tenantId, date, input.courseRunId);
+      const courseRun = await getCourseRunForDate(tenantId, date, input.courseRunId);
 
       if (!courseRun) {
         return {
+          mode: input.mode,
           isClassDay: classDay,
           exercises: [],
           courseRunId: null,
           dateInfo: { date: input.date, dayOfWeek: date.getDay() },
+          attendanceSummary: {
+            base: { attended: 0, total: 0 },
+            premiumExtra: { attended: 0, total: 0 },
+            isPremiumEligible: false,
+          },
         };
       }
 
-      const definitions = await prisma.exerciseDefinition.findMany({
-        where: {
-          tenantId,
-          courseRunId: courseRun.id,
-          type: exerciseType,
-          isActive: true,
-        },
-        orderBy: { orderIndex: 'asc' },
-      });
-
-      // Get logs for this student on this date
-      const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+      const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId);
+      const dayStart = startOfDayLocal(date);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
-      const logs = await prisma.studentExerciseLog.findMany({
-        where: {
-          tenantId,
-          customerId: input.customerId,
-          exerciseDefinitionId: { in: definitions.map((d) => d.id) },
-          completedAt: { gte: dayStart, lt: dayEnd },
-        },
+      const whereDefinitions = {
+        tenantId,
+        courseRunId: courseRun.id,
+        isActive: true,
+        ...(input.mode === 'day' ? { type: classDay ? 'class' : 'homework' } : {}),
+      };
+
+      const definitions = await prisma.exerciseDefinition.findMany({
+        where: whereDefinitions,
+        orderBy: { orderIndex: 'asc' },
       });
 
-      const logsByDef = new Map(definitions.map((d) => [d.id, 0]));
-      for (const log of logs) {
-        logsByDef.set(log.exerciseDefinitionId, (logsByDef.get(log.exerciseDefinitionId) ?? 0) + 1);
+      const definitionIds = definitions.map((d) => d.id);
+      const [todayLogs, totalLogs, attendanceTotals, attendanceAttended] = await Promise.all([
+        input.mode === 'day' && definitionIds.length > 0
+          ? prisma.studentExerciseLog.findMany({
+              where: {
+                tenantId,
+                customerId: input.customerId,
+                exerciseDefinitionId: { in: definitionIds },
+                completedAt: { gte: dayStart, lt: dayEnd },
+              },
+              select: { exerciseDefinitionId: true },
+            })
+          : Promise.resolve([]),
+        definitionIds.length > 0
+          ? prisma.studentExerciseLog.groupBy({
+              by: ['exerciseDefinitionId'],
+              where: {
+                tenantId,
+                customerId: input.customerId,
+                exerciseDefinitionId: { in: definitionIds },
+              },
+              _count: { id: true },
+            })
+          : Promise.resolve([]),
+        prisma.classAttendance.groupBy({
+          by: ['lessonType'],
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+          },
+          _count: { id: true },
+        }),
+        prisma.classAttendance.groupBy({
+          by: ['lessonType'],
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            attended: true,
+          },
+          _count: { id: true },
+        }),
+      ]);
+
+      const doneTodayByDef = new Map<string, number>();
+      for (const row of todayLogs) {
+        doneTodayByDef.set(row.exerciseDefinitionId, (doneTodayByDef.get(row.exerciseDefinitionId) ?? 0) + 1);
       }
 
-      // Get total logs (all time) for target count comparison
-      const totalLogs = await prisma.studentExerciseLog.groupBy({
-        by: ['exerciseDefinitionId'],
-        where: {
-          tenantId,
-          customerId: input.customerId,
-          exerciseDefinitionId: { in: definitions.map((d) => d.id) },
-        },
-        _count: { id: true },
-      });
-      const totalByDef = new Map(totalLogs.map((l) => [l.exerciseDefinitionId, l._count.id]));
+      const doneTotalByDef = new Map<string, number>(
+        totalLogs.map((row) => [row.exerciseDefinitionId, row._count.id]),
+      );
+
+      const attendanceTotalByType = new Map<string, number>(
+        attendanceTotals.map((row) => [row.lessonType, row._count.id]),
+      );
+      const attendanceAttendedByType = new Map<string, number>(
+        attendanceAttended.map((row) => [row.lessonType, row._count.id]),
+      );
 
       return {
+        mode: input.mode,
         isClassDay: classDay,
-        exerciseType,
+        exerciseType: input.mode === 'day' ? (classDay ? 'class' : 'homework') : 'all',
         courseRunId: courseRun.id,
         dateInfo: { date: input.date, dayOfWeek: date.getDay() },
         exercises: definitions.map((def) => ({
@@ -159,38 +259,33 @@ export const amaliyRouter = router({
           name: def.name,
           type: def.type,
           targetCount: def.targetCount,
-          doneToday: logsByDef.get(def.id) ?? 0,
-          doneTotal: totalByDef.get(def.id) ?? 0,
+          doneToday: input.mode === 'day' ? (doneTodayByDef.get(def.id) ?? 0) : 0,
+          doneTotal: doneTotalByDef.get(def.id) ?? 0,
         })),
-        // Also return admin-only 'all' data
-        ...(isAdmin
-          ? {
-              allExercises: await prisma.exerciseDefinition
-                .findMany({
-                  where: { tenantId, courseRunId: courseRun.id, isActive: true },
-                  orderBy: { orderIndex: 'asc' },
-                })
-                .then((defs) =>
-                  defs.map((def) => ({
-                    id: def.id,
-                    name: def.name,
-                    type: def.type,
-                    targetCount: def.targetCount,
-                    doneTotal: totalByDef.get(def.id) ?? 0,
-                  })),
-                ),
-            }
-          : {}),
+        attendanceSummary: {
+          base: {
+            attended: attendanceAttendedByType.get('base') ?? 0,
+            total: courseRun.baseLessons,
+          },
+          premiumExtra: {
+            attended: attendanceAttendedByType.get('premium_extra') ?? 0,
+            total: premiumEligible ? courseRun.premiumExtraLessons : 0,
+          },
+          isPremiumEligible: premiumEligible,
+          recordedRows: {
+            base: attendanceTotalByType.get('base') ?? 0,
+            premiumExtra: attendanceTotalByType.get('premium_extra') ?? 0,
+          },
+        },
       };
     }),
 
-  // Log an exercise completion
   logExercise: protectedProcedure
     .input(
       z.object({
         customerId: z.string(),
         exerciseDefinitionId: z.string(),
-        completedAt: z.string(), // ISO date string
+        completedAt: z.string(),
         note: z.string().optional(),
       }),
     )
@@ -201,6 +296,14 @@ export const amaliyRouter = router({
         !user.roles.includes('Admin') &&
         !user.roles.includes('Manager');
 
+      const definition = await prisma.exerciseDefinition.findFirst({
+        where: { id: input.exerciseDefinitionId, tenantId },
+        select: { id: true },
+      });
+      if (!definition) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
       if (isKurator) {
         const assignment = await prisma.kuratorAssignment.findFirst({
           where: {
@@ -209,6 +312,7 @@ export const amaliyRouter = router({
             customerId: input.customerId,
             isActive: true,
           },
+          select: { id: true },
         });
         if (!assignment) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
@@ -220,35 +324,45 @@ export const amaliyRouter = router({
           tenantId,
           customerId: input.customerId,
           exerciseDefinitionId: input.exerciseDefinitionId,
-          completedAt: new Date(input.completedAt),
+          completedAt: parseDateInput(input.completedAt),
           loggedByUserId: user.userId,
           note: input.note,
         },
       });
     }),
 
-  // Remove an exercise log
   removeExerciseLog: protectedProcedure
     .input(z.object({ logId: z.string() }))
     .mutation(async ({ ctx, input }) => {
-      const { tenantId } = ctx;
+      const { tenantId, user } = ctx;
+      const isKuratorOnly =
+        user.roles.includes('Kurator') &&
+        !user.roles.includes('Admin') &&
+        !user.roles.includes('Manager');
+
       const log = await prisma.studentExerciseLog.findFirst({
         where: { id: input.logId, tenantId },
+        select: { id: true, customerId: true, loggedByUserId: true },
       });
       if (!log) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Yozuv topilmadi' });
       }
+
+      if (isKuratorOnly && log.loggedByUserId !== user.userId) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat o'zingiz kiritgan yozuvni o'chira olasiz" });
+      }
+
       await prisma.studentExerciseLog.delete({ where: { id: input.logId } });
       return { success: true };
     }),
 
-  // Mark/update attendance for a class day
   markAttendance: protectedProcedure
     .input(
       z.object({
         customerId: z.string(),
         courseRunId: z.string(),
-        lessonDate: z.string(), // ISO date
+        lessonDate: z.string(),
+        lessonType: z.enum(['base', 'premium_extra']).default('base'),
         attended: z.boolean(),
       }),
     )
@@ -268,21 +382,33 @@ export const amaliyRouter = router({
             courseRunId: input.courseRunId,
             isActive: true,
           },
+          select: { id: true },
         });
         if (!assignment) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
 
-      const lessonDate = new Date(input.lessonDate);
+      if (input.lessonType === 'premium_extra') {
+        const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId);
+        if (!premiumEligible) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Bu o\'quvchi Premium/VIP qo\'shimcha darslarga mos emas',
+          });
+        }
+      }
+
+      const lessonDate = parseDateInput(input.lessonDate);
 
       return prisma.classAttendance.upsert({
         where: {
-          tenantId_customerId_courseRunId_lessonDate: {
+          tenantId_customerId_courseRunId_lessonDate_lessonType: {
             tenantId,
             customerId: input.customerId,
             courseRunId: input.courseRunId,
             lessonDate,
+            lessonType: input.lessonType,
           },
         },
         create: {
@@ -290,11 +416,13 @@ export const amaliyRouter = router({
           customerId: input.customerId,
           courseRunId: input.courseRunId,
           lessonDate,
+          lessonType: input.lessonType,
           attended: input.attended,
           markedByUserId: user.userId,
         },
         update: {
           attended: input.attended,
+          lessonType: input.lessonType,
           markedByUserId: user.userId,
           updatedAt: new Date(),
         },
