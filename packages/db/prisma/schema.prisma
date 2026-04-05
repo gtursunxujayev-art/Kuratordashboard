@@ -48,6 +48,7 @@ model Tenant {
   classAttendances  ClassAttendance[]
   kuratorTasks      KuratorTask[]
   regionConfigs     RegionConfig[]
+  scheduleTemplates CourseScheduleTemplate[]
 
   @@index([subdomain])
   @@map("tenants")
@@ -465,6 +466,7 @@ model Income {
   @@index([entryDate])
   @@index([remainingDebtAmount])
   @@index([lifecycleStatus])
+  @@index([tenantId, type, lifecycleStatus, entryDate])
   @@index([relatedDebtIncomeId])
   @@index([historicalImportSessionId])
   @@unique([tenantId, legacyImportKey])
@@ -549,8 +551,10 @@ model CourseRun {
   courseId    String
   name        String   // display name e.g. "Aprel 2026 oqimi"
   startDate   DateTime // must be a Saturday
-  endDate     DateTime // auto: startDate + 41 days (6 weeks last Sunday)
+  endDate     DateTime // auto: startDate + ((durationWeeks * 7) - 6) days (last Sunday)
+  durationWeeks Int    @default(6)
   baseLessons Int      @default(12) // 12 Saturday+Sunday lessons
+  premiumExtraLessons Int @default(2) // additional lessons for Premium/VIP students
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -607,6 +611,7 @@ model StudentExerciseLog {
   @@index([customerId])
   @@index([exerciseDefinitionId])
   @@index([completedAt])
+  @@index([tenantId, customerId, exerciseDefinitionId])
   @@map("student_exercise_logs")
 }
 
@@ -617,6 +622,7 @@ model ClassAttendance {
   customerId     String
   courseRunId    String
   lessonDate     DateTime // the specific class date (Saturday or Sunday)
+  lessonType     String   @default("base") // 'base' | 'premium_extra'
   attended       Boolean  @default(false)
   markedByUserId String
   createdAt      DateTime @default(now())
@@ -627,11 +633,13 @@ model ClassAttendance {
   courseRun  CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
   markedBy   User      @relation(fields: [markedByUserId], references: [id], onDelete: Restrict)
 
-  @@unique([tenantId, customerId, courseRunId, lessonDate])
+  @@unique([tenantId, customerId, courseRunId, lessonDate, lessonType])
   @@index([tenantId])
   @@index([customerId])
   @@index([courseRunId])
   @@index([lessonDate])
+  @@index([tenantId, courseRunId, customerId, attended])
+  @@index([tenantId, courseRunId, lessonDate, lessonType])
   @@map("class_attendances")
 }
 
@@ -652,6 +660,8 @@ model KuratorAssignment {
 
   @@unique([tenantId, kuratorUserId, customerId, courseRunId])
   @@index([tenantId])
+  @@index([tenantId, courseRunId, isActive])
+  @@index([tenantId, kuratorUserId, isActive])
   @@index([kuratorUserId])
   @@index([customerId])
   @@index([courseRunId])
@@ -694,4 +704,22 @@ model RegionConfig {
   @@unique([tenantId, name])
   @@index([tenantId])
   @@map("region_configs")
+}
+
+// Admin-configurable course schedule templates by course category
+model CourseScheduleTemplate {
+  id                  String   @id @default(uuid())
+  tenantId            String
+  courseCategory      String   // e.g. 'offline'
+  durationWeeks       Int      @default(6)
+  baseLessons         Int      @default(12)
+  premiumExtraLessons Int      @default(2)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, courseCategory])
+  @@index([tenantId])
+  @@map("course_schedule_templates")
 }
