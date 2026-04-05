@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Prisma generate
+        run: npm run db:generate
+      - name: Type-check API
+        run: npm run type-check --workspace @kuratordashboard/api
+      - name: Type-check Web
+        run: npm run type-check --workspace @kuratordashboard/web
+      - name: Build API
+        run: npm run build --workspace @kuratordashboard/api
+      - name: API smoke checks
+        run: |
+          PORT=4010 node apps/api/dist/index.js &
+          API_PID=$!
+          sleep 3
+          curl -fsS http://127.0.0.1:4010/health > /dev/null
+          curl -fsS http://127.0.0.1:4010/ready > /dev/null
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:4010/api/trpc/auth.loginWithPassword?batch=1" -H "Content-Type: application/json" --data '{"0":{"json":{"login":"","password":""}}}')
+          kill "$API_PID"
+          if [ "$STATUS" = "404" ]; then
+            echo "Auth route smoke failed with 404 (route missing)"
+            exit 1
+          fi
