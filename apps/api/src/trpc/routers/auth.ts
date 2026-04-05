@@ -44,18 +44,41 @@ async function chooseLoginCandidate(
   if (passwordMatched.length === 1) return passwordMatched[0];
 
   const tenantIds = Array.from(new Set(passwordMatched.map((candidate) => candidate.tenantId)));
-  const tenantIncomeCounts = await prisma.income.groupBy({
-    by: ['tenantId'],
-    where: {
-      tenantId: { in: tenantIds },
-      type: 'new_sale',
-      lifecycleStatus: 'active',
-    },
-    _count: { id: true },
-  });
+  const [tenantIncomeCounts, tenantCustomerCounts, tenantCourseCounts] = await Promise.all([
+    prisma.income.groupBy({
+      by: ['tenantId'],
+      where: {
+        tenantId: { in: tenantIds },
+        type: 'new_sale',
+        lifecycleStatus: 'active',
+      },
+      _count: { id: true },
+    }),
+    prisma.customer.groupBy({
+      by: ['tenantId'],
+      where: {
+        tenantId: { in: tenantIds },
+      },
+      _count: { id: true },
+    }),
+    prisma.course.groupBy({
+      by: ['tenantId'],
+      where: {
+        tenantId: { in: tenantIds },
+        isActive: true,
+      },
+      _count: { id: true },
+    }),
+  ]);
 
   const incomeCountByTenant = new Map(
     tenantIncomeCounts.map((row) => [row.tenantId, row._count.id]),
+  );
+  const customerCountByTenant = new Map(
+    tenantCustomerCounts.map((row) => [row.tenantId, row._count.id]),
+  );
+  const courseCountByTenant = new Map(
+    tenantCourseCounts.map((row) => [row.tenantId, row._count.id]),
   );
 
   passwordMatched.sort((left, right) => {
@@ -63,6 +86,18 @@ async function chooseLoginCandidate(
     const leftIncomeCount = incomeCountByTenant.get(left.tenantId) ?? 0;
     if (rightIncomeCount !== leftIncomeCount) {
       return rightIncomeCount - leftIncomeCount;
+    }
+
+    const rightCustomerCount = customerCountByTenant.get(right.tenantId) ?? 0;
+    const leftCustomerCount = customerCountByTenant.get(left.tenantId) ?? 0;
+    if (rightCustomerCount !== leftCustomerCount) {
+      return rightCustomerCount - leftCustomerCount;
+    }
+
+    const rightCourseCount = courseCountByTenant.get(right.tenantId) ?? 0;
+    const leftCourseCount = courseCountByTenant.get(left.tenantId) ?? 0;
+    if (rightCourseCount !== leftCourseCount) {
+      return rightCourseCount - leftCourseCount;
     }
 
     const rightLastLogin = right.lastLoginAt?.getTime() ?? 0;
