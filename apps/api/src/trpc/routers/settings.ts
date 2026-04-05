@@ -10,6 +10,23 @@ const scheduleTemplateSchema = z.object({
   premiumExtraLessons: z.number().int().min(0).max(50),
 });
 
+function isMissingRegionConfigsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('region_configs') && message.includes('does not exist');
+  }
+  return message.includes('region_configs');
+}
+
+function throwMissingRegionsMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Region sozlamalari uchun DB migratsiya qo'llanmagan (`region_configs`). Avval migration deploy qiling.",
+  });
+}
+
 function computeEndDate(startDate: Date, durationWeeks: number): Date {
   // Saturday start + ((weeks * 7) - 6) gives the last Sunday.
   const end = new Date(startDate);
@@ -19,24 +36,59 @@ function computeEndDate(startDate: Date, durationWeeks: number): Date {
 
 export const settingsRouter = router({
   listRegions: protectedProcedure.query(async ({ ctx }) => {
-    return prisma.regionConfig.findMany({
-      where: { tenantId: ctx.tenantId },
-      orderBy: { name: 'asc' },
-    });
+    try {
+      return await prisma.regionConfig.findMany({
+        where: { tenantId: ctx.tenantId },
+        orderBy: { name: 'asc' },
+      });
+    } catch (error) {
+      if (!isMissingRegionConfigsTableError(error)) {
+        throw error;
+      }
+
+      const customerRegions = await prisma.customer.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          region: { not: null },
+        },
+        select: { region: true },
+        distinct: ['region'],
+        orderBy: { region: 'asc' },
+      });
+
+      return customerRegions
+        .map((row) => row.region?.trim())
+        .filter((region): region is string => Boolean(region))
+        .map((name) => ({
+          id: `legacy-${name}`,
+          tenantId: ctx.tenantId,
+          name,
+          isActive: true,
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        }));
+    }
   }),
 
   addRegion: adminProcedure
     .input(z.object({ name: z.string().min(1).max(100) }))
     .mutation(async ({ ctx, input }) => {
-      const existing = await prisma.regionConfig.findFirst({
-        where: { tenantId: ctx.tenantId, name: input.name },
-      });
-      if (existing) {
-        throw new TRPCError({ code: 'CONFLICT', message: 'Bu nom allaqachon mavjud' });
+      try {
+        const existing = await prisma.regionConfig.findFirst({
+          where: { tenantId: ctx.tenantId, name: input.name },
+        });
+        if (existing) {
+          throw new TRPCError({ code: 'CONFLICT', message: 'Bu nom allaqachon mavjud' });
+        }
+        return prisma.regionConfig.create({
+          data: { tenantId: ctx.tenantId, name: input.name },
+        });
+      } catch (error) {
+        if (isMissingRegionConfigsTableError(error)) {
+          throwMissingRegionsMigrationError();
+        }
+        throw error;
       }
-      return prisma.regionConfig.create({
-        data: { tenantId: ctx.tenantId, name: input.name },
-      });
     }),
 
   updateRegion: adminProcedure
@@ -48,19 +100,26 @@ export const settingsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const existing = await prisma.regionConfig.findFirst({
-        where: { id: input.id, tenantId: ctx.tenantId },
-        select: { id: true },
-      });
-      if (!existing) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Viloyat topilmadi' });
-      }
+      try {
+        const existing = await prisma.regionConfig.findFirst({
+          where: { id: input.id, tenantId: ctx.tenantId },
+          select: { id: true },
+        });
+        if (!existing) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Viloyat topilmadi' });
+        }
 
-      const { id, ...data } = input;
-      return prisma.regionConfig.update({
-        where: { id },
-        data,
-      });
+        const { id, ...data } = input;
+        return prisma.regionConfig.update({
+          where: { id },
+          data,
+        });
+      } catch (error) {
+        if (isMissingRegionConfigsTableError(error)) {
+          throwMissingRegionsMigrationError();
+        }
+        throw error;
+      }
     }),
 
   listScheduleTemplates: protectedProcedure.query(async ({ ctx }) => {
