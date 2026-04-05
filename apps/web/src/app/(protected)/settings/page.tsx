@@ -1,16 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'courseRuns' | 'exercises' | 'regions' | 'assignments';
+type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'assignments';
 
 export default function SettingsPage() {
   const { isAdmin, isLoading } = useAuth();
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<Tab>('courseRuns');
+  const [activeTab, setActiveTab] = useState<Tab>('templates');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
 
   if (!isLoading && !isAdmin) {
@@ -22,9 +22,9 @@ export default function SettingsPage() {
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">Sozlamalar</h1>
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit">
+      <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit flex-wrap">
         {([
+          { key: 'templates', label: 'Jadval shablonlari' },
           { key: 'courseRuns', label: 'Kurs oqimlari' },
           { key: 'exercises', label: 'Mashqlar' },
           { key: 'regions', label: 'Viloyatlar' },
@@ -42,30 +42,164 @@ export default function SettingsPage() {
         ))}
       </div>
 
+      {activeTab === 'templates' && <ScheduleTemplatesTab />}
       {activeTab === 'courseRuns' && <CourseRunsTab onSelectRun={setSelectedCourseRunId} />}
       {activeTab === 'exercises' && (
-        <ExercisesTab
-          courseRunId={selectedCourseRunId}
-          onSelectCourseRun={setSelectedCourseRunId}
-        />
+        <ExercisesTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
       )}
       {activeTab === 'regions' && <RegionsTab />}
       {activeTab === 'assignments' && (
-        <AssignmentsTab
-          courseRunId={selectedCourseRunId}
-          onSelectCourseRun={setSelectedCourseRunId}
-        />
+        <AssignmentsTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
       )}
     </div>
   );
 }
 
-// ── Course Runs Tab ─────────────────────────────────────────────────────────
+function ScheduleTemplatesTab() {
+  const utils = trpc.useContext();
+  const [form, setForm] = useState({
+    courseCategory: 'offline',
+    durationWeeks: 6,
+    baseLessons: 12,
+    premiumExtraLessons: 2,
+  });
+  const [error, setError] = useState('');
+
+  const { data, isLoading } = trpc.settings.listScheduleTemplates.useQuery();
+  const upsertMutation = trpc.settings.upsertScheduleTemplate.useMutation({
+    onSuccess: () => {
+      void utils.settings.listScheduleTemplates.invalidate();
+      setError('');
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const handleSave = () => {
+    upsertMutation.mutate(form);
+  };
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold text-gray-900">Kurs turi bo'yicha jadval shablonlari</h2>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Kurs turi</label>
+            <input
+              value={form.courseCategory}
+              onChange={(e) => setForm({ ...form, courseCategory: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="offline"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Davomiylik (hafta)</label>
+            <input
+              type="number"
+              min={1}
+              max={52}
+              value={form.durationWeeks}
+              onChange={(e) => setForm({ ...form, durationWeeks: Number(e.target.value) })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Asosiy darslar</label>
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={form.baseLessons}
+              onChange={(e) => setForm({ ...form, baseLessons: Number(e.target.value) })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Premium/VIP qo'shimcha</label>
+            <input
+              type="number"
+              min={0}
+              max={50}
+              value={form.premiumExtraLessons}
+              onChange={(e) => setForm({ ...form, premiumExtraLessons: Number(e.target.value) })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            />
+          </div>
+        </div>
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
+
+        <button
+          onClick={handleSave}
+          disabled={upsertMutation.isLoading || !form.courseCategory.trim()}
+          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          {upsertMutation.isLoading ? 'Saqlanmoqda...' : 'Saqlash'}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="text-gray-500 text-sm">Yuklanmoqda...</div>
+      ) : !data || data.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          Shablonlar topilmadi
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Kurs turi</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {data.map((item) => (
+                <tr key={item.id}>
+                  <td className="px-4 py-3 text-gray-900">{item.courseCategory}</td>
+                  <td className="px-4 py-3 text-gray-700">{item.durationWeeks}</td>
+                  <td className="px-4 py-3 text-gray-700">{item.baseLessons}</td>
+                  <td className="px-4 py-3 text-gray-700">{item.premiumExtraLessons}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() =>
+                        setForm({
+                          courseCategory: item.courseCategory,
+                          durationWeeks: item.durationWeeks,
+                          baseLessons: item.baseLessons,
+                          premiumExtraLessons: item.premiumExtraLessons,
+                        })
+                      }
+                      className="text-blue-600 text-xs hover:underline"
+                    >
+                      Tahrirlash
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ courseId: '', name: '', startDate: '', baseLessons: 12 });
+  const [form, setForm] = useState({
+    courseId: '',
+    name: '',
+    startDate: '',
+    durationWeeks: 6,
+    baseLessons: 12,
+    premiumExtraLessons: 2,
+  });
   const [error, setError] = useState('');
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
@@ -75,7 +209,14 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
     onSuccess: () => {
       void utils.settings.listCourseRuns.invalidate();
       setShowForm(false);
-      setForm({ courseId: '', name: '', startDate: '', baseLessons: 12 });
+      setForm({
+        courseId: '',
+        name: '',
+        startDate: '',
+        durationWeeks: 6,
+        baseLessons: 12,
+        premiumExtraLessons: 2,
+      });
       setError('');
     },
     onError: (err) => setError(err.message),
@@ -86,11 +227,14 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
       setError("Barcha maydonlarni to'ldiring");
       return;
     }
+
     createMutation.mutate({
       courseId: form.courseId,
       name: form.name,
       startDate: form.startDate,
+      durationWeeks: form.durationWeeks,
       baseLessons: form.baseLessons,
+      premiumExtraLessons: form.premiumExtraLessons,
     });
   };
 
@@ -109,7 +253,7 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
       {showForm && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-900">Yangi oqim yaratish</h3>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Kurs</label>
               <select
@@ -118,8 +262,10 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
               >
                 <option value="">Tanlang...</option>
-                {courses?.map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
+                {courses?.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.name}
+                  </option>
                 ))}
               </select>
             </div>
@@ -133,9 +279,7 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                Boshlanish sanasi (Shanba)
-              </label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Boshlanish (Shanba)</label>
               <input
                 type="date"
                 value={form.startDate}
@@ -144,20 +288,42 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                Asosiy darslar soni
-              </label>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Davomiylik (hafta)</label>
               <input
                 type="number"
                 min={1}
-                max={20}
+                max={52}
+                value={form.durationWeeks}
+                onChange={(e) => setForm({ ...form, durationWeeks: Number(e.target.value) })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Asosiy darslar</label>
+              <input
+                type="number"
+                min={1}
+                max={200}
                 value={form.baseLessons}
                 onChange={(e) => setForm({ ...form, baseLessons: Number(e.target.value) })}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
               />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Premium/VIP qo'shimcha</label>
+              <input
+                type="number"
+                min={0}
+                max={50}
+                value={form.premiumExtraLessons}
+                onChange={(e) => setForm({ ...form, premiumExtraLessons: Number(e.target.value) })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              />
+            </div>
           </div>
+
           {error && <p className="text-sm text-red-600">{error}</p>}
+
           <div className="flex gap-2">
             <button
               onClick={handleCreate}
@@ -167,7 +333,10 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
               {createMutation.isLoading ? 'Yaratilmoqda...' : 'Yaratish'}
             </button>
             <button
-              onClick={() => { setShowForm(false); setError(''); }}
+              onClick={() => {
+                setShowForm(false);
+                setError('');
+              }}
               className="px-4 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50"
             >
               Bekor qilish
@@ -191,8 +360,10 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Kurs</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Boshlanish</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Tugash</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Darslar</th>
-                <th className="px-4 py-3"></th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -200,18 +371,13 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
                 <tr key={run.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 font-medium text-gray-900">{run.name}</td>
                   <td className="px-4 py-3 text-gray-600">{run.course.name}</td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {new Date(run.startDate).toLocaleDateString('uz-UZ')}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">
-                    {new Date(run.endDate).toLocaleDateString('uz-UZ')}
-                  </td>
+                  <td className="px-4 py-3 text-gray-600">{new Date(run.startDate).toLocaleDateString('uz-UZ')}</td>
+                  <td className="px-4 py-3 text-gray-600">{new Date(run.endDate).toLocaleDateString('uz-UZ')}</td>
+                  <td className="px-4 py-3 text-gray-600">{run.durationWeeks}</td>
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
+                  <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
                   <td className="px-4 py-3">
-                    <button
-                      onClick={() => onSelectRun(run.id)}
-                      className="text-blue-600 text-xs hover:underline"
-                    >
+                    <button onClick={() => onSelectRun(run.id)} className="text-blue-600 text-xs hover:underline">
                       Tanlash
                     </button>
                   </td>
@@ -224,8 +390,6 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
     </div>
   );
 }
-
-// ── Exercises Tab ────────────────────────────────────────────────────────────
 
 function ExercisesTab({
   courseRunId,
@@ -277,7 +441,9 @@ function ExercisesTab({
         >
           <option value="">Oqimni tanlang...</option>
           {courseRuns?.map((r) => (
-            <option key={r.id} value={r.id}>{r.name} ({r.course.name})</option>
+            <option key={r.id} value={r.id}>
+              {r.name} ({r.course.name})
+            </option>
           ))}
         </select>
       </div>
@@ -289,7 +455,7 @@ function ExercisesTab({
               onClick={() => setShowForm(true)}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
             >
-              + Mashq qo&apos;shish
+              + Mashq qo'shish
             </button>
           </div>
 
@@ -317,9 +483,7 @@ function ExercisesTab({
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">
-                    Maqsad (necha marta)
-                  </label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Maqsad (necha marta)</label>
                   <input
                     type="number"
                     min={1}
@@ -339,7 +503,9 @@ function ExercisesTab({
                   />
                 </div>
               </div>
+
               {error && <p className="text-sm text-red-600">{error}</p>}
+
               <div className="flex gap-2">
                 <button
                   onClick={() =>
@@ -357,7 +523,10 @@ function ExercisesTab({
                   Saqlash
                 </button>
                 <button
-                  onClick={() => { setShowForm(false); setError(''); }}
+                  onClick={() => {
+                    setShowForm(false);
+                    setError('');
+                  }}
                   className="px-4 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg"
                 >
                   Bekor
@@ -384,25 +553,19 @@ function ExercisesTab({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {exercises.map((ex) => (
-                    <tr key={ex.id}>
-                      <td className="px-4 py-3 font-medium text-gray-900">{ex.name}</td>
-                      <td className="px-4 py-3 text-gray-600">
-                        {ex.type === 'class' ? 'Dars mashqi' : 'Uy vazifasi'}
-                      </td>
-                      <td className="px-4 py-3 text-gray-600">{ex.targetCount} marta</td>
+                  {exercises.map((exercise) => (
+                    <tr key={exercise.id}>
+                      <td className="px-4 py-3 font-medium text-gray-900">{exercise.name}</td>
+                      <td className="px-4 py-3 text-gray-600">{exercise.type === 'class' ? 'Dars mashqi' : 'Uy vazifasi'}</td>
+                      <td className="px-4 py-3 text-gray-600">{exercise.targetCount} marta</td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() =>
-                            updateMutation.mutate({ id: ex.id, isActive: !ex.isActive })
-                          }
+                          onClick={() => updateMutation.mutate({ id: exercise.id, isActive: !exercise.isActive })}
                           className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            ex.isActive
-                              ? 'bg-green-100 text-green-700'
-                              : 'bg-gray-100 text-gray-500'
+                            exercise.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
                           }`}
                         >
-                          {ex.isActive ? 'Faol' : "Nofaol"}
+                          {exercise.isActive ? 'Faol' : 'Nofaol'}
                         </button>
                       </td>
                     </tr>
@@ -416,8 +579,6 @@ function ExercisesTab({
     </div>
   );
 }
-
-// ── Regions Tab ──────────────────────────────────────────────────────────────
 
 function RegionsTab() {
   const utils = trpc.useContext();
@@ -457,6 +618,7 @@ function RegionsTab() {
           {addMutation.isLoading ? '...' : "Qo'shish"}
         </button>
       </div>
+
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       {isLoading ? (
@@ -475,17 +637,17 @@ function RegionsTab() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {regions.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-4 py-3 text-gray-900">{r.name}</td>
+              {regions.map((region) => (
+                <tr key={region.id}>
+                  <td className="px-4 py-3 text-gray-900">{region.name}</td>
                   <td className="px-4 py-3">
                     <button
-                      onClick={() => updateMutation.mutate({ id: r.id, isActive: !r.isActive })}
+                      onClick={() => updateMutation.mutate({ id: region.id, isActive: !region.isActive })}
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        r.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                        region.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
                       }`}
                     >
-                      {r.isActive ? 'Faol' : "Nofaol"}
+                      {region.isActive ? 'Faol' : 'Nofaol'}
                     </button>
                   </td>
                 </tr>
@@ -497,8 +659,6 @@ function RegionsTab() {
     </div>
   );
 }
-
-// ── Assignments Tab ──────────────────────────────────────────────────────────
 
 function AssignmentsTab({
   courseRunId,
@@ -518,9 +678,11 @@ function AssignmentsTab({
     { enabled: !!courseRunId },
   );
   const { data: students } = trpc.students.list.useQuery(
-    { courseRunId: courseRunId || undefined, limit: 100 },
+    { courseRunId: courseRunId || undefined, page: 1, limit: 100 },
     { enabled: !!courseRunId },
   );
+
+  const studentOptions = useMemo(() => students?.data ?? [], [students?.data]);
 
   const assignMutation = trpc.settings.assignStudent.useMutation({
     onSuccess: () => void utils.kurators.assignments.invalidate(),
@@ -532,7 +694,7 @@ function AssignmentsTab({
 
   return (
     <div className="space-y-4">
-      <h2 className="text-base font-semibold text-gray-900">Kurator — O&apos;quvchi bog&apos;lash</h2>
+      <h2 className="text-base font-semibold text-gray-900">Kurator - O'quvchi bog'lash</h2>
 
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">Kurs oqimi</label>
@@ -542,17 +704,18 @@ function AssignmentsTab({
           className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm min-w-64"
         >
           <option value="">Oqimni tanlang...</option>
-          {courseRuns?.map((r) => (
-            <option key={r.id} value={r.id}>{r.name} ({r.course.name})</option>
+          {courseRuns?.map((run) => (
+            <option key={run.id} value={run.id}>
+              {run.name} ({run.course.name})
+            </option>
           ))}
         </select>
       </div>
 
       {courseRunId && (
         <>
-          {/* Assign form */}
           <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-            <h3 className="text-sm font-medium text-gray-900">Yangi bog&apos;lash</h3>
+            <h3 className="text-sm font-medium text-gray-900">Yangi bog'lash</h3>
             <div className="flex gap-3 flex-wrap">
               <select
                 value={selectedKuratorId}
@@ -560,8 +723,10 @@ function AssignmentsTab({
                 className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-48"
               >
                 <option value="">Kuratorni tanlang...</option>
-                {kurators?.map((k) => (
-                  <option key={k.id} value={k.id}>{k.name ?? k.username}</option>
+                {kurators?.map((kurator) => (
+                  <option key={kurator.id} value={kurator.id}>
+                    {kurator.name ?? kurator.username}
+                  </option>
                 ))}
               </select>
               <select
@@ -569,9 +734,11 @@ function AssignmentsTab({
                 onChange={(e) => setSelectedCustomerId(e.target.value)}
                 className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-48"
               >
-                <option value="">O&apos;quvchini tanlang...</option>
-                {students?.data.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                <option value="">O'quvchini tanlang...</option>
+                {studentOptions.map((student) => (
+                  <option key={student.id} value={student.id}>
+                    {student.name}
+                  </option>
                 ))}
               </select>
               <button
@@ -590,29 +757,28 @@ function AssignmentsTab({
             </div>
           </div>
 
-          {/* Existing assignments */}
           {assignments && assignments.length > 0 && (
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50 border-b border-gray-200">
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Kurator</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">O&apos;quvchi</th>
-                    <th className="px-4 py-3"></th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchi</th>
+                    <th className="px-4 py-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {assignments.map((a) => (
-                    <tr key={a.id}>
-                      <td className="px-4 py-3 text-gray-900">{a.kurator.name}</td>
-                      <td className="px-4 py-3 text-gray-900">{a.customer.name}</td>
+                  {assignments.map((assignment) => (
+                    <tr key={assignment.id}>
+                      <td className="px-4 py-3 text-gray-900">{assignment.kurator.name}</td>
+                      <td className="px-4 py-3 text-gray-900">{assignment.customer.name}</td>
                       <td className="px-4 py-3">
                         <button
                           onClick={() =>
                             unassignMutation.mutate({
-                              kuratorUserId: a.kuratorUserId,
-                              customerId: a.customerId,
-                              courseRunId: a.courseRunId,
+                              kuratorUserId: assignment.kuratorUserId,
+                              customerId: assignment.customerId,
+                              courseRunId: assignment.courseRunId,
                             })
                           }
                           className="text-red-500 text-xs hover:underline"
