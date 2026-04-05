@@ -24,6 +24,15 @@ function isMissingRegionConfigsTableError(error: unknown): boolean {
   return message.includes('region_configs');
 }
 
+function isMissingCourseRunsTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_runs') && message.includes('does not exist');
+  }
+  return message.includes('course_runs');
+}
+
 function isMissingCustomerColumnError(error: unknown, column: 'gender' | 'region'): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -177,10 +186,17 @@ export const studentsRouter = router({
           }),
           prisma.customer.count({ where: effectiveWhere }),
           input.courseRunId
-            ? prisma.courseRun.findFirst({
-                where: { id: input.courseRunId, tenantId },
-                select: { id: true, baseLessons: true, premiumExtraLessons: true },
-              })
+            ? prisma.courseRun
+                .findFirst({
+                  where: { id: input.courseRunId, tenantId },
+                  select: { id: true, baseLessons: true, premiumExtraLessons: true },
+                })
+                .catch((error) => {
+                  if (isMissingCourseRunsTableError(error)) {
+                    return null;
+                  }
+                  throw error;
+                })
             : Promise.resolve(null),
         ]);
       };
@@ -230,7 +246,7 @@ export const studentsRouter = router({
         }
       >();
 
-      if (input.courseRunId && customerIds.length > 0) {
+      if (input.courseRunId && courseRun && customerIds.length > 0) {
         const exerciseDefs = await prisma.exerciseDefinition.findMany({
           where: { tenantId, courseRunId: input.courseRunId, isActive: true },
           select: { id: true, name: true, targetCount: true },
