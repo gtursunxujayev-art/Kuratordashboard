@@ -8,6 +8,13 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+type CustomerColumnSupport = {
+  gender: boolean;
+  region: boolean;
+};
+
+let customerColumnSupportPromise: Promise<CustomerColumnSupport> | null = null;
+
 function isMissingRegionConfigsTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -15,6 +22,42 @@ function isMissingRegionConfigsTableError(error: unknown): boolean {
     return message.includes('region_configs') && message.includes('does not exist');
   }
   return message.includes('region_configs');
+}
+
+function isMissingCustomerColumnError(error: unknown, column: 'gender' | 'region'): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes(`customers.${column}`) && message.includes('does not exist');
+  }
+  return message.includes(`customers.${column}`);
+}
+
+async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
+  try {
+    const rows = await prisma.$queryRaw<Array<{ column_name: string }>>`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'customers'
+        AND column_name IN ('gender', 'region')
+    `;
+    const existing = new Set(rows.map((row) => row.column_name));
+    return {
+      gender: existing.has('gender'),
+      region: existing.has('region'),
+    };
+  } catch {
+    // If metadata query is blocked, keep legacy behavior and let runtime queries decide.
+    return { gender: true, region: true };
+  }
+}
+
+async function getCustomerColumnSupport(forceRefresh = false): Promise<CustomerColumnSupport> {
+  if (!customerColumnSupportPromise || forceRefresh) {
+    customerColumnSupportPromise = detectCustomerColumnSupport();
+  }
+  return customerColumnSupportPromise;
 }
 
 function isPremiumTariffName(name: string | null | undefined): boolean {
@@ -37,6 +80,7 @@ export const studentsRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
+      let columnSupport = await getCustomerColumnSupport();
       const isKurator =
         user.roles.includes('Kurator') &&
         !user.roles.includes('Admin') &&
@@ -76,7 +120,7 @@ export const studentsRouter = router({
       const where: Record<string, unknown> = {
         tenantId,
         ...(scopedCustomerIds ? { id: { in: scopedCustomerIds } } : {}),
-        ...(input.region ? { region: input.region } : {}),
+        ...(columnSupport.region && input.region ? { region: input.region } : {}),
         ...(input.search
           ? {
               OR: [
@@ -95,38 +139,83 @@ export const studentsRouter = router({
           : {}),
       };
 
-      const [customers, total, courseRun] = await Promise.all([
-        prisma.customer.findMany({
-          where,
+      const buildCustomerSelect = (support: CustomerColumnSupport) => ({
+        id: true,
+        name: true,
+        phone: true,
+        telegramUsername: true,
+        ...(support.gender ? { gender: true } : {}),
+        ...(support.region ? { region: true } : {}),
+        incomes: {
+          where: ACTIVE_ENROLLMENT_FILTER,
           select: {
-            id: true,
-            name: true,
-            phone: true,
-            telegramUsername: true,
-            gender: true,
-            region: true,
-            incomes: {
-              where: ACTIVE_ENROLLMENT_FILTER,
-              select: {
-                tariffId: true,
-                tariff: { select: { name: true } },
-              },
-              take: 1,
-              orderBy: { entryDate: 'desc' },
-            },
+            tariffId: true,
+            tariff: { select: { name: true } },
           },
-          skip: (input.page - 1) * input.limit,
-          take: input.limit,
-          orderBy: { name: 'asc' },
-        }),
-        prisma.customer.count({ where }),
-        input.courseRunId
-          ? prisma.courseRun.findFirst({
-              where: { id: input.courseRunId, tenantId },
-              select: { id: true, baseLessons: true, premiumExtraLessons: true },
-            })
-          : Promise.resolve(null),
-      ]);
+          take: 1,
+          orderBy: { entryDate: 'desc' as const },
+        },
+      });
+
+      const runQuery = async (support: CustomerColumnSupport) => {
+        const effectiveWhere: Record<string, unknown> = {
+          ...where,
+          ...(support.region ? {} : { region: undefined }),
+        };
+        delete (effectiveWhere as { region?: unknown }).region;
+        if (support.region && input.region) {
+          effectiveWhere.region = input.region;
+        }
+
+        return Promise.all([
+          prisma.customer.findMany({
+            where: effectiveWhere,
+            select: buildCustomerSelect(support),
+            skip: (input.page - 1) * input.limit,
+            take: input.limit,
+            orderBy: { name: 'asc' },
+          }),
+          prisma.customer.count({ where: effectiveWhere }),
+          input.courseRunId
+            ? prisma.courseRun.findFirst({
+                where: { id: input.courseRunId, tenantId },
+                select: { id: true, baseLessons: true, premiumExtraLessons: true },
+              })
+            : Promise.resolve(null),
+        ]);
+      };
+
+      let customers: Array<{
+        id: string;
+        name: string;
+        phone: string | null;
+        telegramUsername: string | null;
+        gender?: string | null;
+        region?: string | null;
+        incomes: Array<{
+          tariffId: string | null;
+          tariff: { name: string } | null;
+        }>;
+      }>;
+      let total: number;
+      let courseRun: { id: string; baseLessons: number; premiumExtraLessons: number } | null;
+
+      try {
+        [customers, total, courseRun] = await runQuery(columnSupport);
+      } catch (error) {
+        const missingRegion = isMissingCustomerColumnError(error, 'region');
+        const missingGender = isMissingCustomerColumnError(error, 'gender');
+        if (!missingRegion && !missingGender) {
+          throw error;
+        }
+
+        columnSupport = {
+          gender: missingGender ? false : columnSupport.gender,
+          region: missingRegion ? false : columnSupport.region,
+        };
+        customerColumnSupportPromise = Promise.resolve(columnSupport);
+        [customers, total, courseRun] = await runQuery(columnSupport);
+      }
 
       const customerIds = customers.map((c) => c.id);
       let exerciseStatsByCustomer = new Map<string, Array<{ name: string; done: number; total: number }>>();
@@ -239,8 +328,8 @@ export const studentsRouter = router({
         name: customer.name,
         phone: customer.phone,
         telegramUsername: customer.telegramUsername,
-        gender: customer.gender,
-        region: customer.region,
+        gender: columnSupport.gender ? (customer.gender ?? null) : null,
+        region: columnSupport.region ? (customer.region ?? null) : null,
         tariffName: customer.incomes[0]?.tariff?.name ?? null,
         exerciseStats: exerciseStatsByCustomer.get(customer.id) ?? [],
         attendance:
@@ -264,6 +353,7 @@ export const studentsRouter = router({
     .input(z.object({ customerId: z.string() }))
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
+      let columnSupport = await getCustomerColumnSupport();
       const isKurator =
         user.roles.includes('Kurator') &&
         !user.roles.includes('Admin') &&
@@ -284,22 +374,74 @@ export const studentsRouter = router({
         }
       }
 
-      const customer = await prisma.customer.findFirst({
-        where: { id: input.customerId, tenantId },
-        include: {
-          incomes: {
-            where: ACTIVE_ENROLLMENT_FILTER,
-            include: { tariff: true, course: true },
-            orderBy: { entryDate: 'desc' },
-          },
+      const buildDetailSelect = (support: CustomerColumnSupport) => ({
+        id: true,
+        tenantId: true,
+        customerNumber: true,
+        name: true,
+        phone: true,
+        telegramUsername: true,
+        ...(support.gender ? { gender: true } : {}),
+        ...(support.region ? { region: true } : {}),
+        createdAt: true,
+        updatedAt: true,
+        incomes: {
+          where: ACTIVE_ENROLLMENT_FILTER,
+          include: { tariff: true, course: true },
+          orderBy: { entryDate: 'desc' as const },
         },
       });
+
+      let customer: {
+        id: string;
+        tenantId: string;
+        customerNumber: string;
+        name: string;
+        phone: string | null;
+        telegramUsername: string | null;
+        gender?: string | null;
+        region?: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        incomes: Array<{
+          id: string;
+          entryDate: Date;
+          course: { id: string; name: string; category: string; tenantId: string; createdAt: Date; updatedAt: Date; isActive: boolean } | null;
+          tariff: { id: string; name: string; courseId: string; tenantId: string; createdAt: Date; updatedAt: Date; isActive: boolean } | null;
+        }>;
+      } | null = null;
+
+      try {
+        customer = await prisma.customer.findFirst({
+          where: { id: input.customerId, tenantId },
+          select: buildDetailSelect(columnSupport),
+        });
+      } catch (error) {
+        const missingRegion = isMissingCustomerColumnError(error, 'region');
+        const missingGender = isMissingCustomerColumnError(error, 'gender');
+        if (!missingRegion && !missingGender) {
+          throw error;
+        }
+        columnSupport = {
+          gender: missingGender ? false : columnSupport.gender,
+          region: missingRegion ? false : columnSupport.region,
+        };
+        customerColumnSupportPromise = Promise.resolve(columnSupport);
+        customer = await prisma.customer.findFirst({
+          where: { id: input.customerId, tenantId },
+          select: buildDetailSelect(columnSupport),
+        });
+      }
 
       if (!customer) {
         throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
       }
 
-      return customer;
+      return {
+        ...customer,
+        gender: columnSupport.gender ? (customer.gender ?? null) : null,
+        region: columnSupport.region ? (customer.region ?? null) : null,
+      };
     }),
 
   update: adminProcedure
@@ -315,6 +457,7 @@ export const studentsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId } = ctx;
+      const columnSupport = await getCustomerColumnSupport();
       const { customerId, ...data } = input;
 
       const existing = await prisma.customer.findFirst({
@@ -331,8 +474,8 @@ export const studentsRouter = router({
       if (data.telegramUsername !== undefined) syncFields.telegramUsername = data.telegramUsername;
 
       const kdFields: Record<string, unknown> = {};
-      if (data.gender !== undefined) kdFields.gender = data.gender;
-      if (data.region !== undefined) kdFields.region = data.region;
+      if (data.gender !== undefined && columnSupport.gender) kdFields.gender = data.gender;
+      if (data.region !== undefined && columnSupport.region) kdFields.region = data.region;
 
       return prisma.customer.update({
         where: { id: customerId },
@@ -366,21 +509,27 @@ export const studentsRouter = router({
       if (!isMissingRegionConfigsTableError(error)) {
         throw error;
       }
+      try {
+        const customerRegions = await prisma.customer.findMany({
+          where: {
+            tenantId,
+            region: { not: null },
+          },
+          select: { region: true },
+          distinct: ['region'],
+          orderBy: { region: 'asc' },
+        });
 
-      const customerRegions = await prisma.customer.findMany({
-        where: {
-          tenantId,
-          region: { not: null },
-        },
-        select: { region: true },
-        distinct: ['region'],
-        orderBy: { region: 'asc' },
-      });
-
-      regions = customerRegions
-        .map((row) => row.region?.trim())
-        .filter((region): region is string => Boolean(region))
-        .map((region) => ({ id: `legacy-${region}`, name: region }));
+        regions = customerRegions
+          .map((row) => row.region?.trim())
+          .filter((region): region is string => Boolean(region))
+          .map((region) => ({ id: `legacy-${region}`, name: region }));
+      } catch (fallbackError) {
+        if (!isMissingCustomerColumnError(fallbackError, 'region')) {
+          throw fallbackError;
+        }
+        regions = [];
+      }
     }
 
     return { courses, tariffs, regions };
