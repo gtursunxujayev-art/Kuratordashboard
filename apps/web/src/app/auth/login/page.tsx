@@ -62,7 +62,7 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label htmlFor="login" className="block text-sm font-medium text-gray-700 mb-1">
-                Login
+                Login / Email / Telefon
               </label>
               <input
                 id="login"
@@ -71,7 +71,7 @@ export default function LoginPage() {
                 value={loginValue}
                 onChange={(e) => setLoginValue(e.target.value)}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                placeholder="foydalanuvchi nomi"
+                placeholder="login, email yoki +998..."
                 disabled={isLoading}
               />
             </div>
