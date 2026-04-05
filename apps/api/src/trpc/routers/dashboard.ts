@@ -4,49 +4,87 @@ import { prisma } from '@kuratordashboard/db';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 
-function getDateRange(filter: z.infer<typeof dateFilterSchema>): { from: Date; to: Date } | null {
+const ACTIVE_ENROLLMENT_FILTER = {
+  type: 'new_sale' as const,
+  lifecycleStatus: { not: 'refunded' as const },
+};
+
+function startOfDayLocal(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getCalendarDateRange(filter: Exclude<z.infer<typeof dateFilterSchema>, 'all'>): { from: Date; to: Date } {
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dayStart = startOfDayLocal(now);
 
   switch (filter) {
-    case 'today': {
-      const to = new Date(startOfDay);
-      to.setDate(to.getDate() + 1);
-      return { from: startOfDay, to };
-    }
+    case 'today':
+      return { from: dayStart, to: addDays(dayStart, 1) };
     case 'this_week': {
-      const day = now.getDay(); // 0 = Sunday
-      const diffToMonday = (day + 6) % 7;
-      const from = new Date(startOfDay);
-      from.setDate(from.getDate() - diffToMonday);
-      const to = new Date(from);
-      to.setDate(to.getDate() + 7);
-      return { from, to };
+      const weekday = now.getDay();
+      const diffToMonday = (weekday + 6) % 7;
+      const from = addDays(dayStart, -diffToMonday);
+      return { from, to: addDays(from, 7) };
     }
     case 'last_week': {
-      const day = now.getDay();
-      const diffToMonday = (day + 6) % 7;
-      const thisMonday = new Date(startOfDay);
-      thisMonday.setDate(thisMonday.getDate() - diffToMonday);
-      const from = new Date(thisMonday);
-      from.setDate(from.getDate() - 7);
-      return { from, to: thisMonday };
+      const weekday = now.getDay();
+      const diffToMonday = (weekday + 6) % 7;
+      const thisMonday = addDays(dayStart, -diffToMonday);
+      return { from: addDays(thisMonday, -7), to: thisMonday };
     }
-    case 'this_month': {
-      const from = new Date(now.getFullYear(), now.getMonth(), 1);
-      const to = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-      return { from, to };
-    }
-    case 'last_month': {
-      const from = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const to = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { from, to };
-    }
-    case 'all':
-      return null;
-    default:
-      return null;
+    case 'this_month':
+      return {
+        from: new Date(now.getFullYear(), now.getMonth(), 1),
+        to: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+      };
+    case 'last_month':
+      return {
+        from: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+        to: new Date(now.getFullYear(), now.getMonth(), 1),
+      };
   }
+}
+
+async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Promise<{ from: Date; to: Date } | null> {
+  const now = new Date();
+
+  const selectedRun = courseRunId
+    ? await prisma.courseRun.findFirst({
+        where: { id: courseRunId, tenantId },
+        select: { startDate: true, endDate: true },
+      })
+    : null;
+
+  const fallbackRun = selectedRun
+    ? null
+    : await prisma.courseRun.findFirst({
+        where: {
+          tenantId,
+          startDate: { lte: now },
+          endDate: { gte: now },
+        },
+        orderBy: { startDate: 'desc' },
+        select: { startDate: true, endDate: true },
+      });
+
+  const latestRun = selectedRun || fallbackRun ||
+    (await prisma.courseRun.findFirst({
+      where: { tenantId },
+      orderBy: { startDate: 'desc' },
+      select: { startDate: true, endDate: true },
+    }));
+
+  if (!latestRun) return null;
+
+  const from = startOfDayLocal(latestRun.startDate);
+  const to = addDays(startOfDayLocal(latestRun.endDate), 1);
+  return { from, to };
 }
 
 export const dashboardRouter = router({
@@ -59,55 +97,63 @@ export const dashboardRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isKurator = user.roles.includes('Kurator') && !user.roles.includes('Admin') && !user.roles.includes('Manager');
-      const dateRange = getDateRange(input.dateFilter);
+      const isKurator =
+        user.roles.includes('Kurator') &&
+        !user.roles.includes('Admin') &&
+        !user.roles.includes('Manager');
 
-      // Build base customer ID list
-      let customerIds: string[] | undefined;
+      const dateRange = input.dateFilter === 'all'
+        ? await getCoursePeriodRange(tenantId, input.courseRunId)
+        : getCalendarDateRange(input.dateFilter);
 
-      if (isKurator) {
+      let scopedCustomerIds: string[] | undefined;
+
+      if (input.courseRunId) {
+        const runAssignments = await prisma.kuratorAssignment.findMany({
+          where: {
+            tenantId,
+            courseRunId: input.courseRunId,
+            isActive: true,
+            ...(isKurator ? { kuratorUserId: user.userId } : {}),
+          },
+          select: { customerId: true },
+        });
+        scopedCustomerIds = Array.from(new Set(runAssignments.map((a) => a.customerId)));
+      } else if (isKurator) {
         const assignments = await prisma.kuratorAssignment.findMany({
           where: {
             tenantId,
             kuratorUserId: user.userId,
             isActive: true,
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
           },
           select: { customerId: true },
         });
-        customerIds = assignments.map((a) => a.customerId);
+        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
-      // Get incomes to find enrolled students in the date range
-      const incomeWhere = {
-        tenantId,
-        type: 'new_sale',
-        lifecycleStatus: { not: 'refunded' },
-        ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
-        ...(customerIds ? { customerId: { in: customerIds } } : {}),
-      };
-
       const incomes = await prisma.income.findMany({
-        where: incomeWhere,
+        where: {
+          tenantId,
+          ...ACTIVE_ENROLLMENT_FILTER,
+          ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+          ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+        },
         select: {
           customerId: true,
           tariffId: true,
           customer: {
             select: {
-              id: true,
               gender: true,
             },
           },
           tariff: {
             select: {
-              id: true,
               name: true,
             },
           },
         },
       });
 
-      // De-duplicate by customer (one customer may have multiple income records)
       const seenCustomers = new Map<string, { gender: string | null; tariffId: string | null; tariffName: string | null }>();
       for (const income of incomes) {
         if (!seenCustomers.has(income.customerId)) {
@@ -124,16 +170,15 @@ export const dashboardRouter = router({
       const male = customers.filter((c) => c.gender === 'male').length;
       const female = customers.filter((c) => c.gender === 'female').length;
 
-      // Group by tariff
       const tariffMap = new Map<string, { name: string; total: number; male: number; female: number }>();
       for (const c of customers) {
         const key = c.tariffId ?? 'unknown';
         const name = c.tariffName ?? "Noma'lum";
-        const existing = tariffMap.get(key) ?? { name, total: 0, male: 0, female: 0 };
-        existing.total += 1;
-        if (c.gender === 'male') existing.male += 1;
-        if (c.gender === 'female') existing.female += 1;
-        tariffMap.set(key, existing);
+        const current = tariffMap.get(key) ?? { name, total: 0, male: 0, female: 0 };
+        current.total += 1;
+        if (c.gender === 'male') current.male += 1;
+        if (c.gender === 'female') current.female += 1;
+        tariffMap.set(key, current);
       }
 
       return {
@@ -153,91 +198,106 @@ export const dashboardRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId } = ctx;
 
-      // Get all kurator users for this tenant
-      const kurators = await prisma.user.findMany({
-        where: {
-          tenantId,
-          roles: { has: 'Kurator' },
-          isActive: true,
-        },
-        select: {
-          id: true,
-          name: true,
-          username: true,
-        },
-      });
-
-      const result = await Promise.all(
-        kurators.map(async (kurator) => {
-          const assignmentWhere = {
+      const [kurators, assignments, completedGroups, pendingGroups] = await Promise.all([
+        prisma.user.findMany({
+          where: {
             tenantId,
-            kuratorUserId: kurator.id,
+            roles: { has: 'Kurator' },
+            isActive: true,
+          },
+          select: {
+            id: true,
+            name: true,
+            username: true,
+          },
+        }),
+        prisma.kuratorAssignment.findMany({
+          where: {
+            tenantId,
             isActive: true,
             ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-          };
-
-          const assignments = await prisma.kuratorAssignment.findMany({
-            where: assignmentWhere,
-            select: { customerId: true },
-          });
-
-          const studentIds = assignments.map((a) => a.customerId);
-
-          // Tasks stats
-          const [completedTasks, pendingTasks] = await Promise.all([
-            prisma.kuratorTask.count({
-              where: {
-                tenantId,
-                kuratorUserId: kurator.id,
-                completedAt: { not: null },
-              },
-            }),
-            prisma.kuratorTask.count({
-              where: {
-                tenantId,
-                kuratorUserId: kurator.id,
-                completedAt: null,
-              },
-            }),
-          ]);
-
-          // Students who haven't attended (missed classes)
-          let missedStudents = 0;
-          if (studentIds.length > 0) {
-            missedStudents = await prisma.classAttendance.count({
-              where: {
-                tenantId,
-                customerId: { in: studentIds },
-                attended: false,
-                ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-              },
-            });
-          }
-
-          // Performance: ratio of completed tasks to total tasks (placeholder formula)
-          const totalTasks = completedTasks + pendingTasks;
-          const performancePercent =
-            totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
-
-          return {
-            id: kurator.id,
-            name: kurator.name ?? kurator.username ?? 'Kurator',
-            studentCount: studentIds.length,
-            performancePercent,
-            completedTasks,
-            pendingTasks,
-            missedStudents,
-          };
+          },
+          select: { kuratorUserId: true, customerId: true },
         }),
-      );
+        prisma.kuratorTask.groupBy({
+          by: ['kuratorUserId'],
+          where: {
+            tenantId,
+            completedAt: { not: null },
+          },
+          _count: { id: true },
+        }),
+        prisma.kuratorTask.groupBy({
+          by: ['kuratorUserId'],
+          where: {
+            tenantId,
+            completedAt: null,
+          },
+          _count: { id: true },
+        }),
+      ]);
 
-      return result;
+      const studentIdsByKurator = new Map<string, Set<string>>();
+      const kuratorsByStudent = new Map<string, string[]>();
+      for (const assignment of assignments) {
+        const studentSet = studentIdsByKurator.get(assignment.kuratorUserId) ?? new Set<string>();
+        studentSet.add(assignment.customerId);
+        studentIdsByKurator.set(assignment.kuratorUserId, studentSet);
+
+        const linkedKurators = kuratorsByStudent.get(assignment.customerId) ?? [];
+        linkedKurators.push(assignment.kuratorUserId);
+        kuratorsByStudent.set(assignment.customerId, linkedKurators);
+      }
+
+      const uniqueStudentIds = Array.from(kuratorsByStudent.keys());
+      const missedRows = uniqueStudentIds.length > 0
+        ? await prisma.classAttendance.findMany({
+            where: {
+              tenantId,
+              customerId: { in: uniqueStudentIds },
+              attended: false,
+              ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+            },
+            select: { customerId: true },
+            distinct: ['customerId'],
+          })
+        : [];
+
+      const missedByKurator = new Map<string, number>();
+      for (const missed of missedRows) {
+        const ownerKurators = kuratorsByStudent.get(missed.customerId) ?? [];
+        for (const kuratorId of ownerKurators) {
+          missedByKurator.set(kuratorId, (missedByKurator.get(kuratorId) ?? 0) + 1);
+        }
+      }
+
+      const completedByKurator = new Map(completedGroups.map((row) => [row.kuratorUserId, row._count.id]));
+      const pendingByKurator = new Map(pendingGroups.map((row) => [row.kuratorUserId, row._count.id]));
+
+      return kurators.map((kurator) => {
+        const studentCount = studentIdsByKurator.get(kurator.id)?.size ?? 0;
+        const completedTasks = completedByKurator.get(kurator.id) ?? 0;
+        const pendingTasks = pendingByKurator.get(kurator.id) ?? 0;
+        const totalTasks = completedTasks + pendingTasks;
+        const performancePercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+        return {
+          id: kurator.id,
+          name: kurator.name ?? kurator.username ?? 'Kurator',
+          studentCount,
+          performancePercent,
+          performanceNote: 'Vaqtinchalik formula',
+          completedTasks,
+          pendingTasks,
+          missedStudents: missedByKurator.get(kurator.id) ?? 0,
+        };
+      });
     }),
 
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
     return prisma.courseRun.findMany({
       where: { tenantId: ctx.tenantId },
-      include: { course: { select: { name: true } } },
+      include: { course: { select: { name: true, category: true } } },
       orderBy: { startDate: 'desc' },
     });
   }),
