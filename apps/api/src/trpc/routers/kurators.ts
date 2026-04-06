@@ -39,7 +39,7 @@ export const kuratorsRouter = router({
           ...(effectiveKuratorUserId ? { kuratorUserId: effectiveKuratorUserId } : {}),
         },
         include: {
-          customer: { select: { id: true, name: true, phone: true } },
+          customer: { select: { id: true, name: true } },
           kurator: { select: { id: true, name: true } },
           courseRun: { select: { id: true, name: true } },
         },
