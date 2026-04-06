@@ -8,6 +8,15 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isMissingCustomerTelegramColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('customers.telegramusername') && message.includes('does not exist');
+  }
+  return message.includes('customers.telegramusername');
+}
+
 function isMissingCourseRunsTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -121,14 +130,45 @@ export const amaliyRouter = router({
         customerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
-      return prisma.customer.findMany({
-        where: {
-          tenantId,
-          ...(customerIds ? { id: { in: customerIds } } : {}),
-        },
-        select: { id: true, name: true, phone: true, telegramUsername: true },
-        orderBy: { name: 'asc' },
-      });
+      try {
+        return await prisma.customer.findMany({
+          where: {
+            tenantId,
+            ...(customerIds ? { id: { in: customerIds } } : {}),
+          },
+          select: { id: true, customerNumber: true, name: true, telegramUsername: true },
+          orderBy: { name: 'asc' },
+        }).then((rows) =>
+          rows.map((row) => ({
+            ...row,
+            phone: row.customerNumber,
+            telegramUsername: row.telegramUsername ?? null,
+          })),
+        );
+      } catch (error) {
+        if (!isMissingCustomerTelegramColumnError(error)) {
+          throw error;
+        }
+
+        return prisma.customer.findMany({
+          where: {
+            tenantId,
+            ...(customerIds ? { id: { in: customerIds } } : {}),
+          },
+          select: {
+            id: true,
+            customerNumber: true,
+            name: true,
+          },
+          orderBy: { name: 'asc' },
+        }).then((rows) =>
+          rows.map((row) => ({
+            ...row,
+            phone: row.customerNumber,
+            telegramUsername: null,
+          })),
+        );
+      }
     }),
 
   getStudentExercises: protectedProcedure
