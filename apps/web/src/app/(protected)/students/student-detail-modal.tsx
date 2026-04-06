@@ -18,7 +18,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     name: '',
-    phone: '',
+    customerNumber: '',
     telegramUsername: '',
     gender: '' as 'male' | 'female' | '',
     region: '',
@@ -36,7 +36,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
     if (!student) return;
     setForm({
       name: student.name,
-      phone: student.phone ?? '',
+      customerNumber: student.phone ?? '',
       telegramUsername: student.telegramUsername ?? '',
       gender: (student.gender as 'male' | 'female') ?? '',
       region: student.region ?? '',
@@ -48,7 +48,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
     updateMutation.mutate({
       customerId,
       name: form.name || undefined,
-      phone: form.phone || undefined,
+      customerNumber: form.customerNumber || undefined,
       telegramUsername: form.telegramUsername || undefined,
       gender: form.gender || undefined,
       region: form.region || undefined,
@@ -87,12 +87,12 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
                   <p className="text-xs text-blue-500 mt-0.5">Dashboard bilan sinxronlashadi</p>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Telefon</label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Raqam</label>
                   <input
-                    value={form.phone}
-                    onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    value={form.customerNumber}
+                    onChange={(e) => setForm({ ...form, customerNumber: e.target.value })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="+998901234567"
+                    placeholder="Mijoz raqami"
                   />
                   <p className="text-xs text-blue-500 mt-0.5">Dashboard bilan sinxronlashadi</p>
                 </div>
@@ -151,7 +151,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
               /* View mode */
               <div className="space-y-3">
                 <InfoRow label="Ism" value={student.name} />
-                <InfoRow label="Telefon" value={student.phone ?? '—'} />
+                <InfoRow label="Raqam" value={student.phone ?? '—'} />
                 <InfoRow
                   label="Telegram"
                   value={student.telegramUsername ? `@${student.telegramUsername}` : '—'}
