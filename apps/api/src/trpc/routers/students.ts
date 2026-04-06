@@ -9,6 +9,7 @@ const ACTIVE_ENROLLMENT_FILTER = {
 };
 
 type CustomerColumnSupport = {
+  telegramUsername: boolean;
   gender: boolean;
   region: boolean;
 };
@@ -33,7 +34,10 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
-function isMissingCustomerColumnError(error: unknown, column: 'gender' | 'region'): boolean {
+function isMissingCustomerColumnError(
+  error: unknown,
+  column: 'telegramusername' | 'gender' | 'region',
+): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
   if (code !== 'P2021' && code !== 'P2022') {
@@ -49,16 +53,17 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'customers'
-        AND column_name IN ('gender', 'region')
+        AND column_name IN ('telegramUsername', 'gender', 'region')
     `;
     const existing = new Set(rows.map((row) => row.column_name));
     return {
+      telegramUsername: existing.has('telegramUsername'),
       gender: existing.has('gender'),
       region: existing.has('region'),
     };
   } catch {
     // If metadata query is blocked, keep legacy behavior and let runtime queries decide.
-    return { gender: true, region: true };
+    return { telegramUsername: true, gender: true, region: true };
   }
 }
 
@@ -126,16 +131,18 @@ export const studentsRouter = router({
       if (input.tariffId) incomeFilter.tariffId = input.tariffId;
       if (input.courseId) incomeFilter.courseId = input.courseId;
 
-      const where: Record<string, unknown> = {
+      const buildWhere = (support: CustomerColumnSupport): Record<string, unknown> => ({
         tenantId,
         ...(scopedCustomerIds ? { id: { in: scopedCustomerIds } } : {}),
-        ...(columnSupport.region && input.region ? { region: input.region } : {}),
+        ...(support.region && input.region ? { region: input.region } : {}),
         ...(input.search
           ? {
               OR: [
                 { name: { contains: input.search, mode: 'insensitive' as const } },
-                { phone: { contains: input.search, mode: 'insensitive' as const } },
-                { telegramUsername: { contains: input.search, mode: 'insensitive' as const } },
+                { customerNumber: { contains: input.search, mode: 'insensitive' as const } },
+                ...(support.telegramUsername
+                  ? [{ telegramUsername: { contains: input.search, mode: 'insensitive' as const } }]
+                  : []),
               ],
             }
           : {}),
@@ -146,13 +153,13 @@ export const studentsRouter = router({
               },
             }
           : {}),
-      };
+      });
 
       const buildCustomerSelect = (support: CustomerColumnSupport) => ({
         id: true,
+        customerNumber: true,
         name: true,
-        phone: true,
-        telegramUsername: true,
+        ...(support.telegramUsername ? { telegramUsername: true } : {}),
         ...(support.gender ? { gender: true } : {}),
         ...(support.region ? { region: true } : {}),
         incomes: {
@@ -167,14 +174,7 @@ export const studentsRouter = router({
       });
 
       const runQuery = async (support: CustomerColumnSupport) => {
-        const effectiveWhere: Record<string, unknown> = {
-          ...where,
-          ...(support.region ? {} : { region: undefined }),
-        };
-        delete (effectiveWhere as { region?: unknown }).region;
-        if (support.region && input.region) {
-          effectiveWhere.region = input.region;
-        }
+        const effectiveWhere = buildWhere(support);
 
         return Promise.all([
           prisma.customer.findMany({
@@ -203,9 +203,9 @@ export const studentsRouter = router({
 
       let customers: Array<{
         id: string;
+        customerNumber: string;
         name: string;
-        phone: string | null;
-        telegramUsername: string | null;
+        telegramUsername?: string | null;
         gender?: string | null;
         region?: string | null;
         incomes: Array<{
@@ -219,13 +219,15 @@ export const studentsRouter = router({
       try {
         [customers, total, courseRun] = await runQuery(columnSupport);
       } catch (error) {
+        const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
         const missingRegion = isMissingCustomerColumnError(error, 'region');
         const missingGender = isMissingCustomerColumnError(error, 'gender');
-        if (!missingRegion && !missingGender) {
+        if (!missingTelegram && !missingRegion && !missingGender) {
           throw error;
         }
 
         columnSupport = {
+          telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
           gender: missingGender ? false : columnSupport.gender,
           region: missingRegion ? false : columnSupport.region,
         };
@@ -341,9 +343,10 @@ export const studentsRouter = router({
 
       const enriched = customers.map((customer) => ({
         id: customer.id,
+        customerNumber: customer.customerNumber,
         name: customer.name,
-        phone: customer.phone,
-        telegramUsername: customer.telegramUsername,
+        phone: customer.customerNumber,
+        telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
         tariffName: customer.incomes[0]?.tariff?.name ?? null,
@@ -395,8 +398,7 @@ export const studentsRouter = router({
         tenantId: true,
         customerNumber: true,
         name: true,
-        phone: true,
-        telegramUsername: true,
+        ...(support.telegramUsername ? { telegramUsername: true } : {}),
         ...(support.gender ? { gender: true } : {}),
         ...(support.region ? { region: true } : {}),
         createdAt: true,
@@ -413,8 +415,7 @@ export const studentsRouter = router({
         tenantId: string;
         customerNumber: string;
         name: string;
-        phone: string | null;
-        telegramUsername: string | null;
+        telegramUsername?: string | null;
         gender?: string | null;
         region?: string | null;
         createdAt: Date;
@@ -433,12 +434,14 @@ export const studentsRouter = router({
           select: buildDetailSelect(columnSupport),
         });
       } catch (error) {
+        const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
         const missingRegion = isMissingCustomerColumnError(error, 'region');
         const missingGender = isMissingCustomerColumnError(error, 'gender');
-        if (!missingRegion && !missingGender) {
+        if (!missingTelegram && !missingRegion && !missingGender) {
           throw error;
         }
         columnSupport = {
+          telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
           gender: missingGender ? false : columnSupport.gender,
           region: missingRegion ? false : columnSupport.region,
         };
@@ -455,6 +458,8 @@ export const studentsRouter = router({
 
       return {
         ...customer,
+        phone: customer.customerNumber,
+        telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
       };
@@ -465,6 +470,7 @@ export const studentsRouter = router({
       z.object({
         customerId: z.string(),
         name: z.string().min(1).max(160).optional(),
+        customerNumber: z.string().optional(),
         phone: z.string().optional(),
         telegramUsername: z.string().optional(),
         gender: z.enum(['male', 'female']).optional(),
@@ -486,8 +492,14 @@ export const studentsRouter = router({
 
       const syncFields: Record<string, unknown> = {};
       if (data.name !== undefined) syncFields.name = data.name;
-      if (data.phone !== undefined) syncFields.phone = data.phone;
-      if (data.telegramUsername !== undefined) syncFields.telegramUsername = data.telegramUsername;
+      if (data.customerNumber !== undefined) {
+        syncFields.customerNumber = data.customerNumber;
+      } else if (data.phone !== undefined) {
+        syncFields.customerNumber = data.phone;
+      }
+      if (data.telegramUsername !== undefined && columnSupport.telegramUsername) {
+        syncFields.telegramUsername = data.telegramUsername;
+      }
 
       const kdFields: Record<string, unknown> = {};
       if (data.gender !== undefined && columnSupport.gender) kdFields.gender = data.gender;
