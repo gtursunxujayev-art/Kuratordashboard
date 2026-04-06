@@ -139,7 +139,7 @@ export default function StudentsPage() {
             setSearch(e.target.value);
             setPage(1);
           }}
-          placeholder="Ism yoki telefon bo'yicha qidirish..."
+          placeholder="Ism yoki raqam bo'yicha qidirish..."
           className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700 min-w-64"
         />
       </div>
@@ -161,7 +161,7 @@ export default function StudentsPage() {
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Ism</th>
-                  <th className="text-left px-4 py-3 font-medium text-gray-600">Telefon</th>
+                  <th className="text-left px-4 py-3 font-medium text-gray-600">Raqam</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Telegram</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Viloyat</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Tarif</th>
