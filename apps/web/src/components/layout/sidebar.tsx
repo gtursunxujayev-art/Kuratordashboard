@@ -6,6 +6,9 @@ import { useAuth } from '@/contexts/auth-context';
 
 const navItems = [
   { href: '/dashboard', label: 'Bosh sahifa', icon: 'DB' },
+  { href: '/ofline', label: 'Ofline', icon: 'OF' },
+  { href: '/online', label: 'Online', icon: 'ON' },
+  { href: '/intensiv', label: 'Intensiv', icon: 'IN' },
   { href: '/students', label: "O'quvchilar", icon: 'ST' },
   { href: '/amaliy', label: 'Amaliy', icon: 'AM' },
 ] as const;
