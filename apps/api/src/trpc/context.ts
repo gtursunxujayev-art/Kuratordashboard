@@ -6,12 +6,15 @@ export interface Context {
   res: Response;
   user?: JWTPayload;
   tenantId?: string;
+  mockPreview?: boolean;
 }
 
 export async function createContext(opts: { req: Request; res: Response }): Promise<Context> {
   const authHeader = opts.req.headers.authorization;
   let user: JWTPayload | undefined;
   let tenantId: string | undefined;
+  const mockHeader = opts.req.headers['x-kd-mock-preview'];
+  const mockPreview = Array.isArray(mockHeader) ? mockHeader[0] === '1' : mockHeader === '1';
 
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
@@ -27,6 +30,7 @@ export async function createContext(opts: { req: Request; res: Response }): Prom
   return {
     req: opts.req,
     res: opts.res,
+    mockPreview,
     ...(user ? { user } : {}),
     ...(tenantId ? { tenantId } : {}),
   };
