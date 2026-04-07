@@ -1,6 +1,7 @@
 import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
+import { TRPCError } from '@trpc/server';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 
@@ -25,6 +26,10 @@ function isMissingCustomerGenderColumnError(error: unknown): boolean {
     return message.includes('customers.gender') && message.includes('does not exist');
   }
   return message.includes('customers.gender');
+}
+
+function isAdminOrManager(roles: string[]): boolean {
+  return roles.includes('Admin') || roles.includes('Manager');
 }
 
 function startOfDayLocal(date: Date): Date {
@@ -112,53 +117,252 @@ async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Pro
   }
 }
 
+async function resolveDateRange(
+  tenantId: string,
+  dateFilter: z.infer<typeof dateFilterSchema>,
+  courseRunId?: string,
+): Promise<{ from: Date; to: Date } | null> {
+  if (dateFilter === 'all') {
+    return getCoursePeriodRange(tenantId, courseRunId);
+  }
+  return getCalendarDateRange(dateFilter);
+}
+
+function intersectCustomerIds(base?: string[], extra?: string[]): string[] | undefined {
+  if (!base && !extra) return undefined;
+  if (!base) return extra;
+  if (!extra) return base;
+  const right = new Set(extra);
+  return base.filter((id) => right.has(id));
+}
+
+async function getRoleScopedCustomerIds(
+  tenantId: string,
+  user: { userId: string; roles: string[] },
+  courseRunId?: string,
+): Promise<string[] | undefined> {
+  const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
+  if (!kuratorOnly && !courseRunId) return undefined;
+
+  const assignments = await prisma.kuratorAssignment.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
+      ...(courseRunId ? { courseRunId } : {}),
+    },
+    select: { customerId: true },
+  });
+  return Array.from(new Set(assignments.map((row) => row.customerId)));
+}
+
+async function getCourseScopedCustomerIds(
+  tenantId: string,
+  courseId?: string,
+  dateRange?: { from: Date; to: Date } | null,
+): Promise<string[] | undefined> {
+  if (!courseId) return undefined;
+  const rows = await prisma.income.findMany({
+    where: {
+      tenantId,
+      ...ACTIVE_ENROLLMENT_FILTER,
+      courseId,
+      ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+    },
+    select: { customerId: true },
+    distinct: ['customerId'],
+  });
+  return rows.map((row) => row.customerId);
+}
+
+type StudentPerformance = {
+  completedTasks: number;
+  pendingTasks: number;
+  attendedLessons: number;
+  totalLessons: number;
+  exerciseLogs: number;
+  performancePercent: number;
+};
+
+async function buildStudentPerformanceMap(params: {
+  tenantId: string;
+  customerIds: string[];
+  dateRange: { from: Date; to: Date } | null;
+  courseId?: string;
+  courseRunId?: string;
+  kuratorUserId?: string;
+}): Promise<Map<string, StudentPerformance>> {
+  const { tenantId, customerIds, dateRange, courseId, courseRunId, kuratorUserId } = params;
+  const map = new Map<string, StudentPerformance>();
+  if (customerIds.length === 0) return map;
+
+  const taskBaseWhere: Record<string, unknown> = {
+    tenantId,
+    customerId: { in: customerIds },
+    ...(kuratorUserId ? { kuratorUserId } : {}),
+  };
+
+  const [completedTasksByCustomer, pendingTasksByCustomer] = await Promise.all([
+    prisma.kuratorTask.groupBy({
+      by: ['customerId'],
+      where: {
+        ...taskBaseWhere,
+        completedAt: dateRange ? { gte: dateRange.from, lt: dateRange.to } : { not: null },
+      },
+      _count: { id: true },
+    }),
+    prisma.kuratorTask.groupBy({
+      by: ['customerId'],
+      where: {
+        ...taskBaseWhere,
+        completedAt: null,
+        ...(dateRange ? { createdAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+      },
+      _count: { id: true },
+    }),
+  ]);
+
+  const attendanceBaseWhere: Record<string, unknown> = {
+    tenantId,
+    customerId: { in: customerIds },
+    ...(courseRunId ? { courseRunId } : {}),
+    ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+  };
+
+  let attendanceTotals: Array<{ customerId: string; _count: { id: number } }> = [];
+  let attendanceAttended: Array<{ customerId: string; _count: { id: number } }> = [];
+  const attendanceWhereWithCourse =
+    courseId && !courseRunId ? { ...attendanceBaseWhere, courseRun: { courseId } } : attendanceBaseWhere;
+  try {
+    [attendanceTotals, attendanceAttended] = await Promise.all([
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: attendanceWhereWithCourse,
+        _count: { id: true },
+      }),
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: { ...attendanceWhereWithCourse, attended: true },
+        _count: { id: true },
+      }),
+    ]);
+  } catch (error) {
+    if (!(courseId && !courseRunId && isMissingCourseRunsTableError(error))) {
+      throw error;
+    }
+    [attendanceTotals, attendanceAttended] = await Promise.all([
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: attendanceBaseWhere,
+        _count: { id: true },
+      }),
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: { ...attendanceBaseWhere, attended: true },
+        _count: { id: true },
+      }),
+    ]);
+  }
+
+  const exerciseBaseWhere: Record<string, unknown> = {
+    tenantId,
+    customerId: { in: customerIds },
+    ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+    ...(courseRunId
+      ? { exerciseDefinition: { courseRunId } }
+      : courseId
+      ? { exerciseDefinition: { courseRun: { courseId } } }
+      : {}),
+  };
+
+  let exerciseCounts: Array<{ customerId: string; _count: { id: number } }> = [];
+  try {
+    exerciseCounts = await prisma.studentExerciseLog.groupBy({
+      by: ['customerId'],
+      where: exerciseBaseWhere as any,
+      _count: { id: true },
+    } as any);
+  } catch (error) {
+    if (!(courseId && !courseRunId && isMissingCourseRunsTableError(error))) {
+      throw error;
+    }
+    exerciseCounts = await prisma.studentExerciseLog.groupBy(
+      {
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: customerIds },
+          ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+        } as any,
+        _count: { id: true },
+      } as any,
+    );
+  }
+
+  const completedMap = new Map(completedTasksByCustomer.map((row) => [row.customerId as string, row._count.id]));
+  const pendingMap = new Map(pendingTasksByCustomer.map((row) => [row.customerId as string, row._count.id]));
+  const attendedMap = new Map(attendanceAttended.map((row) => [row.customerId, row._count.id]));
+  const totalAttendanceMap = new Map(attendanceTotals.map((row) => [row.customerId, row._count.id]));
+  const exerciseMap = new Map(exerciseCounts.map((row) => [row.customerId, row._count.id]));
+
+  for (const customerId of customerIds) {
+    const completedTasks = completedMap.get(customerId) ?? 0;
+    const pendingTasks = pendingMap.get(customerId) ?? 0;
+    const attendedLessons = attendedMap.get(customerId) ?? 0;
+    const totalLessons = totalAttendanceMap.get(customerId) ?? 0;
+    const exerciseLogs = exerciseMap.get(customerId) ?? 0;
+
+    const taskTotal = completedTasks + pendingTasks;
+    const taskRate = taskTotal > 0 ? (completedTasks / taskTotal) * 100 : 0;
+    const attendanceRate = totalLessons > 0 ? (attendedLessons / totalLessons) * 100 : 0;
+    const activityRate = Math.min(100, exerciseLogs * 10);
+
+    const performancePercent =
+      taskTotal === 0 && totalLessons === 0 && exerciseLogs === 0
+        ? 0
+        : Math.round(taskRate * 0.4 + attendanceRate * 0.5 + activityRate * 0.1);
+
+    map.set(customerId, {
+      completedTasks,
+      pendingTasks,
+      attendedLessons,
+      totalLessons,
+      exerciseLogs,
+      performancePercent,
+    });
+  }
+
+  return map;
+}
+
 export const dashboardRouter = router({
+  courses: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.course.findMany({
+      where: { tenantId: ctx.tenantId, isActive: true },
+      select: { id: true, name: true, category: true },
+      orderBy: { name: 'asc' },
+    });
+  }),
+
   stats: protectedProcedure
     .input(
       z.object({
         dateFilter: dateFilterSchema,
+        courseId: z.string().optional(),
         courseRunId: z.string().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
-
-      const dateRange = input.dateFilter === 'all'
-        ? await getCoursePeriodRange(tenantId, input.courseRunId)
-        : getCalendarDateRange(input.dateFilter);
-
-      let scopedCustomerIds: string[] | undefined;
-
-      if (input.courseRunId) {
-        const runAssignments = await prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            courseRunId: input.courseRunId,
-            isActive: true,
-            ...(isKurator ? { kuratorUserId: user.userId } : {}),
-          },
-          select: { customerId: true },
-        });
-        scopedCustomerIds = Array.from(new Set(runAssignments.map((a) => a.customerId)));
-      } else if (isKurator) {
-        const assignments = await prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            isActive: true,
-          },
-          select: { customerId: true },
-        });
-        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
-      }
+      const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const scopedCustomerIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
 
       const incomeWhere = {
         tenantId,
         ...ACTIVE_ENROLLMENT_FILTER,
+        ...(input.courseId ? { courseId: input.courseId } : {}),
         ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
         ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
       };
@@ -245,11 +449,18 @@ export const dashboardRouter = router({
   kuratorList: protectedProcedure
     .input(
       z.object({
+        dateFilter: dateFilterSchema.default('all'),
+        courseId: z.string().optional(),
         courseRunId: z.string().optional(),
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { tenantId } = ctx;
+      const { tenantId, user } = ctx;
+      const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
+      const adminOrManager = isAdminOrManager(user.roles);
 
       const [kurators, assignments, completedGroups, pendingGroups] = await Promise.all([
         prisma.user.findMany({
@@ -257,6 +468,7 @@ export const dashboardRouter = router({
             tenantId,
             roles: { has: 'Kurator' },
             isActive: true,
+            ...(!adminOrManager ? { id: user.userId } : {}),
           },
           select: {
             id: true,
@@ -269,6 +481,8 @@ export const dashboardRouter = router({
             tenantId,
             isActive: true,
             ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
+            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
           },
           select: { kuratorUserId: true, customerId: true },
         }),
@@ -276,7 +490,9 @@ export const dashboardRouter = router({
           by: ['kuratorUserId'],
           where: {
             tenantId,
-            completedAt: { not: null },
+            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
+            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
+            completedAt: dateRange ? { gte: dateRange.from, lt: dateRange.to } : { not: null },
           },
           _count: { id: true },
         }),
@@ -284,7 +500,10 @@ export const dashboardRouter = router({
           by: ['kuratorUserId'],
           where: {
             tenantId,
+            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
+            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
             completedAt: null,
+            ...(dateRange ? { createdAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
           },
           _count: { id: true },
         }),
@@ -310,6 +529,7 @@ export const dashboardRouter = router({
               customerId: { in: uniqueStudentIds },
               attended: false,
               ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+              ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
             },
             select: { customerId: true },
             distinct: ['customerId'],
@@ -345,6 +565,368 @@ export const dashboardRouter = router({
           missedStudents: missedByKurator.get(kurator.id) ?? 0,
         };
       });
+    }),
+
+  studentPerformanceList: protectedProcedure
+    .input(
+      z.object({
+        dateFilter: dateFilterSchema.default('all'),
+        courseId: z.string().optional(),
+        courseRunId: z.string().optional(),
+        page: z.number().int().min(1).default(1),
+        limit: z.number().int().min(1).max(200).default(100),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const scopedCustomerIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
+
+      const enrolledRows = await prisma.income.findMany({
+        where: {
+          tenantId,
+          ...ACTIVE_ENROLLMENT_FILTER,
+          ...(input.courseId ? { courseId: input.courseId } : {}),
+          ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+          ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+        },
+        select: { customerId: true },
+        distinct: ['customerId'],
+      });
+
+      const enrolledIds = enrolledRows.map((row) => row.customerId);
+      if (enrolledIds.length === 0) {
+        return {
+          data: [],
+          pagination: { page: input.page, limit: input.limit, total: 0 },
+        };
+      }
+
+      const customers = await prisma.customer.findMany({
+        where: { tenantId, id: { in: enrolledIds } },
+        select: { id: true, name: true, customerNumber: true },
+        orderBy: { name: 'asc' },
+      });
+
+      const total = customers.length;
+      const start = (input.page - 1) * input.limit;
+      const pageCustomers = customers.slice(start, start + input.limit);
+      const pageIds = pageCustomers.map((c) => c.id);
+
+      const perfMap = await buildStudentPerformanceMap({
+        tenantId,
+        customerIds: pageIds,
+        dateRange,
+        courseId: input.courseId,
+        courseRunId: input.courseRunId,
+      });
+
+      return {
+        data: pageCustomers.map((customer) => {
+          const perf =
+            perfMap.get(customer.id) ??
+            ({
+              completedTasks: 0,
+              pendingTasks: 0,
+              attendedLessons: 0,
+              totalLessons: 0,
+              exerciseLogs: 0,
+              performancePercent: 0,
+            } satisfies StudentPerformance);
+          return {
+            id: customer.id,
+            name: customer.name,
+            number: customer.customerNumber,
+            ...perf,
+          };
+        }),
+        pagination: { page: input.page, limit: input.limit, total },
+      };
+    }),
+
+  studentPerformanceDetail: protectedProcedure
+    .input(
+      z.object({
+        customerId: z.string(),
+        dateFilter: dateFilterSchema.default('all'),
+        courseId: z.string().optional(),
+        courseRunId: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
+      if (kuratorOnly) {
+        const assignment = await prisma.kuratorAssignment.findFirst({
+          where: {
+            tenantId,
+            kuratorUserId: user.userId,
+            customerId: input.customerId,
+            isActive: true,
+            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+          },
+          select: { id: true },
+        });
+        if (!assignment) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+        }
+      }
+
+      const customer = await prisma.customer.findFirst({
+        where: { id: input.customerId, tenantId },
+        select: {
+          id: true,
+          name: true,
+          customerNumber: true,
+          telegramUsername: true,
+          incomes: {
+            where: {
+              ...ACTIVE_ENROLLMENT_FILTER,
+              ...(input.courseId ? { courseId: input.courseId } : {}),
+            },
+            include: { course: true, tariff: true },
+            orderBy: { entryDate: 'desc' },
+            take: 10,
+          },
+        },
+      });
+      if (!customer) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
+      }
+
+      const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const perfMap = await buildStudentPerformanceMap({
+        tenantId,
+        customerIds: [input.customerId],
+        dateRange,
+        courseId: input.courseId,
+        courseRunId: input.courseRunId,
+      });
+
+      const taskWhere: Record<string, unknown> = {
+        tenantId,
+        customerId: input.customerId,
+        ...(dateRange ? { createdAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+      };
+
+      const recentTasks = await prisma.kuratorTask.findMany({
+        where: taskWhere,
+        select: {
+          id: true,
+          title: true,
+          dueDate: true,
+          completedAt: true,
+          createdAt: true,
+          kurator: { select: { id: true, name: true, username: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      });
+
+      const attendanceBaseWhere: Record<string, unknown> = {
+        tenantId,
+        customerId: input.customerId,
+        ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+        ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+      };
+      const attendanceWhereWithCourse =
+        input.courseId && !input.courseRunId
+          ? { ...attendanceBaseWhere, courseRun: { courseId: input.courseId } }
+          : attendanceBaseWhere;
+      let recentAttendance: Array<{
+        id: string;
+        lessonDate: Date;
+        attended: boolean;
+        lessonType: string;
+      }> = [];
+      try {
+        recentAttendance = await prisma.classAttendance.findMany({
+          where: attendanceWhereWithCourse,
+          select: { id: true, lessonDate: true, attended: true, lessonType: true },
+          orderBy: { lessonDate: 'desc' },
+          take: 50,
+        });
+      } catch (error) {
+        if (!(input.courseId && !input.courseRunId && isMissingCourseRunsTableError(error))) {
+          throw error;
+        }
+        recentAttendance = await prisma.classAttendance.findMany({
+          where: attendanceBaseWhere,
+          select: { id: true, lessonDate: true, attended: true, lessonType: true },
+          orderBy: { lessonDate: 'desc' },
+          take: 50,
+        });
+      }
+
+      const exerciseWhere: Record<string, unknown> = {
+        tenantId,
+        customerId: input.customerId,
+        ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+        ...(input.courseRunId
+          ? { exerciseDefinition: { courseRunId: input.courseRunId } }
+          : input.courseId
+          ? { exerciseDefinition: { courseRun: { courseId: input.courseId } } }
+          : {}),
+      };
+      let recentExercises: Array<{
+        id: string;
+        completedAt: Date;
+        note: string | null;
+        exerciseDefinition: { id: string; name: string; type: string };
+      }> = [];
+      try {
+        recentExercises = await prisma.studentExerciseLog.findMany({
+          where: exerciseWhere,
+          select: {
+            id: true,
+            completedAt: true,
+            note: true,
+            exerciseDefinition: { select: { id: true, name: true, type: true } },
+          },
+          orderBy: { completedAt: 'desc' },
+          take: 50,
+        });
+      } catch (error) {
+        if (!(input.courseId && !input.courseRunId && isMissingCourseRunsTableError(error))) {
+          throw error;
+        }
+        recentExercises = await prisma.studentExerciseLog.findMany({
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+          },
+          select: {
+            id: true,
+            completedAt: true,
+            note: true,
+            exerciseDefinition: { select: { id: true, name: true, type: true } },
+          },
+          orderBy: { completedAt: 'desc' },
+          take: 50,
+        });
+      }
+
+      return {
+        customer,
+        performance:
+          perfMap.get(input.customerId) ??
+          ({
+            completedTasks: 0,
+            pendingTasks: 0,
+            attendedLessons: 0,
+            totalLessons: 0,
+            exerciseLogs: 0,
+            performancePercent: 0,
+          } satisfies StudentPerformance),
+        recentTasks,
+        recentAttendance,
+        recentExercises,
+      };
+    }),
+
+  kuratorDetail: protectedProcedure
+    .input(
+      z.object({
+        kuratorUserId: z.string(),
+        dateFilter: dateFilterSchema.default('all'),
+        courseId: z.string().optional(),
+        courseRunId: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const adminOrManager = isAdminOrManager(user.roles);
+      if (!adminOrManager && user.userId !== input.kuratorUserId) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+      }
+
+      const kurator = await prisma.user.findFirst({
+        where: {
+          id: input.kuratorUserId,
+          tenantId,
+          roles: { has: 'Kurator' },
+          isActive: true,
+        },
+        select: { id: true, name: true, username: true, phone: true, email: true },
+      });
+      if (!kurator) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
+      }
+
+      const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+
+      const assignments = await prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          kuratorUserId: input.kuratorUserId,
+          isActive: true,
+          ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+          ...(courseScopedIds ? { customerId: { in: courseScopedIds } } : {}),
+        },
+        select: { customerId: true },
+      });
+
+      const studentIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+      const perfMap = await buildStudentPerformanceMap({
+        tenantId,
+        customerIds: studentIds,
+        dateRange,
+        courseId: input.courseId,
+        courseRunId: input.courseRunId,
+        kuratorUserId: input.kuratorUserId,
+      });
+
+      const students = studentIds.length
+        ? await prisma.customer.findMany({
+            where: { tenantId, id: { in: studentIds } },
+            select: { id: true, name: true, customerNumber: true },
+            orderBy: { name: 'asc' },
+          })
+        : [];
+
+      const enrichedStudents = students.map((student) => {
+        const perf =
+          perfMap.get(student.id) ??
+          ({
+            completedTasks: 0,
+            pendingTasks: 0,
+            attendedLessons: 0,
+            totalLessons: 0,
+            exerciseLogs: 0,
+            performancePercent: 0,
+          } satisfies StudentPerformance);
+        return {
+          id: student.id,
+          name: student.name,
+          number: student.customerNumber,
+          ...perf,
+        };
+      });
+
+      const completedTasks = enrichedStudents.reduce((sum, row) => sum + row.completedTasks, 0);
+      const pendingTasks = enrichedStudents.reduce((sum, row) => sum + row.pendingTasks, 0);
+      const missedStudents = enrichedStudents.filter(
+        (row) => row.totalLessons > 0 && row.attendedLessons < row.totalLessons,
+      ).length;
+      const totalTasks = completedTasks + pendingTasks;
+      const performancePercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+      return {
+        kurator,
+        summary: {
+          studentCount: enrichedStudents.length,
+          completedTasks,
+          pendingTasks,
+          missedStudents,
+          performancePercent,
+          performanceNote: 'Vaqtinchalik formula',
+        },
+        students: enrichedStudents,
+      };
     }),
 
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
