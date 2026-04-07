@@ -2,8 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --kd-bg: #eef2f8;
+  --kd-sidebar-bg: #ffffff;
+  --kd-surface: #ffffff;
+  --kd-surface-soft: #f8fafc;
+  --kd-border: #d7deea;
+  --kd-text: #0f172a;
+  --kd-muted: #64748b;
+  --kd-accent: #2563eb;
+  --kd-accent-foreground: #ffffff;
+}
+
+[data-theme='dark'] {
+  --kd-bg: #020817;
+  --kd-sidebar-bg: #071225;
+  --kd-surface: #0c1a32;
+  --kd-surface-soft: #10203d;
+  --kd-border: #1f3157;
+  --kd-text: #e6edf9;
+  --kd-muted: #a8b7d5;
+  --kd-accent: #3b82f6;
+  --kd-accent-foreground: #eff6ff;
+}
+
 body {
-  font-family: Arial, Helvetica, sans-serif;
-  background-color: #f3f4f6;
-  color: #111827;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background-color: var(--kd-bg);
+  color: var(--kd-text);
+}
+
+.kd-surface {
+  background: var(--kd-surface);
+  border: 1px solid var(--kd-border);
+}
+
+.kd-chip {
+  border: 1px solid var(--kd-border);
+  background: var(--kd-surface);
+  color: var(--kd-muted);
+}
+
+.kd-chip-active {
+  background: var(--kd-accent);
+  border-color: var(--kd-accent);
+  color: var(--kd-accent-foreground);
+}
+
+.kd-card {
+  background: linear-gradient(160deg, var(--kd-surface), var(--kd-surface-soft));
+  border: 1px solid var(--kd-border);
+  border-radius: 14px;
+}
+
+.kd-card-clickable {
+  transition: transform 0.16s ease, border-color 0.16s ease;
+}
+
+.kd-card-clickable:hover {
+  transform: translateY(-1px);
+  border-color: var(--kd-accent);
+}
+
+.kd-subtle {
+  color: var(--kd-muted);
+}
+
+.kd-title {
+  color: var(--kd-text);
 }
