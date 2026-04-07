@@ -2,6 +2,7 @@ import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { mockAssignments, mockKuratorList, mockSettingsKurators } from '../../services/mock-data';
 
 function isAdminOrManager(roles: string[]): boolean {
   return roles.includes('Admin') || roles.includes('Manager');
@@ -9,6 +10,9 @@ function isAdminOrManager(roles: string[]): boolean {
 
 export const kuratorsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsKurators().map((k) => ({ id: k.id, name: k.name, username: k.username, phone: k.phone }));
+    }
     return prisma.user.findMany({
       where: { tenantId: ctx.tenantId, roles: { has: 'Kurator' }, isActive: true },
       select: { id: true, name: true, username: true, phone: true },
@@ -24,6 +28,12 @@ export const kuratorsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return mockAssignments({
+          courseRunId: input.courseRunId,
+          kuratorUserId: input.kuratorUserId,
+        });
+      }
       const { user } = ctx;
       const managerScope = isAdminOrManager(user.roles);
 
@@ -54,6 +64,22 @@ export const kuratorsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        const rows = mockKuratorList({ dateFilter: 'this_month', courseId: undefined });
+        const scoped = input.kuratorUserId ? rows.filter((row) => row.id === input.kuratorUserId) : rows;
+        return scoped.map((row) => ({
+          id: `mock-task-${row.id}`,
+          tenantId: ctx.tenantId,
+          kuratorUserId: row.id,
+          customerId: null,
+          title: `Mock vazifa (${input.status})`,
+          dueDate: new Date(),
+          completedAt: input.status === 'pending' ? null : new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          customer: null,
+        }));
+      }
       const { tenantId, user } = ctx;
       const managerScope = isAdminOrManager(user.roles);
 
