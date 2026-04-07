@@ -1,7 +1,8 @@
 ﻿'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 
 type DateFilter = 'today' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'all';
@@ -16,11 +17,63 @@ const DATE_FILTER_LABELS: Record<DateFilter, string> = {
 };
 
 export default function DashboardPage() {
+  const searchParams = useSearchParams();
   const [dateFilter, setDateFilter] = useState<DateFilter>('this_month');
   const [selectedCourseId, setSelectedCourseId] = useState<string>('');
   const [studentPage, setStudentPage] = useState(1);
 
   const { data: courses } = trpc.dashboard.courses.useQuery();
+  const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
+
+  const requestedCategory = (searchParams.get('category') ?? 'offline').toLowerCase();
+
+  useEffect(() => {
+    setSelectedCourseId('');
+    setStudentPage(1);
+  }, [requestedCategory]);
+
+  useEffect(() => {
+    if (!courseRuns || courseRuns.length === 0) return;
+
+    const normalizeCategory = (raw?: string | null) => {
+      const value = (raw ?? '').toLowerCase();
+      if (value.includes('intens')) return 'intensiv';
+      if (value.includes('online') || value.includes('onlayn')) return 'online';
+      return 'offline';
+    };
+
+    const now = new Date();
+    const activeRuns = courseRuns.filter((run) => {
+      const start = new Date(run.startDate);
+      const end = new Date(run.endDate);
+      return start <= now && end >= now;
+    });
+
+    const category = normalizeCategory(requestedCategory);
+    const matchesCategory = (run: (typeof courseRuns)[number]) =>
+      normalizeCategory(run.course.category) === category ||
+      run.name.toLowerCase().includes(category) ||
+      run.course.name.toLowerCase().includes(category);
+
+    const matchedRun =
+      activeRuns.find(matchesCategory) ||
+      activeRuns.find((run) => normalizeCategory(run.course.category) === 'offline') ||
+      activeRuns[0] ||
+      courseRuns.find(matchesCategory) ||
+      courseRuns[0];
+
+    if (!selectedCourseId && matchedRun?.courseId) {
+      setSelectedCourseId(matchedRun.courseId);
+      setStudentPage(1);
+    }
+  }, [courseRuns, requestedCategory, selectedCourseId]);
+
+  useEffect(() => {
+    if (selectedCourseId) return;
+    if (courseRuns && courseRuns.length > 0) return;
+    if (!courses || courses.length === 0) return;
+    setSelectedCourseId(courses[0].id);
+  }, [courses, courseRuns, selectedCourseId]);
 
   const { data: stats, isLoading: statsLoading } = trpc.dashboard.stats.useQuery({
     dateFilter,
