@@ -134,6 +134,18 @@ function maskResponseData(value: unknown, path: string[] = []): unknown {
 }
 
 const mockPreviewMiddleware = t.middleware(async (opts) => {
+  if (
+    opts.ctx.mockPreview
+    && opts.type === 'mutation'
+    && opts.path !== 'settings.setMockPreview'
+    && opts.path !== 'auth.loginWithPassword'
+  ) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: "Mock rejim yoqilgan. O'zgartirishlar vaqtincha bloklangan.",
+    });
+  }
+
   const result = await opts.next();
   if (!opts.ctx.mockPreview || !result.ok) return result;
   return {
