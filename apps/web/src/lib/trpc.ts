@@ -9,8 +9,6 @@ function normalizeBaseUrl(url?: string) {
   return (url || 'http://localhost:3001').replace(/\/+$/, '');
 }
 
-const MOCK_PREVIEW_KEY = 'kd-mock-preview';
-
 export function createTRPCClient() {
   const apiBaseUrl = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_URL);
 
@@ -20,10 +18,8 @@ export function createTRPCClient() {
         url: `${apiBaseUrl}/api/trpc`,
         headers() {
           const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-          const mockPreview = typeof window !== 'undefined' ? localStorage.getItem(MOCK_PREVIEW_KEY) : '0';
           return {
             Authorization: token ? `Bearer ${token}` : '',
-            'x-kd-mock-preview': mockPreview === '1' ? '1' : '0',
           };
         },
       }),
