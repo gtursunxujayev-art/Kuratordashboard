@@ -5,7 +5,7 @@ import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'assignments';
+type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'users' | 'assignments';
 
 export default function SettingsPage() {
   const { isAdmin, isLoading } = useAuth();
@@ -28,6 +28,7 @@ export default function SettingsPage() {
           { key: 'courseRuns', label: 'Kurs oqimlari' },
           { key: 'exercises', label: 'Mashqlar' },
           { key: 'regions', label: 'Viloyatlar' },
+          { key: 'users', label: 'Foydalanuvchilar' },
           { key: 'assignments', label: "Kurator bog'lash" },
         ] as { key: Tab; label: string }[]).map((tab) => (
           <button
@@ -48,6 +49,7 @@ export default function SettingsPage() {
         <ExercisesTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
       )}
       {activeTab === 'regions' && <RegionsTab />}
+      {activeTab === 'users' && <UsersTab />}
       {activeTab === 'assignments' && (
         <AssignmentsTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
       )}
@@ -649,6 +651,176 @@ function RegionsTab() {
                     >
                       {region.isActive ? 'Faol' : 'Nofaol'}
                     </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UsersTab() {
+  const utils = trpc.useContext();
+  const [error, setError] = useState('');
+  const [form, setForm] = useState({
+    role: 'Kurator' as 'Kurator' | 'Manager',
+    name: '',
+    username: '',
+    email: '',
+    phone: '',
+    password: '',
+  });
+
+  const { data: users, isLoading } = trpc.settings.listStaffUsers.useQuery();
+  const createMutation = trpc.settings.createStaffUser.useMutation({
+    onSuccess: () => {
+      void utils.settings.listStaffUsers.invalidate();
+      setForm({
+        role: 'Kurator',
+        name: '',
+        username: '',
+        email: '',
+        phone: '',
+        password: '',
+      });
+      setError('');
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const handleCreate = () => {
+    if (!form.password.trim()) {
+      setError('Parol kiriting');
+      return;
+    }
+    if (!form.username.trim() && !form.email.trim() && !form.phone.trim()) {
+      setError('Username, email yoki telefondan bittasi majburiy');
+      return;
+    }
+    createMutation.mutate({
+      role: form.role,
+      name: form.name || undefined,
+      username: form.username || undefined,
+      email: form.email || undefined,
+      phone: form.phone || undefined,
+      password: form.password,
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold text-gray-900">Kurator va Menejer qo'shish</h2>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Rol</label>
+            <select
+              value={form.role}
+              onChange={(e) => setForm({ ...form, role: e.target.value as 'Kurator' | 'Manager' })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            >
+              <option value="Kurator">Kurator</option>
+              <option value="Manager">Menejer</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Ism</label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="Ali Valiyev"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Username</label>
+            <input
+              value={form.username}
+              onChange={(e) => setForm({ ...form, username: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="ali_valiyev"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Email</label>
+            <input
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="user@example.com"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Telefon</label>
+            <input
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="+998901234567"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Parol</label>
+            <input
+              type="password"
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="Kamida 6 belgi"
+            />
+          </div>
+        </div>
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
+
+        <button
+          onClick={handleCreate}
+          disabled={createMutation.isLoading}
+          className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+        >
+          {createMutation.isLoading ? "Yaratilmoqda..." : "Foydalanuvchi qo'shish"}
+        </button>
+      </div>
+
+      {isLoading ? (
+        <div className="text-gray-500 text-sm">Yuklanmoqda...</div>
+      ) : !users || users.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-500 text-sm">
+          Hozircha kurator/menejer yo'q
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Ism</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Rol</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Username</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Email</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Telefon</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Holat</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {users.map((user) => (
+                <tr key={user.id}>
+                  <td className="px-4 py-3 text-gray-900">{user.name ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.roles.includes('Manager') ? 'Menejer' : 'Kurator'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.username ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.email ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.phone ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        user.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {user.isActive ? 'Faol' : 'Nofaol'}
+                    </span>
                   </td>
                 </tr>
               ))}
