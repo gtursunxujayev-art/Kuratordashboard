@@ -1,4 +1,4 @@
-import { router, protectedProcedure, adminProcedure } from '../trpc';
+import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
@@ -465,7 +465,7 @@ export const studentsRouter = router({
       };
     }),
 
-  update: adminProcedure
+  update: protectedProcedure
     .input(
       z.object({
         customerId: z.string(),
@@ -478,7 +478,12 @@ export const studentsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const { tenantId } = ctx;
+      const { tenantId, user } = ctx;
+      const canEdit = user.roles.includes('Admin') || user.roles.includes('Manager');
+      if (!canEdit) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+      }
+
       const columnSupport = await getCustomerColumnSupport();
       const { customerId, ...data } = input;
 
