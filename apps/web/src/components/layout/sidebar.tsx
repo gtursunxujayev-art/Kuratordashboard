@@ -1,41 +1,55 @@
-'use client';
+﻿'use client';
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
 
 const navItems = [
-  { href: '/dashboard', label: 'Bosh sahifa', icon: '📊' },
-  { href: '/students', label: "O'quvchilar", icon: '👥' },
-  { href: '/amaliy', label: 'Amaliy', icon: '📝' },
+  { href: '/dashboard', label: 'Bosh sahifa', icon: 'DB' },
+  { href: '/students', label: "O'quvchilar", icon: 'ST' },
+  { href: '/amaliy', label: 'Amaliy', icon: 'AM' },
 ] as const;
 
-const adminNavItems = [
-  { href: '/settings', label: 'Sozlamalar', icon: '⚙️' },
-] as const;
+const adminNavItems = [{ href: '/settings', label: 'Sozlamalar', icon: 'SZ' }] as const;
 
-export function Sidebar() {
+export function Sidebar({
+  theme,
+  onToggleTheme,
+}: {
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
+}) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useAuth();
 
   return (
-    <aside className="w-60 min-h-screen bg-white border-r border-gray-200 flex flex-col">
-      <div className="p-4 border-b border-gray-200">
-        <h1 className="text-lg font-bold text-gray-900">Kurator Panel</h1>
+    <aside
+      className="w-64 min-h-screen flex flex-col"
+      style={{ backgroundColor: 'var(--kd-sidebar-bg)', borderRight: '1px solid var(--kd-border)' }}
+    >
+      <div className="p-4" style={{ borderBottom: '1px solid var(--kd-border)' }}>
+        <h1 className="text-lg font-bold kd-title">Kurator Panel</h1>
+        {user && <p className="text-xs kd-subtle mt-1 truncate">{user.name ?? user.username ?? user.email}</p>}
         {user && (
-          <p className="text-xs text-gray-500 mt-1 truncate">
-            {user.name ?? user.username ?? user.email}
-          </p>
-        )}
-        {user && (
-          <span className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
-            {user.roles.includes('Admin')
-              ? 'Admin'
-              : user.roles.includes('Manager')
-              ? 'Menejer'
-              : 'Kurator'}
+          <span
+            className="inline-block mt-1 text-xs px-2 py-0.5 rounded-full"
+            style={{ background: 'var(--kd-surface-soft)', color: 'var(--kd-text)' }}
+          >
+            {user.roles.includes('Admin') ? 'Admin' : user.roles.includes('Manager') ? 'Menejer' : 'Kurator'}
           </span>
         )}
+
+        <button
+          onClick={onToggleTheme}
+          className="mt-3 w-full text-left text-xs px-3 py-2 rounded-md transition-colors"
+          style={{
+            border: '1px solid var(--kd-border)',
+            background: 'var(--kd-surface)',
+            color: 'var(--kd-muted)',
+          }}
+        >
+          {theme === 'light' ? 'Tungi rejim' : 'Yorug rejim'}
+        </button>
       </div>
 
       <nav className="flex-1 py-4">
@@ -45,13 +59,18 @@ export function Sidebar() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${
+              className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors"
+              style={
                 isActive
-                  ? 'bg-blue-50 text-blue-700 border-r-2 border-blue-600'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
+                  ? {
+                      background: 'var(--kd-surface-soft)',
+                      color: 'var(--kd-text)',
+                      borderRight: '2px solid var(--kd-accent)',
+                    }
+                  : { color: 'var(--kd-muted)' }
+              }
             >
-              <span>{item.icon}</span>
+              <span className="text-[10px] font-semibold opacity-80">{item.icon}</span>
               {item.label}
             </Link>
           );
@@ -64,24 +83,26 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
-                className={`flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors ${
+                className="flex items-center gap-3 px-4 py-2.5 text-sm font-medium transition-colors"
+                style={
                   isActive
-                    ? 'bg-blue-50 text-blue-700 border-r-2 border-blue-600'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                }`}
+                    ? {
+                        background: 'var(--kd-surface-soft)',
+                        color: 'var(--kd-text)',
+                        borderRight: '2px solid var(--kd-accent)',
+                      }
+                    : { color: 'var(--kd-muted)' }
+                }
               >
-                <span>{item.icon}</span>
+                <span className="text-[10px] font-semibold opacity-80">{item.icon}</span>
                 {item.label}
               </Link>
             );
           })}
       </nav>
 
-      <div className="p-4 border-t border-gray-200">
-        <button
-          onClick={logout}
-          className="w-full text-sm text-gray-500 hover:text-red-600 text-left transition-colors"
-        >
+      <div className="p-4" style={{ borderTop: '1px solid var(--kd-border)' }}>
+        <button onClick={logout} className="w-full text-sm text-left transition-colors" style={{ color: 'var(--kd-muted)' }}>
           Chiqish
         </button>
       </div>
