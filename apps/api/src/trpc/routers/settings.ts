@@ -3,6 +3,16 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
+import {
+  mockSettingsCourseRuns,
+  mockSettingsCourses,
+  mockSettingsExerciseDefinitions,
+  mockSettingsKurators,
+  mockSettingsRegions,
+  mockSettingsScheduleTemplates,
+  mockStaffUsers,
+} from '../../services/mock-data';
+import { getMockPreviewMeta, setMockPreviewEnabled } from '../../services/mock-preview';
 
 const scheduleTemplateSchema = z.object({
   courseCategory: z.string().min(1).max(100),
@@ -71,7 +81,20 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export const settingsRouter = router({
+  mockPreviewState: protectedProcedure.query(async () => {
+    return getMockPreviewMeta();
+  }),
+
+  setMockPreview: adminProcedure
+    .input(z.object({ enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      return setMockPreviewEnabled(input.enabled, ctx.user.userId);
+    }),
+
   listStaffUsers: adminProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockStaffUsers();
+    }
     return prisma.user.findMany({
       where: {
         tenantId: ctx.tenantId,
@@ -155,6 +178,9 @@ export const settingsRouter = router({
     }),
 
   listRegions: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsRegions();
+    }
     try {
       return await prisma.regionConfig.findMany({
         where: { tenantId: ctx.tenantId },
@@ -248,6 +274,9 @@ export const settingsRouter = router({
     }),
 
   listScheduleTemplates: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsScheduleTemplates();
+    }
     return prisma.courseScheduleTemplate.findMany({
       where: { tenantId: ctx.tenantId },
       orderBy: { courseCategory: 'asc' },
@@ -281,6 +310,9 @@ export const settingsRouter = router({
     }),
 
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsCourseRuns();
+    }
     try {
       return await prisma.courseRun.findMany({
         where: { tenantId: ctx.tenantId },
@@ -360,6 +392,9 @@ export const settingsRouter = router({
   listExerciseDefinitions: protectedProcedure
     .input(z.object({ courseRunId: z.string() }))
     .query(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return mockSettingsExerciseDefinitions(input.courseRunId);
+      }
       return prisma.exerciseDefinition.findMany({
         where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
         orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }],
@@ -410,6 +445,9 @@ export const settingsRouter = router({
     }),
 
   listKurators: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsKurators();
+    }
     return prisma.user.findMany({
       where: { tenantId: ctx.tenantId, roles: { has: 'Kurator' }, isActive: true },
       select: { id: true, name: true, username: true, email: true, phone: true },
@@ -499,6 +537,9 @@ export const settingsRouter = router({
     }),
 
   listCourses: protectedProcedure.query(async ({ ctx }) => {
+    if (ctx.mockPreview) {
+      return mockSettingsCourses();
+    }
     return prisma.course.findMany({
       where: { tenantId: ctx.tenantId, isActive: true },
       select: { id: true, name: true, category: true },
