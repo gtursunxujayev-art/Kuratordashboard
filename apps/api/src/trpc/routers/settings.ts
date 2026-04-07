@@ -2,6 +2,7 @@ import { router, adminProcedure, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { hashPassword } from '../../services/auth/password';
 
 const scheduleTemplateSchema = z.object({
   courseCategory: z.string().min(1).max(100),
@@ -60,7 +61,99 @@ function computeEndDate(startDate: Date, durationWeeks: number): Date {
   return end;
 }
 
+function normalizeOptional(input?: string): string | undefined {
+  const value = input?.trim();
+  return value ? value : undefined;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return String((error as { code?: string })?.code || '') === 'P2002';
+}
+
 export const settingsRouter = router({
+  listStaffUsers: adminProcedure.query(async ({ ctx }) => {
+    return prisma.user.findMany({
+      where: {
+        tenantId: ctx.tenantId,
+        roles: { hasSome: ['Manager', 'Kurator'] },
+      },
+      select: {
+        id: true,
+        name: true,
+        username: true,
+        email: true,
+        phone: true,
+        roles: true,
+        isActive: true,
+        lastLoginAt: true,
+        createdAt: true,
+      },
+      orderBy: [{ createdAt: 'desc' }],
+    });
+  }),
+
+  createStaffUser: adminProcedure
+    .input(
+      z.object({
+        role: z.enum(['Manager', 'Kurator']),
+        name: z.string().max(160).optional(),
+        username: z.string().max(80).optional(),
+        email: z.string().email().max(160).optional(),
+        phone: z.string().max(30).optional(),
+        password: z.string().min(6).max(128),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const username = normalizeOptional(input.username);
+      const email = normalizeOptional(input.email)?.toLowerCase();
+      const phone = normalizeOptional(input.phone);
+      const name = normalizeOptional(input.name);
+
+      if (!username && !email && !phone) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Kamida bitta login maydoni kerak (username, email yoki telefon)",
+        });
+      }
+
+      const passwordHash = await hashPassword(input.password);
+
+      try {
+        return await prisma.user.create({
+          data: {
+            tenantId: ctx.tenantId,
+            username,
+            email,
+            phone,
+            name,
+            passwordHash,
+            roles: [input.role],
+            authProvider: 'password',
+            isActive: true,
+          },
+          select: {
+            id: true,
+            name: true,
+            username: true,
+            email: true,
+            phone: true,
+            roles: true,
+            isActive: true,
+            lastLoginAt: true,
+            createdAt: true,
+          },
+        });
+      } catch (error) {
+        if (isUniqueViolation(error)) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: "Username, email yoki telefon allaqachon mavjud",
+          });
+        }
+        throw error;
+      }
+    }),
+
   listRegions: protectedProcedure.query(async ({ ctx }) => {
     try {
       return await prisma.regionConfig.findMany({
