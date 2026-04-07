@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function StudentDetailModal({ customerId, onClose }: Props) {
-  const { isAdmin } = useAuth();
+  const { isAdmin, isManager } = useAuth();
   const utils = trpc.useContext();
 
   const { data: student, isLoading } = trpc.students.detail.useQuery({ customerId });
@@ -182,7 +182,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
                   </div>
                 )}
 
-                {isAdmin && (
+                {(isAdmin || isManager) && (
                   <button
                     onClick={startEditing}
                     className="w-full mt-2 py-2 border border-gray-200 text-gray-700 text-sm rounded-lg hover:bg-gray-50"
