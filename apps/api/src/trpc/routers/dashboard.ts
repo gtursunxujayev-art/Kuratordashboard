@@ -159,7 +159,6 @@ async function getRoleScopedCustomerIds(
 async function getCourseScopedCustomerIds(
   tenantId: string,
   courseId?: string,
-  dateRange?: { from: Date; to: Date } | null,
 ): Promise<string[] | undefined> {
   if (!courseId) return undefined;
   const rows = await prisma.income.findMany({
@@ -167,7 +166,6 @@ async function getCourseScopedCustomerIds(
       tenantId,
       ...ACTIVE_ENROLLMENT_FILTER,
       courseId,
-      ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
     },
     select: { customerId: true },
     distinct: ['customerId'],
@@ -356,14 +354,15 @@ export const dashboardRouter = router({
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
-      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
       const scopedCustomerIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
+      const statsDateRange = input.courseId ? null : dateRange;
 
       const incomeWhere = {
         tenantId,
         ...ACTIVE_ENROLLMENT_FILTER,
         ...(input.courseId ? { courseId: input.courseId } : {}),
-        ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+        ...(statsDateRange ? { entryDate: { gte: statsDateRange.from, lt: statsDateRange.to } } : {}),
         ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
       };
 
@@ -458,7 +457,7 @@ export const dashboardRouter = router({
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
-      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
       const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
       const adminOrManager = isAdminOrManager(user.roles);
 
@@ -581,7 +580,7 @@ export const dashboardRouter = router({
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
-      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
       const scopedCustomerIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
 
       const enrolledRows = await prisma.income.findMany({
@@ -589,7 +588,6 @@ export const dashboardRouter = router({
           tenantId,
           ...ACTIVE_ENROLLMENT_FILTER,
           ...(input.courseId ? { courseId: input.courseId } : {}),
-          ...(dateRange ? { entryDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
           ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
         },
         select: { customerId: true },
@@ -857,7 +855,7 @@ export const dashboardRouter = router({
       }
 
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
-      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId, dateRange);
+      const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
 
       const assignments = await prisma.kuratorAssignment.findMany({
         where: {
