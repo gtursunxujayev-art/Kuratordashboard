@@ -2,6 +2,7 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { mockAmaliyExercises, mockAmaliyStudentList } from '../../services/mock-data';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -109,6 +110,9 @@ export const amaliyRouter = router({
   studentList: protectedProcedure
     .input(z.object({ courseRunId: z.string().optional() }))
     .query(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return mockAmaliyStudentList({ courseRunId: input.courseRunId });
+      }
       const { tenantId, user } = ctx;
       const isKurator =
         user.roles.includes('Kurator') &&
@@ -181,6 +185,14 @@ export const amaliyRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return mockAmaliyExercises({
+          customerId: input.customerId,
+          date: input.date,
+          mode: input.mode,
+          courseRunId: input.courseRunId,
+        });
+      }
       const { tenantId, user } = ctx;
       const isKurator =
         user.roles.includes('Kurator') &&
@@ -346,6 +358,18 @@ export const amaliyRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return {
+          id: `mock-log-${Date.now()}`,
+          tenantId: ctx.tenantId,
+          customerId: input.customerId,
+          exerciseDefinitionId: input.exerciseDefinitionId,
+          completedAt: parseDateInput(input.completedAt),
+          loggedByUserId: ctx.user.userId,
+          note: input.note ?? null,
+          createdAt: new Date(),
+        };
+      }
       const { tenantId, user } = ctx;
       const isKurator =
         user.roles.includes('Kurator') &&
@@ -390,6 +414,9 @@ export const amaliyRouter = router({
   removeExerciseLog: protectedProcedure
     .input(z.object({ logId: z.string() }))
     .mutation(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return { success: true };
+      }
       const { tenantId, user } = ctx;
       const isKuratorOnly =
         user.roles.includes('Kurator') &&
@@ -423,6 +450,20 @@ export const amaliyRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      if (ctx.mockPreview) {
+        return {
+          id: `mock-att-${Date.now()}`,
+          tenantId: ctx.tenantId,
+          customerId: input.customerId,
+          courseRunId: input.courseRunId,
+          lessonDate: parseDateInput(input.lessonDate),
+          lessonType: input.lessonType,
+          attended: input.attended,
+          markedByUserId: ctx.user.userId,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+      }
       const { tenantId, user } = ctx;
       const isKurator =
         user.roles.includes('Kurator') &&
