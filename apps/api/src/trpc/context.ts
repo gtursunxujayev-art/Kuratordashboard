@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import type { JWTPayload } from '../services/auth/jwt';
+import { isMockPreviewEnabled } from '../services/mock-preview';
 
 export interface Context {
   req: Request;
@@ -13,8 +14,7 @@ export async function createContext(opts: { req: Request; res: Response }): Prom
   const authHeader = opts.req.headers.authorization;
   let user: JWTPayload | undefined;
   let tenantId: string | undefined;
-  const mockHeader = opts.req.headers['x-kd-mock-preview'];
-  const mockPreview = Array.isArray(mockHeader) ? mockHeader[0] === '1' : mockHeader === '1';
+  const mockPreview = isMockPreviewEnabled();
 
   if (authHeader?.startsWith('Bearer ')) {
     const token = authHeader.substring(7);
