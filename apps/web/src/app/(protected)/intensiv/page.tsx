@@ -1,6 +1,5 @@
-import { redirect } from 'next/navigation';
+import DashboardPage from '../dashboard/page';
 
 export default function IntensivPage() {
-  redirect('/dashboard?category=intensiv');
+  return <DashboardPage forcedCategory="intensiv" />;
 }
-
