@@ -2,7 +2,6 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
-import { mockStudentDetail, mockStudentsFilterOptions, mockStudentsList } from '../../services/mock-data';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -94,17 +93,6 @@ export const studentsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockStudentsList({
-          courseRunId: input.courseRunId,
-          courseId: input.courseId,
-          tariffId: input.tariffId,
-          region: input.region,
-          search: input.search,
-          page: input.page,
-          limit: input.limit,
-        });
-      }
       const { tenantId, user } = ctx;
       let columnSupport = await getCustomerColumnSupport();
       const isKurator =
@@ -383,9 +371,6 @@ export const studentsRouter = router({
   detail: protectedProcedure
     .input(z.object({ customerId: z.string() }))
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockStudentDetail(input.customerId);
-      }
       const { tenantId, user } = ctx;
       let columnSupport = await getCustomerColumnSupport();
       const isKurator =
@@ -493,17 +478,6 @@ export const studentsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return {
-          id: input.customerId,
-          name: input.name ?? 'Mock Student',
-          customerNumber: input.customerNumber ?? input.phone ?? '900000000',
-          telegramUsername: input.telegramUsername ?? null,
-          gender: input.gender ?? null,
-          region: input.region ?? null,
-          updatedAt: new Date(),
-        };
-      }
       const { tenantId, user } = ctx;
       const canEdit = user.roles.includes('Admin') || user.roles.includes('Manager');
       if (!canEdit) {
@@ -543,9 +517,6 @@ export const studentsRouter = router({
     }),
 
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.mockPreview) {
-      return mockStudentsFilterOptions();
-    }
     const { tenantId } = ctx;
     const [courses, tariffs] = await Promise.all([
       prisma.course.findMany({
