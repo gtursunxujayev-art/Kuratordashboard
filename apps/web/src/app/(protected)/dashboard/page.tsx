@@ -6,6 +6,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 
 type DateFilter = 'today' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'all';
+type CourseCategory = 'offline' | 'online' | 'intensiv';
 
 const DATE_FILTER_LABELS: Record<DateFilter, string> = {
   today: 'Bugun',
@@ -15,6 +16,24 @@ const DATE_FILTER_LABELS: Record<DateFilter, string> = {
   last_month: "O'tgan oy",
   all: 'Hammasi',
 };
+
+function normalizeCategory(raw?: string | null): CourseCategory {
+  const value = (raw ?? '').toLowerCase();
+  if (value.includes('intens')) return 'intensiv';
+  if (value.includes('online') || value.includes('onlayn')) return 'online';
+  return 'offline';
+}
+
+function matchesCategoryByName(name: string, category: CourseCategory): boolean {
+  const value = name.toLowerCase();
+  if (category === 'online') {
+    return value.includes('online') || value.includes('onlayn');
+  }
+  if (category === 'intensiv') {
+    return value.includes('intens');
+  }
+  return value.includes('offline') || value.includes('ofline') || value.includes('oflayn');
+}
 
 export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'offline' | 'online' | 'intensiv' } = {}) {
   const searchParams = useSearchParams();
@@ -26,13 +45,36 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
   const { data: courses } = trpc.dashboard.courses.useQuery();
   const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
 
-  const requestedCategory = useMemo(() => {
+  const requestedCategoryRaw = useMemo(() => {
     if (forcedCategory) return forcedCategory;
     if (pathname === '/online') return 'online';
     if (pathname === '/intensiv') return 'intensiv';
     if (pathname === '/ofline') return 'offline';
     return (searchParams.get('category') ?? 'offline').toLowerCase();
   }, [forcedCategory, pathname, searchParams]);
+  const requestedCategory = normalizeCategory(requestedCategoryRaw);
+  const isCategoryLocked = Boolean(forcedCategory);
+
+  const visibleCourses = useMemo(() => {
+    if (!courses) return [];
+    if (!isCategoryLocked) return courses;
+    return courses.filter(
+      (course) =>
+        normalizeCategory(course.category) === requestedCategory ||
+        matchesCategoryByName(course.name, requestedCategory),
+    );
+  }, [courses, isCategoryLocked, requestedCategory]);
+
+  const visibleCourseRuns = useMemo(() => {
+    if (!courseRuns) return [];
+    if (!isCategoryLocked) return courseRuns;
+    return courseRuns.filter(
+      (run) =>
+        normalizeCategory(run.course.category) === requestedCategory ||
+        matchesCategoryByName(run.name, requestedCategory) ||
+        matchesCategoryByName(run.course.name, requestedCategory),
+    );
+  }, [courseRuns, isCategoryLocked, requestedCategory]);
 
   useEffect(() => {
     setSelectedCourseId('');
@@ -40,64 +82,56 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
   }, [requestedCategory]);
 
   useEffect(() => {
-    if (!courseRuns || courseRuns.length === 0) return;
-
-    const normalizeCategory = (raw?: string | null) => {
-      const value = (raw ?? '').toLowerCase();
-      if (value.includes('intens')) return 'intensiv';
-      if (value.includes('online') || value.includes('onlayn')) return 'online';
-      return 'offline';
-    };
+    if (!visibleCourseRuns || visibleCourseRuns.length === 0) return;
 
     const now = new Date();
-    const activeRuns = courseRuns.filter((run) => {
+    const activeRuns = visibleCourseRuns.filter((run) => {
       const start = new Date(run.startDate);
       const end = new Date(run.endDate);
       return start <= now && end >= now;
     });
 
-    const category = normalizeCategory(requestedCategory);
-    const matchesCategory = (run: (typeof courseRuns)[number]) =>
-      normalizeCategory(run.course.category) === category ||
-      run.name.toLowerCase().includes(category) ||
-      run.course.name.toLowerCase().includes(category);
-
-    const matchedRun =
-      activeRuns.find(matchesCategory) ||
-      activeRuns.find((run) => normalizeCategory(run.course.category) === 'offline') ||
-      activeRuns[0] ||
-      courseRuns.find(matchesCategory) ||
-      courseRuns[0];
+    const matchedRun = activeRuns[0] || visibleCourseRuns[0];
 
     if (!selectedCourseId && matchedRun?.courseId) {
       setSelectedCourseId(matchedRun.courseId);
       setStudentPage(1);
     }
-  }, [courseRuns, requestedCategory, selectedCourseId]);
+  }, [visibleCourseRuns, selectedCourseId]);
 
   useEffect(() => {
+    if (selectedCourseId && visibleCourses.some((course) => course.id === selectedCourseId)) return;
     if (selectedCourseId) return;
-    if (courseRuns && courseRuns.length > 0) return;
-    if (!courses || courses.length === 0) return;
-    setSelectedCourseId(courses[0].id);
-  }, [courses, courseRuns, selectedCourseId]);
+    if (visibleCourseRuns && visibleCourseRuns.length > 0) return;
+    if (!visibleCourses || visibleCourses.length === 0) return;
+    setSelectedCourseId(visibleCourses[0].id);
+  }, [visibleCourses, visibleCourseRuns, selectedCourseId]);
+
+  useEffect(() => {
+    if (!isCategoryLocked || !selectedCourseId) return;
+    if (visibleCourses.some((course) => course.id === selectedCourseId)) return;
+    setSelectedCourseId('');
+    setStudentPage(1);
+  }, [isCategoryLocked, selectedCourseId, visibleCourses]);
+
+  const shouldRunCourseQueries = !isCategoryLocked || Boolean(selectedCourseId);
 
   const { data: stats, isLoading: statsLoading } = trpc.dashboard.stats.useQuery({
     dateFilter,
     courseId: selectedCourseId || undefined,
-  });
+  }, { enabled: shouldRunCourseQueries });
 
   const { data: kuratorList, isLoading: kuratorsLoading } = trpc.dashboard.kuratorList.useQuery({
     dateFilter,
     courseId: selectedCourseId || undefined,
-  });
+  }, { enabled: shouldRunCourseQueries });
 
   const { data: students, isLoading: studentsLoading } = trpc.dashboard.studentPerformanceList.useQuery({
     dateFilter,
     courseId: selectedCourseId || undefined,
     page: studentPage,
     limit: 60,
-  });
+  }, { enabled: shouldRunCourseQueries });
 
   const totalStudentPages = useMemo(() => {
     if (!students) return 0;
@@ -119,8 +153,8 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
             }}
             className="px-3 py-2 rounded-md text-sm kd-chip"
           >
-            <option value="">Barcha kurslar</option>
-            {courses?.map((course) => (
+            {!isCategoryLocked && <option value="">Barcha kurslar</option>}
+            {visibleCourses.map((course) => (
               <option key={course.id} value={course.id}>
                 {course.name}
               </option>
@@ -143,6 +177,12 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
           ))}
         </div>
       </div>
+
+      {isCategoryLocked && visibleCourses.length === 0 && (
+        <div className="kd-card p-5 text-sm kd-subtle">
+          Bu bo'lim uchun kurslar topilmadi.
+        </div>
+      )}
 
       {statsLoading ? (
         <div className="kd-card p-5 kd-subtle text-sm">Yuklanmoqda...</div>
