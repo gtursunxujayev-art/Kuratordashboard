@@ -2,14 +2,6 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
-import {
-  mockCatalog,
-  mockDashboardStats,
-  mockKuratorDetail,
-  mockKuratorList,
-  mockStudentPerformanceDetail,
-  mockStudentPerformanceList,
-} from '../../services/mock-data';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 
@@ -343,9 +335,6 @@ async function buildStudentPerformanceMap(params: {
 
 export const dashboardRouter = router({
   courses: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.mockPreview) {
-      return mockCatalog().courses;
-    }
     return prisma.course.findMany({
       where: { tenantId: ctx.tenantId, isActive: true },
       select: { id: true, name: true, category: true },
@@ -362,9 +351,6 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockDashboardStats({ courseId: input.courseId });
-      }
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
@@ -468,12 +454,6 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockKuratorList({
-          courseId: input.courseId,
-          dateFilter: input.dateFilter,
-        });
-      }
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
@@ -597,14 +577,6 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockStudentPerformanceList({
-          courseId: input.courseId,
-          dateFilter: input.dateFilter,
-          page: input.page,
-          limit: input.limit,
-        });
-      }
       const { tenantId, user } = ctx;
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
@@ -682,13 +654,6 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockStudentPerformanceDetail({
-          customerId: input.customerId,
-          courseId: input.courseId,
-          dateFilter: input.dateFilter,
-        });
-      }
       const { tenantId, user } = ctx;
       const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
       if (kuratorOnly) {
@@ -870,13 +835,6 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      if (ctx.mockPreview) {
-        return mockKuratorDetail({
-          kuratorUserId: input.kuratorUserId,
-          courseId: input.courseId,
-          dateFilter: input.dateFilter,
-        });
-      }
       const { tenantId, user } = ctx;
       const adminOrManager = isAdminOrManager(user.roles);
       if (!adminOrManager && user.userId !== input.kuratorUserId) {
@@ -970,9 +928,6 @@ export const dashboardRouter = router({
     }),
 
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
-    if (ctx.mockPreview) {
-      return mockCatalog().courseRuns;
-    }
     try {
       return await prisma.courseRun.findMany({
         where: { tenantId: ctx.tenantId },
