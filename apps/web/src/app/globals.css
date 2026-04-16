@@ -3,11 +3,11 @@
 @tailwind utilities;
 
 :root {
-  --kd-bg: #f4eef1;
-  --kd-sidebar-bg: #fffdfd;
-  --kd-surface: #ffffff;
-  --kd-surface-soft: #f9f1f5;
-  --kd-border: #e5d3dc;
+  --kd-bg: #f0dfe7;
+  --kd-sidebar-bg: #f6e8ee;
+  --kd-surface: #f9eef3;
+  --kd-surface-soft: #f3e2ea;
+  --kd-border: #d6b5c3;
   --kd-text: #30141f;
   --kd-muted: #7b5a68;
   --kd-accent: #971740;
@@ -136,7 +136,25 @@
 }
 
 [data-theme='dark'] option {
-  background-color: #0a172d;
+  background-color: #1e0a13;
+  color: var(--kd-text);
+}
+
+input,
+select,
+textarea {
+  background-color: var(--kd-surface) !important;
+  border-color: var(--kd-border) !important;
+  color: var(--kd-text) !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--kd-muted) !important;
+}
+
+option {
+  background-color: var(--kd-surface);
   color: var(--kd-text);
 }
 
