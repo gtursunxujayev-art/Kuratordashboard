@@ -3,27 +3,73 @@
 @tailwind utilities;
 
 :root {
-  --kd-bg: #eef2f8;
-  --kd-sidebar-bg: #ffffff;
+  --kd-bg: #f4eef1;
+  --kd-sidebar-bg: #fffdfd;
   --kd-surface: #ffffff;
-  --kd-surface-soft: #f8fafc;
-  --kd-border: #d7deea;
-  --kd-text: #0f172a;
-  --kd-muted: #64748b;
-  --kd-accent: #2563eb;
+  --kd-surface-soft: #f9f1f5;
+  --kd-border: #e5d3dc;
+  --kd-text: #30141f;
+  --kd-muted: #7b5a68;
+  --kd-accent: #971740;
+  --kd-accent-strong: #7d1235;
+  --kd-accent-soft: #f6e8ee;
   --kd-accent-foreground: #ffffff;
 }
 
 [data-theme='dark'] {
-  --kd-bg: #020817;
-  --kd-sidebar-bg: #071225;
-  --kd-surface: #0c1a32;
-  --kd-surface-soft: #10203d;
-  --kd-border: #1f3157;
-  --kd-text: #e6edf9;
-  --kd-muted: #a8b7d5;
-  --kd-accent: #3b82f6;
-  --kd-accent-foreground: #eff6ff;
+  --kd-bg: #14070d;
+  --kd-sidebar-bg: #1a0911;
+  --kd-surface: #230d16;
+  --kd-surface-soft: #2c101c;
+  --kd-border: #4a1d2f;
+  --kd-text: #f5e9ef;
+  --kd-muted: #caa7b7;
+  --kd-accent: #bb2857;
+  --kd-accent-strong: #9f1f48;
+  --kd-accent-soft: #371424;
+  --kd-accent-foreground: #fff7fa;
+}
+
+.bg-white {
+  background-color: var(--kd-surface) !important;
+}
+
+.bg-gray-50,
+.bg-gray-100 {
+  background-color: var(--kd-surface-soft) !important;
+}
+
+.border-gray-100,
+.border-gray-200,
+.border-gray-300 {
+  border-color: var(--kd-border) !important;
+}
+
+.text-gray-900 {
+  color: var(--kd-text) !important;
+}
+
+.text-gray-700,
+.text-gray-600,
+.text-gray-500,
+.text-gray-400 {
+  color: var(--kd-muted) !important;
+}
+
+.bg-blue-50 {
+  background-color: var(--kd-accent-soft) !important;
+}
+
+.bg-blue-600 {
+  background-color: var(--kd-accent) !important;
+}
+
+.hover\:bg-blue-700:hover {
+  background-color: var(--kd-accent-strong) !important;
+}
+
+.text-blue-600 {
+  color: var(--kd-accent) !important;
 }
 
 [data-theme='dark'] .bg-white {
@@ -53,7 +99,7 @@
 }
 
 [data-theme='dark'] .text-blue-600 {
-  color: #7fb0ff !important;
+  color: #f3cedd !important;
 }
 
 [data-theme='dark'] .text-green-600 {
@@ -73,7 +119,7 @@
 }
 
 [data-theme='dark'] .bg-blue-50 {
-  background-color: #13284a !important;
+  background-color: var(--kd-accent-soft) !important;
 }
 
 [data-theme='dark'] input,
