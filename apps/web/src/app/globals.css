@@ -3,16 +3,16 @@
 @tailwind utilities;
 
 :root {
-  --kd-bg: #f0dfe7;
-  --kd-sidebar-bg: #f6e8ee;
-  --kd-surface: #f9eef3;
-  --kd-surface-soft: #f3e2ea;
-  --kd-border: #d6b5c3;
-  --kd-text: #30141f;
-  --kd-muted: #7b5a68;
+  --kd-bg: #e7c3d0;
+  --kd-sidebar-bg: #e0b2c3;
+  --kd-surface: #edc6d3;
+  --kd-surface-soft: #e3b8c8;
+  --kd-border: #b84f74;
+  --kd-text: #2c0b17;
+  --kd-muted: #5e2e3f;
   --kd-accent: #971740;
   --kd-accent-strong: #7d1235;
-  --kd-accent-soft: #f6e8ee;
+  --kd-accent-soft: #d68ea9;
   --kd-accent-foreground: #ffffff;
 }
 
@@ -162,6 +162,9 @@ body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   background-color: var(--kd-bg);
   color: var(--kd-text);
+  background-image:
+    radial-gradient(1100px 550px at 0% -10%, #f0d4de 0%, transparent 65%),
+    linear-gradient(180deg, #edccd8 0%, var(--kd-bg) 55%, #ddb2c2 100%);
 }
 
 .kd-surface {
@@ -185,6 +188,7 @@ body {
   background: linear-gradient(160deg, var(--kd-surface), var(--kd-surface-soft));
   border: 1px solid var(--kd-border);
   border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 .kd-card-clickable {
