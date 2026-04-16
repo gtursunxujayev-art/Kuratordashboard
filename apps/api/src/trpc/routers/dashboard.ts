@@ -28,6 +28,21 @@ function isMissingCustomerGenderColumnError(error: unknown): boolean {
   return message.includes('customers.gender');
 }
 
+function isMissingOptionalPerformanceSchemaError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  if (code !== 'P2021' && code !== 'P2022') {
+    return false;
+  }
+  const message = String((error as any)?.message || '').toLowerCase();
+  return (
+    message.includes('kurator_tasks')
+    || message.includes('class_attendance')
+    || message.includes('student_exercise_logs')
+    || message.includes('kurator_assignments')
+    || message.includes('course_runs')
+  );
+}
+
 function isAdminOrManager(roles: string[]): boolean {
   return roles.includes('Admin') || roles.includes('Manager');
 }
@@ -613,13 +628,20 @@ export const dashboardRouter = router({
       const pageCustomers = customers.slice(start, start + input.limit);
       const pageIds = pageCustomers.map((c) => c.id);
 
-      const perfMap = await buildStudentPerformanceMap({
-        tenantId,
-        customerIds: pageIds,
-        dateRange,
-        courseId: input.courseId,
-        courseRunId: input.courseRunId,
-      });
+      let perfMap = new Map<string, StudentPerformance>();
+      try {
+        perfMap = await buildStudentPerformanceMap({
+          tenantId,
+          customerIds: pageIds,
+          dateRange,
+          courseId: input.courseId,
+          courseRunId: input.courseRunId,
+        });
+      } catch (error) {
+        if (!isMissingOptionalPerformanceSchemaError(error)) {
+          throw error;
+        }
+      }
 
       return {
         data: pageCustomers.map((customer) => {
@@ -695,13 +717,20 @@ export const dashboardRouter = router({
       }
 
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
-      const perfMap = await buildStudentPerformanceMap({
-        tenantId,
-        customerIds: [input.customerId],
-        dateRange,
-        courseId: input.courseId,
-        courseRunId: input.courseRunId,
-      });
+      let perfMap = new Map<string, StudentPerformance>();
+      try {
+        perfMap = await buildStudentPerformanceMap({
+          tenantId,
+          customerIds: [input.customerId],
+          dateRange,
+          courseId: input.courseId,
+          courseRunId: input.courseRunId,
+        });
+      } catch (error) {
+        if (!isMissingOptionalPerformanceSchemaError(error)) {
+          throw error;
+        }
+      }
 
       const taskWhere: Record<string, unknown> = {
         tenantId,
@@ -709,19 +738,33 @@ export const dashboardRouter = router({
         ...(dateRange ? { createdAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
       };
 
-      const recentTasks = await prisma.kuratorTask.findMany({
-        where: taskWhere,
-        select: {
-          id: true,
-          title: true,
-          dueDate: true,
-          completedAt: true,
-          createdAt: true,
-          kurator: { select: { id: true, name: true, username: true } },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 30,
-      });
+      let recentTasks: Array<{
+        id: string;
+        title: string;
+        dueDate: Date | null;
+        completedAt: Date | null;
+        createdAt: Date;
+        kurator: { id: string; name: string | null; username: string | null } | null;
+      }> = [];
+      try {
+        recentTasks = await prisma.kuratorTask.findMany({
+          where: taskWhere,
+          select: {
+            id: true,
+            title: true,
+            dueDate: true,
+            completedAt: true,
+            createdAt: true,
+            kurator: { select: { id: true, name: true, username: true } },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 30,
+        });
+      } catch (error) {
+        if (!isMissingOptionalPerformanceSchemaError(error)) {
+          throw error;
+        }
+      }
 
       const attendanceBaseWhere: Record<string, unknown> = {
         tenantId,
@@ -747,15 +790,19 @@ export const dashboardRouter = router({
           take: 50,
         });
       } catch (error) {
+        if (isMissingOptionalPerformanceSchemaError(error)) {
+          recentAttendance = [];
+        } else
         if (!(input.courseId && !input.courseRunId && isMissingCourseRunsTableError(error))) {
           throw error;
+        } else {
+          recentAttendance = await prisma.classAttendance.findMany({
+            where: attendanceBaseWhere,
+            select: { id: true, lessonDate: true, attended: true, lessonType: true },
+            orderBy: { lessonDate: 'desc' },
+            take: 50,
+          });
         }
-        recentAttendance = await prisma.classAttendance.findMany({
-          where: attendanceBaseWhere,
-          select: { id: true, lessonDate: true, attended: true, lessonType: true },
-          orderBy: { lessonDate: 'desc' },
-          take: 50,
-        });
       }
 
       const exerciseWhere: Record<string, unknown> = {
@@ -787,24 +834,28 @@ export const dashboardRouter = router({
           take: 50,
         });
       } catch (error) {
+        if (isMissingOptionalPerformanceSchemaError(error)) {
+          recentExercises = [];
+        } else
         if (!(input.courseId && !input.courseRunId && isMissingCourseRunsTableError(error))) {
           throw error;
+        } else {
+          recentExercises = await prisma.studentExerciseLog.findMany({
+            where: {
+              tenantId,
+              customerId: input.customerId,
+              ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+            },
+            select: {
+              id: true,
+              completedAt: true,
+              note: true,
+              exerciseDefinition: { select: { id: true, name: true, type: true } },
+            },
+            orderBy: { completedAt: 'desc' },
+            take: 50,
+          });
         }
-        recentExercises = await prisma.studentExerciseLog.findMany({
-          where: {
-            tenantId,
-            customerId: input.customerId,
-            ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
-          },
-          select: {
-            id: true,
-            completedAt: true,
-            note: true,
-            exerciseDefinition: { select: { id: true, name: true, type: true } },
-          },
-          orderBy: { completedAt: 'desc' },
-          take: 50,
-        });
       }
 
       return {
