@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 
 type DateFilter = 'today' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'all';
@@ -16,8 +16,9 @@ const DATE_FILTER_LABELS: Record<DateFilter, string> = {
   all: 'Hammasi',
 };
 
-export default function DashboardPage() {
+export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'offline' | 'online' | 'intensiv' } = {}) {
   const searchParams = useSearchParams();
+  const pathname = usePathname();
   const [dateFilter, setDateFilter] = useState<DateFilter>('this_month');
   const [selectedCourseId, setSelectedCourseId] = useState<string>('');
   const [studentPage, setStudentPage] = useState(1);
@@ -25,7 +26,13 @@ export default function DashboardPage() {
   const { data: courses } = trpc.dashboard.courses.useQuery();
   const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
 
-  const requestedCategory = (searchParams.get('category') ?? 'offline').toLowerCase();
+  const requestedCategory = useMemo(() => {
+    if (forcedCategory) return forcedCategory;
+    if (pathname === '/online') return 'online';
+    if (pathname === '/intensiv') return 'intensiv';
+    if (pathname === '/ofline') return 'offline';
+    return (searchParams.get('category') ?? 'offline').toLowerCase();
+  }, [forcedCategory, pathname, searchParams]);
 
   useEffect(() => {
     setSelectedCourseId('');
