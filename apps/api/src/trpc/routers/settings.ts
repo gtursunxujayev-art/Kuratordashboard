@@ -38,6 +38,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseScheduleTemplatesTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_schedule_templates') && message.includes('does not exist');
+  }
+  return message.includes('course_schedule_templates');
+}
+
 function throwMissingCourseRunsMigrationError(): never {
   throw new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -248,37 +257,54 @@ export const settingsRouter = router({
   }),
 
   listScheduleTemplates: protectedProcedure.query(async ({ ctx }) => {
-    return prisma.courseScheduleTemplate.findMany({
-      where: { tenantId: ctx.tenantId },
-      orderBy: { courseCategory: 'asc' },
-    });
+    try {
+      return await prisma.courseScheduleTemplate.findMany({
+        where: { tenantId: ctx.tenantId },
+        orderBy: { courseCategory: 'asc' },
+      });
+    } catch (error) {
+      if (isMissingCourseScheduleTemplatesTableError(error)) {
+        return [];
+      }
+      throw error;
+    }
   }),
 
   upsertScheduleTemplate: adminProcedure
     .input(scheduleTemplateSchema)
     .mutation(async ({ ctx, input }) => {
-      return prisma.courseScheduleTemplate.upsert({
-        where: {
-          tenantId_courseCategory: {
+      try {
+        return await prisma.courseScheduleTemplate.upsert({
+          where: {
+            tenantId_courseCategory: {
+              tenantId: ctx.tenantId,
+              courseCategory: input.courseCategory,
+            },
+          },
+          create: {
             tenantId: ctx.tenantId,
             courseCategory: input.courseCategory,
+            durationWeeks: input.durationWeeks,
+            baseLessons: input.baseLessons,
+            premiumExtraLessons: input.premiumExtraLessons,
           },
-        },
-        create: {
-          tenantId: ctx.tenantId,
-          courseCategory: input.courseCategory,
-          durationWeeks: input.durationWeeks,
-          baseLessons: input.baseLessons,
-          premiumExtraLessons: input.premiumExtraLessons,
-        },
-        update: {
-          durationWeeks: input.durationWeeks,
-          baseLessons: input.baseLessons,
-          premiumExtraLessons: input.premiumExtraLessons,
-          updatedAt: new Date(),
-        },
-      });
-  }),
+          update: {
+            durationWeeks: input.durationWeeks,
+            baseLessons: input.baseLessons,
+            premiumExtraLessons: input.premiumExtraLessons,
+            updatedAt: new Date(),
+          },
+        });
+      } catch (error) {
+        if (isMissingCourseScheduleTemplatesTableError(error)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: "Jadval shablonlari uchun DB migratsiya qo'llanmagan (`course_schedule_templates`).",
+          });
+        }
+        throw error;
+      }
+    }),
 
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
     try {
@@ -326,10 +352,17 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
       }
 
-      const template = await prisma.courseScheduleTemplate.findFirst({
-        where: { tenantId: ctx.tenantId, courseCategory: course.category },
-        select: { durationWeeks: true, baseLessons: true, premiumExtraLessons: true },
-      });
+      let template: { durationWeeks: number; baseLessons: number; premiumExtraLessons: number } | null = null;
+      try {
+        template = await prisma.courseScheduleTemplate.findFirst({
+          where: { tenantId: ctx.tenantId, courseCategory: course.category },
+          select: { durationWeeks: true, baseLessons: true, premiumExtraLessons: true },
+        });
+      } catch (error) {
+        if (!isMissingCourseScheduleTemplatesTableError(error)) {
+          throw error;
+        }
+      }
 
       const durationWeeks = input.durationWeeks ?? template?.durationWeeks ?? 6;
       const baseLessons = input.baseLessons ?? template?.baseLessons ?? 12;
