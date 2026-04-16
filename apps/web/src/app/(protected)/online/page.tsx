@@ -1,6 +1,5 @@
-import { redirect } from 'next/navigation';
+import DashboardPage from '../dashboard/page';
 
 export default function OnlinePage() {
-  redirect('/dashboard?category=online');
+  return <DashboardPage forcedCategory="online" />;
 }
-
