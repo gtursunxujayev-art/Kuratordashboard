@@ -3,7 +3,6 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
-import { trpc } from '@/lib/trpc';
 
 const navItems = [
   { href: '/dashboard', label: 'Bosh sahifa', icon: 'DB' },
@@ -25,16 +24,6 @@ export function Sidebar({
 }) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useAuth();
-  const utils = trpc.useContext();
-  const { data: mockState } = trpc.settings.mockPreviewState.useQuery(undefined, {
-    refetchInterval: 10000,
-  });
-  const setMockMutation = trpc.settings.setMockPreview.useMutation({
-    onSuccess: () => {
-      void utils.settings.mockPreviewState.invalidate();
-      window.location.reload();
-    },
-  });
 
   return (
     <aside
@@ -64,33 +53,6 @@ export function Sidebar({
         >
           {theme === 'light' ? 'Tungi rejim' : 'Yorug rejim'}
         </button>
-        {isAdmin ? (
-          <button
-            onClick={() => setMockMutation.mutate({ enabled: !mockState?.enabled })}
-            disabled={setMockMutation.isLoading}
-            className="mt-2 w-full text-left text-xs px-3 py-2 rounded-md transition-colors disabled:opacity-60"
-            style={{
-              border: '1px solid var(--kd-border)',
-              background: mockState?.enabled ? 'var(--kd-accent)' : 'var(--kd-surface)',
-              color: mockState?.enabled ? 'var(--kd-accent-foreground)' : 'var(--kd-muted)',
-            }}
-          >
-            {mockState?.enabled ? "Mock rejim: yoqilgan" : "Mock rejim: o'chirilgan"}
-          </button>
-        ) : (
-          mockState?.enabled && (
-            <div
-              className="mt-2 text-xs px-3 py-2 rounded-md"
-              style={{
-                border: '1px solid var(--kd-border)',
-                background: 'var(--kd-surface-soft)',
-                color: 'var(--kd-muted)',
-              }}
-            >
-              Mock rejim faol
-            </div>
-          )
-        )}
       </div>
 
       <nav className="flex-1 py-4">
