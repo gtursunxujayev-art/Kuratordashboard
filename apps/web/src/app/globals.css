@@ -18,17 +18,18 @@
 }
 
 [data-theme='dark'] {
-  --kd-bg: #14070d;
-  --kd-sidebar-bg: #1a0911;
-  --kd-surface: #230d16;
-  --kd-surface-soft: #2c101c;
-  --kd-border: #4a1d2f;
-  --kd-text: #f5e9ef;
-  --kd-muted: #caa7b7;
-  --kd-accent: #bb2857;
-  --kd-accent-strong: #9f1f48;
-  --kd-accent-soft: #371424;
-  --kd-accent-foreground: #fff7fa;
+  --kd-bg: #020817;
+  --kd-sidebar-bg: #071225;
+  --kd-surface: #0c1a32;
+  --kd-surface-soft: #10203d;
+  --kd-border: #3a557b;
+  --kd-border-soft: #2a3f5f;
+  --kd-text: #e6edf9;
+  --kd-muted: #a8b7d5;
+  --kd-accent: #3b82f6;
+  --kd-accent-strong: #2563eb;
+  --kd-accent-soft: #13284a;
+  --kd-accent-foreground: #eff6ff;
 }
 
 .bg-white {
@@ -89,7 +90,7 @@
 }
 
 [data-theme='dark'] .text-blue-600 {
-  color: #f3cedd !important;
+  color: #7fb0ff !important;
 }
 
 [data-theme='dark'] .text-green-600 {
@@ -126,7 +127,7 @@
 }
 
 [data-theme='dark'] option {
-  background-color: #1e0a13;
+  background-color: #0a172d;
   color: var(--kd-text);
 }
 
@@ -250,4 +251,25 @@ body {
 
 .kd-main .divide-y > :not([hidden]) ~ :not([hidden]) {
   border-color: var(--kd-border-soft) !important;
+}
+
+[data-theme='dark'] body {
+  color: var(--kd-text);
+}
+
+[data-theme='dark'] .kd-main {
+  background: var(--kd-bg);
+}
+
+[data-theme='dark'] .kd-main .kd-title {
+  color: var(--kd-text);
+}
+
+[data-theme='dark'] .kd-main .kd-subtle {
+  color: var(--kd-muted);
+}
+
+[data-theme='dark'] .kd-main .kd-card .kd-subtle,
+[data-theme='dark'] .kd-main .kd-card.kd-subtle {
+  color: var(--kd-muted);
 }
