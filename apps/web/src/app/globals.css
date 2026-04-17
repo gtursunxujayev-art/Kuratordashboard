@@ -7,7 +7,8 @@
   --kd-sidebar-bg: #8a1538;
   --kd-surface: #8a1538;
   --kd-surface-soft: #8a1538;
-  --kd-border: #8a1538;
+  --kd-border: rgba(255, 255, 255, 0.82);
+  --kd-border-soft: rgba(255, 255, 255, 0.42);
   --kd-text: #ffffff;
   --kd-muted: #f3d7e1;
   --kd-accent: #8a1538;
@@ -155,11 +156,11 @@ body {
 
 .kd-surface {
   background: var(--kd-surface);
-  border: 1px solid var(--kd-border);
+  border: 2px solid var(--kd-border);
 }
 
 .kd-chip {
-  border: 1px solid var(--kd-border);
+  border: 2px solid var(--kd-border);
   background: var(--kd-surface);
   color: var(--kd-accent-foreground);
 }
@@ -172,8 +173,9 @@ body {
 
 .kd-card {
   background: var(--kd-surface);
-  border: 1px solid var(--kd-border);
+  border: 2px solid var(--kd-border);
   border-radius: 14px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18), 0 10px 22px rgba(56, 10, 30, 0.14);
 }
 
 .kd-card-clickable {
@@ -214,13 +216,38 @@ body {
   color: #f3d7e1;
 }
 
-.bg-white .text-gray-900 {
+.kd-main .bg-white .text-gray-900,
+.kd-main .bg-gray-50 .text-gray-900,
+.kd-main .bg-gray-100 .text-gray-900 {
   color: #ffffff !important;
 }
 
-.bg-white .text-gray-700,
-.bg-white .text-gray-600,
-.bg-white .text-gray-500,
-.bg-white .text-gray-400 {
+.kd-main .bg-white .text-gray-700,
+.kd-main .bg-white .text-gray-600,
+.kd-main .bg-white .text-gray-500,
+.kd-main .bg-white .text-gray-400,
+.kd-main .bg-gray-50 .text-gray-700,
+.kd-main .bg-gray-50 .text-gray-600,
+.kd-main .bg-gray-50 .text-gray-500,
+.kd-main .bg-gray-50 .text-gray-400,
+.kd-main .bg-gray-100 .text-gray-700,
+.kd-main .bg-gray-100 .text-gray-600,
+.kd-main .bg-gray-100 .text-gray-500,
+.kd-main .bg-gray-100 .text-gray-400 {
   color: #f3d7e1 !important;
+}
+
+.kd-main .bg-white.border,
+.kd-main .bg-gray-50.border,
+.kd-main .bg-gray-100.border,
+.kd-main .rounded-xl.border,
+.kd-main .rounded-lg.border,
+.kd-main .kd-card {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--kd-border) !important;
+}
+
+.kd-main .divide-y > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--kd-border-soft) !important;
 }
