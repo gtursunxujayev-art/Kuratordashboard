@@ -22,7 +22,7 @@ export default function SettingsPage() {
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">Sozlamalar</h1>
 
-      <div className="flex gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit flex-wrap">
+      <div className="flex gap-1 mb-6 kd-topbar rounded-lg p-1 w-fit flex-wrap">
         {([
           { key: 'templates', label: 'Jadval shablonlari' },
           { key: 'courseRuns', label: 'Kurs oqimlari' },
@@ -35,7 +35,9 @@ export default function SettingsPage() {
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-              activeTab === tab.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+              activeTab === tab.key
+                ? 'bg-white text-gray-900 shadow-sm'
+                : 'text-white/90 hover:text-white'
             }`}
           >
             {tab.label}
