@@ -133,6 +133,28 @@ function isMissingCourseScheduleTemplatesTableError(error: unknown): boolean {
   return message.includes('course_schedule_templates');
 }
 
+function isScheduleTemplatesStorageError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+
+  if (isMissingCourseScheduleTemplatesTableError(error)) {
+    return true;
+  }
+
+  // Handle partially migrated or drifted schema around schedule templates.
+  if (code === 'P2022' && (message.includes('course_schedule_templates') || message.includes('coursescheduletemplate'))) {
+    return true;
+  }
+  if (code === 'P2010' && (message.includes('course_schedule_templates') || message.includes('coursescheduletemplate'))) {
+    return true;
+  }
+  if (message.includes('course_schedule_templates')) {
+    return true;
+  }
+
+  return false;
+}
+
 function throwMissingCourseRunsMigrationError(): never {
   throw new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -349,7 +371,7 @@ export const settingsRouter = router({
         orderBy: { courseCategory: 'asc' },
       });
     } catch (error) {
-      if (isMissingCourseScheduleTemplatesTableError(error)) {
+      if (isScheduleTemplatesStorageError(error)) {
         const tenant = await prisma.tenant.findUnique({
           where: { id: ctx.tenantId },
           select: { settings: true },
@@ -388,7 +410,7 @@ export const settingsRouter = router({
           },
         });
       } catch (error) {
-        if (isMissingCourseScheduleTemplatesTableError(error)) {
+        if (isScheduleTemplatesStorageError(error)) {
           const tenant = await prisma.tenant.findUnique({
             where: { id: ctx.tenantId },
             select: { settings: true },
