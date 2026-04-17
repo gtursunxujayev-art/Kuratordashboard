@@ -69,6 +69,7 @@ function ScheduleTemplatesTab() {
   });
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
 
   const { data, isLoading, error: queryError, refetch } = trpc.settings.listScheduleTemplates.useQuery();
   const upsertMutation = trpc.settings.upsertScheduleTemplate.useMutation({
@@ -142,13 +143,19 @@ function ScheduleTemplatesTab() {
         {error && <p className="text-sm text-red-600">{error}</p>}
         {queryError && <p className="text-sm text-red-600">{queryError.message}</p>}
         {success && <p className="text-sm text-green-600">{success}</p>}
+        {editingTemplateId && (
+          <p className="text-sm text-blue-700">
+            Tahrirlanmoqda: <span className="font-semibold">{form.courseCategory}</span>
+          </p>
+        )}
 
         <button
+          type="button"
           onClick={handleSave}
           disabled={upsertMutation.isLoading || !form.courseCategory.trim()}
           className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
         >
-          {upsertMutation.isLoading ? 'Saqlanmoqda...' : 'Saqlash'}
+          {upsertMutation.isLoading ? 'Saqlanmoqda...' : editingTemplateId ? 'Yangilash' : 'Saqlash'}
         </button>
       </div>
 
@@ -179,14 +186,18 @@ function ScheduleTemplatesTab() {
                   <td className="px-4 py-3 text-gray-700">{item.premiumExtraLessons}</td>
                   <td className="px-4 py-3">
                     <button
-                      onClick={() =>
+                      type="button"
+                      onClick={() => {
                         setForm({
                           courseCategory: item.courseCategory,
                           durationWeeks: item.durationWeeks,
                           baseLessons: item.baseLessons,
                           premiumExtraLessons: item.premiumExtraLessons,
-                        })
-                      }
+                        });
+                        setEditingTemplateId(item.id);
+                        setError('');
+                        setSuccess(`Tahrirlash uchun yuklandi: ${item.courseCategory}`);
+                      }}
                       className="text-blue-600 text-xs hover:underline"
                     >
                       Tahrirlash
