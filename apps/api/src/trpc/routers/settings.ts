@@ -1,6 +1,6 @@
 import { router, adminProcedure, protectedProcedure } from '../trpc';
 import { z } from 'zod';
-import { prisma } from '@kuratordashboard/db';
+import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
 
@@ -10,6 +10,92 @@ const scheduleTemplateSchema = z.object({
   baseLessons: z.number().int().min(1).max(200),
   premiumExtraLessons: z.number().int().min(0).max(50),
 });
+
+const SCHEDULE_TEMPLATES_SETTINGS_KEY = 'scheduleTemplates';
+
+type ScheduleTemplateFallbackRow = {
+  id: string;
+  tenantId: string;
+  courseCategory: string;
+  durationWeeks: number;
+  baseLessons: number;
+  premiumExtraLessons: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function toIntOrDefault(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.trunc(n);
+}
+
+function toDateOrNow(value: unknown): Date {
+  const d = value instanceof Date ? value : new Date(String(value || ''));
+  return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function readScheduleTemplatesFromSettings(
+  settings: unknown,
+  tenantId: string,
+): ScheduleTemplateFallbackRow[] {
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+    return [];
+  }
+
+  const raw = (settings as Record<string, unknown>)[SCHEDULE_TEMPLATES_SETTINGS_KEY];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return null;
+      }
+      const row = item as Record<string, unknown>;
+      const category = String(row.courseCategory || '').trim();
+      if (!category) {
+        return null;
+      }
+      return {
+        id: String(row.id || `fallback-${tenantId}-${category.toLowerCase()}-${index}`),
+        tenantId: String(row.tenantId || tenantId),
+        courseCategory: category,
+        durationWeeks: Math.max(1, Math.min(52, toIntOrDefault(row.durationWeeks, 6))),
+        baseLessons: Math.max(1, Math.min(200, toIntOrDefault(row.baseLessons, 12))),
+        premiumExtraLessons: Math.max(0, Math.min(50, toIntOrDefault(row.premiumExtraLessons, 2))),
+        createdAt: toDateOrNow(row.createdAt),
+        updatedAt: toDateOrNow(row.updatedAt),
+      };
+    })
+    .filter((row): row is ScheduleTemplateFallbackRow => Boolean(row));
+}
+
+function writeScheduleTemplatesToSettings(
+  settings: unknown,
+  templates: ScheduleTemplateFallbackRow[],
+): Record<string, unknown> {
+  const base =
+    settings && typeof settings === 'object' && !Array.isArray(settings)
+      ? { ...(settings as Record<string, unknown>) }
+      : {};
+
+  base[SCHEDULE_TEMPLATES_SETTINGS_KEY] = templates.map((row) => ({
+    id: row.id,
+    tenantId: row.tenantId,
+    courseCategory: row.courseCategory,
+    durationWeeks: row.durationWeeks,
+    baseLessons: row.baseLessons,
+    premiumExtraLessons: row.premiumExtraLessons,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }));
+
+  return base;
+}
 
 function isMissingRegionConfigsTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
@@ -264,7 +350,13 @@ export const settingsRouter = router({
       });
     } catch (error) {
       if (isMissingCourseScheduleTemplatesTableError(error)) {
-        return [];
+        const tenant = await prisma.tenant.findUnique({
+          where: { id: ctx.tenantId },
+          select: { settings: true },
+        });
+        return readScheduleTemplatesFromSettings(tenant?.settings, ctx.tenantId).sort((a, b) =>
+          a.courseCategory.localeCompare(b.courseCategory),
+        );
       }
       throw error;
     }
@@ -297,17 +389,54 @@ export const settingsRouter = router({
         });
       } catch (error) {
         if (isMissingCourseScheduleTemplatesTableError(error)) {
+          const tenant = await prisma.tenant.findUnique({
+            where: { id: ctx.tenantId },
+            select: { settings: true },
+          });
           const now = new Date();
-          return {
-            id: `fallback-${ctx.tenantId}-${input.courseCategory}`,
-            tenantId: ctx.tenantId,
-            courseCategory: input.courseCategory,
-            durationWeeks: input.durationWeeks,
-            baseLessons: input.baseLessons,
-            premiumExtraLessons: input.premiumExtraLessons,
-            createdAt: now,
-            updatedAt: now,
-          };
+          const templates = readScheduleTemplatesFromSettings(tenant?.settings, ctx.tenantId);
+          const normalizedCategory = input.courseCategory.trim().toLowerCase();
+          const existingIndex = templates.findIndex(
+            (row) => row.courseCategory.trim().toLowerCase() === normalizedCategory,
+          );
+
+          let saved: ScheduleTemplateFallbackRow;
+          if (existingIndex >= 0) {
+            const current = templates[existingIndex];
+            saved = {
+              ...current,
+              courseCategory: input.courseCategory.trim(),
+              durationWeeks: input.durationWeeks,
+              baseLessons: input.baseLessons,
+              premiumExtraLessons: input.premiumExtraLessons,
+              updatedAt: now,
+            };
+            templates[existingIndex] = saved;
+          } else {
+            saved = {
+              id: `fallback-${ctx.tenantId}-${normalizedCategory}`,
+              tenantId: ctx.tenantId,
+              courseCategory: input.courseCategory.trim(),
+              durationWeeks: input.durationWeeks,
+              baseLessons: input.baseLessons,
+              premiumExtraLessons: input.premiumExtraLessons,
+              createdAt: now,
+              updatedAt: now,
+            };
+            templates.push(saved);
+          }
+
+          await prisma.tenant.update({
+            where: { id: ctx.tenantId },
+            data: {
+              settings: writeScheduleTemplatesToSettings(
+                tenant?.settings,
+                templates,
+              ) as Prisma.InputJsonValue,
+            },
+          });
+
+          return saved;
         }
         throw error;
       }
