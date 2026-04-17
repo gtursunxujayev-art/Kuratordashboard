@@ -74,13 +74,14 @@ export function Sidebar({
               style={
                 isActive
                   ? {
-                      background: 'rgba(255, 255, 255, 0.14)',
+                      background: 'rgba(255, 255, 255, 0.20)',
                       color: '#ffffff',
-                      border: '1px solid rgba(255, 255, 255, 0.55)',
+                      border: '2px solid rgba(255, 255, 255, 0.78)',
                     }
                   : {
-                      color: 'rgba(255, 255, 255, 0.94)',
-                      border: '1px solid rgba(255, 255, 255, 0.24)',
+                      color: '#ffffff',
+                      background: 'rgba(255, 255, 255, 0.08)',
+                      border: '1px solid rgba(255, 255, 255, 0.38)',
                     }
               }
             >
@@ -101,13 +102,14 @@ export function Sidebar({
                 style={
                   isActive
                     ? {
-                        background: 'rgba(255, 255, 255, 0.14)',
+                        background: 'rgba(255, 255, 255, 0.20)',
                         color: '#ffffff',
-                        border: '1px solid rgba(255, 255, 255, 0.55)',
+                        border: '2px solid rgba(255, 255, 255, 0.78)',
                       }
                     : {
-                        color: 'rgba(255, 255, 255, 0.94)',
-                        border: '1px solid rgba(255, 255, 255, 0.24)',
+                        color: '#ffffff',
+                        background: 'rgba(255, 255, 255, 0.08)',
+                        border: '1px solid rgba(255, 255, 255, 0.38)',
                       }
                 }
               >
@@ -119,7 +121,15 @@ export function Sidebar({
       </nav>
 
       <div className="p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.35)' }}>
-        <button onClick={logout} className="w-full text-sm text-left transition-colors" style={{ color: '#ffffff' }}>
+        <button
+          onClick={logout}
+          className="w-full text-sm text-left px-3 py-2 rounded-md transition-colors"
+          style={{
+            color: '#ffffff',
+            border: '1px solid rgba(255, 255, 255, 0.45)',
+            background: 'rgba(255, 255, 255, 0.10)',
+          }}
+        >
           Chiqish
         </button>
       </div>
