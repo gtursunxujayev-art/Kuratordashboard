@@ -140,7 +140,7 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
 
   return (
     <div className="p-5 md:p-6 space-y-5">
-      <div className="kd-card p-4">
+      <div className="kd-card kd-topbar p-4">
         <h1 className="text-2xl font-semibold kd-title">Bosh sahifa</h1>
         <p className="text-sm kd-subtle mt-1">Kurs bo'yicha umumiy ko'rsatkichlar va samaradorlik</p>
 
