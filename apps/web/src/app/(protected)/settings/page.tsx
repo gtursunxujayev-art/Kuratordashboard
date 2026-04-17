@@ -68,17 +68,24 @@ function ScheduleTemplatesTab() {
     premiumExtraLessons: 2,
   });
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const { data, isLoading } = trpc.settings.listScheduleTemplates.useQuery();
+  const { data, isLoading, error: queryError, refetch } = trpc.settings.listScheduleTemplates.useQuery();
   const upsertMutation = trpc.settings.upsertScheduleTemplate.useMutation({
     onSuccess: () => {
       void utils.settings.listScheduleTemplates.invalidate();
+      void refetch();
       setError('');
+      setSuccess("Jadval shabloni muvaffaqiyatli saqlandi.");
     },
-    onError: (err) => setError(err.message),
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
   });
 
   const handleSave = () => {
+    setSuccess('');
     upsertMutation.mutate(form);
   };
 
@@ -133,6 +140,8 @@ function ScheduleTemplatesTab() {
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}
+        {queryError && <p className="text-sm text-red-600">{queryError.message}</p>}
+        {success && <p className="text-sm text-green-600">{success}</p>}
 
         <button
           onClick={handleSave}
