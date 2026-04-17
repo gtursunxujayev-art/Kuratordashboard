@@ -45,7 +45,7 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
   return (
     <div className="flex min-h-screen">
       <Sidebar theme={theme} onToggleTheme={toggleTheme} />
-      <main className="flex-1 overflow-auto">{children}</main>
+      <main className="flex-1 overflow-auto kd-main">{children}</main>
     </div>
   );
 }
