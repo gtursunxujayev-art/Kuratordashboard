@@ -209,7 +209,8 @@ body {
   color: #ffffff;
 }
 
-.kd-main .kd-card .kd-subtle {
+.kd-main .kd-card .kd-subtle,
+.kd-main .kd-card.kd-subtle {
   color: #f3d7e1;
 }
 
