@@ -150,6 +150,7 @@ export const studentsRouter = router({
       } else if (courseRunCourseId) {
         incomeFilter.courseId = courseRunCourseId;
       }
+      const effectiveCourseId = input.courseId ?? courseRunCourseId;
 
       const buildWhere = (support: CustomerColumnSupport): Record<string, unknown> => ({
         tenantId,
@@ -166,11 +167,19 @@ export const studentsRouter = router({
               ],
             }
           : {}),
-        ...(input.courseId || input.tariffId || courseRunCourseId
+        ...(effectiveCourseId || input.tariffId
           ? {
-              incomes: {
-                some: incomeFilter,
-              },
+              OR: [
+                {
+                  incomes: {
+                    some: incomeFilter,
+                  },
+                },
+                {
+                  ...(effectiveCourseId ? { profileCourseId: effectiveCourseId } : {}),
+                  ...(input.tariffId ? { profileTariffId: input.tariffId } : {}),
+                },
+              ],
             }
           : {}),
       });
