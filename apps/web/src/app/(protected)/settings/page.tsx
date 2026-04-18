@@ -237,6 +237,9 @@ function CourseRunsTab({
   const [selectedTariffId, setSelectedTariffId] = useState('');
   const [selectedKuratorId, setSelectedKuratorId] = useState('');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [createTariffId, setCreateTariffId] = useState('');
+  const [createKuratorId, setCreateKuratorId] = useState('');
+  const [createStudentIds, setCreateStudentIds] = useState<string[]>([]);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
@@ -252,9 +255,22 @@ function CourseRunsTab({
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
   const { data: kurators } = trpc.settings.listKurators.useQuery();
+  const { data: createTariffs } = trpc.settings.listTariffsByCourse.useQuery(
+    { courseId: form.courseId || '' },
+    { enabled: showForm && Boolean(form.courseId) },
+  );
   const { data: runTariffs } = trpc.settings.listTariffsByCourseRun.useQuery(
     { courseRunId: selectedRunId },
     { enabled: Boolean(selectedRunId) },
+  );
+  const { data: studentsForCreate, isLoading: studentsForCreateLoading } = trpc.students.list.useQuery(
+    {
+      courseId: form.courseId || undefined,
+      tariffId: createTariffId || undefined,
+      page: 1,
+      limit: 200,
+    },
+    { enabled: showForm && Boolean(form.courseId) },
   );
   const { data: studentsForRun, isLoading: studentsLoading } = trpc.students.list.useQuery(
     {
@@ -266,22 +282,7 @@ function CourseRunsTab({
     { enabled: Boolean(selectedRunId) },
   );
 
-  const createMutation = trpc.settings.createCourseRun.useMutation({
-    onSuccess: () => {
-      void utils.settings.listCourseRuns.invalidate();
-      setShowForm(false);
-      setForm({
-        courseId: '',
-        name: '',
-        startDate: '',
-        durationWeeks: 6,
-        baseLessons: 12,
-        premiumExtraLessons: 2,
-      });
-      setError('');
-    },
-    onError: (err) => setError(err.message),
-  });
+  const createMutation = trpc.settings.createCourseRun.useMutation();
   const assignBulkMutation = trpc.settings.assignStudentsBulk.useMutation({
     onSuccess: (result) => {
       setAssignError('');
@@ -296,6 +297,7 @@ function CourseRunsTab({
   });
 
   const studentOptions = useMemo(() => studentsForRun?.data ?? [], [studentsForRun?.data]);
+  const createStudentOptions = useMemo(() => studentsForCreate?.data ?? [], [studentsForCreate?.data]);
 
   useEffect(() => {
     setSelectedTariffId('');
@@ -308,20 +310,57 @@ function CourseRunsTab({
     setSelectedStudentIds([]);
   }, [selectedTariffId]);
 
-  const handleCreate = () => {
+  useEffect(() => {
+    setCreateTariffId('');
+    setCreateStudentIds([]);
+  }, [form.courseId]);
+
+  useEffect(() => {
+    setCreateStudentIds([]);
+  }, [createTariffId]);
+
+  const handleCreate = async () => {
     if (!form.courseId || !form.name || !form.startDate) {
       setError("Barcha maydonlarni to'ldiring");
       return;
     }
 
-    createMutation.mutate({
-      courseId: form.courseId,
-      name: form.name,
-      startDate: form.startDate,
-      durationWeeks: form.durationWeeks,
-      baseLessons: form.baseLessons,
-      premiumExtraLessons: form.premiumExtraLessons,
-    });
+    try {
+      setError('');
+      const createdRun = await createMutation.mutateAsync({
+        courseId: form.courseId,
+        name: form.name,
+        startDate: form.startDate,
+        durationWeeks: form.durationWeeks,
+        baseLessons: form.baseLessons,
+        premiumExtraLessons: form.premiumExtraLessons,
+      });
+
+      if (createKuratorId && createStudentIds.length > 0) {
+        await assignBulkMutation.mutateAsync({
+          courseRunId: createdRun.id,
+          kuratorUserId: createKuratorId,
+          customerIds: createStudentIds,
+        });
+      }
+
+      await utils.settings.listCourseRuns.invalidate();
+      onSelectRun(createdRun.id);
+      setShowForm(false);
+      setForm({
+        courseId: '',
+        name: '',
+        startDate: '',
+        durationWeeks: 6,
+        baseLessons: 12,
+        premiumExtraLessons: 2,
+      });
+      setCreateTariffId('');
+      setCreateKuratorId('');
+      setCreateStudentIds([]);
+    } catch (err: any) {
+      setError(err?.message ?? "Oqim yaratishda xatolik yuz berdi");
+    }
   };
 
   const toggleStudent = (studentId: string) => {
@@ -336,6 +375,20 @@ function CourseRunsTab({
 
   const clearSelectedStudents = () => {
     setSelectedStudentIds([]);
+  };
+
+  const toggleCreateStudent = (studentId: string) => {
+    setCreateStudentIds((prev) =>
+      prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId],
+    );
+  };
+
+  const selectAllCreateStudents = () => {
+    setCreateStudentIds(createStudentOptions.map((s) => s.id));
+  };
+
+  const clearCreateStudents = () => {
+    setCreateStudentIds([]);
   };
 
   const handleBulkAssign = () => {
@@ -435,6 +488,89 @@ function CourseRunsTab({
               />
             </div>
           </div>
+
+          {form.courseId && (
+            <div className="border border-gray-200 rounded-lg p-3 space-y-3">
+              <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun o'quvchilarni tanlash (ixtiyoriy)</h4>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
+                  <select
+                    value={createTariffId}
+                    onChange={(e) => setCreateTariffId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  >
+                    <option value="">Barcha tariflar</option>
+                    {createTariffs?.map((tariff) => (
+                      <option key={tariff.id} value={tariff.id}>
+                        {tariff.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
+                  <select
+                    value={createKuratorId}
+                    onChange={(e) => setCreateKuratorId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  >
+                    <option value="">Kuratorni tanlang...</option>
+                    {kurators?.map((kurator) => (
+                      <option key={kurator.id} value={kurator.id}>
+                        {kurator.name ?? kurator.username}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllCreateStudents}
+                    disabled={createStudentOptions.length === 0}
+                    className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Barchasini tanlash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearCreateStudents}
+                    disabled={createStudentIds.length === 0}
+                    className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
+                  >
+                    Tozalash
+                  </button>
+                </div>
+              </div>
+
+              <div className="border border-gray-200 rounded-lg p-3 max-h-64 overflow-auto">
+                <div className="text-xs text-gray-500 mb-2">
+                  O'quvchilar ({createStudentOptions.length}) • Tanlangan: {createStudentIds.length}
+                </div>
+                {studentsForCreateLoading ? (
+                  <p className="text-sm text-gray-500">Yuklanmoqda...</p>
+                ) : createStudentOptions.length === 0 ? (
+                  <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {createStudentOptions.map((student) => (
+                      <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
+                        <input
+                          type="checkbox"
+                          checked={createStudentIds.includes(student.id)}
+                          onChange={() => toggleCreateStudent(student.id)}
+                          className="h-4 w-4"
+                        />
+                        <span>
+                          {student.customerNumber} - {student.name}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
 
