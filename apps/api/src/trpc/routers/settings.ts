@@ -718,4 +718,110 @@ export const settingsRouter = router({
       orderBy: { name: 'asc' },
     });
   }),
+
+  listTariffsByCourseRun: protectedProcedure
+    .input(z.object({ courseRunId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          select: { courseId: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      return prisma.tariff.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: courseRun.courseId,
+          isActive: true,
+        },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      });
+    }),
+
+  assignStudentsBulk: adminProcedure
+    .input(
+      z.object({
+        kuratorUserId: z.string(),
+        courseRunId: z.string(),
+        customerIds: z.array(z.string()).min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const uniqueCustomerIds = Array.from(new Set(input.customerIds));
+      const [kurator, courseRun, customers] = await Promise.all([
+        prisma.user.findFirst({
+          where: {
+            id: input.kuratorUserId,
+            tenantId: ctx.tenantId,
+            roles: { has: 'Kurator' },
+            isActive: true,
+          },
+          select: { id: true },
+        }),
+        prisma.courseRun
+          .findFirst({
+            where: { id: input.courseRunId, tenantId: ctx.tenantId },
+            select: { id: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              throwMissingCourseRunsMigrationError();
+            }
+            throw error;
+          }),
+        prisma.customer.findMany({
+          where: { tenantId: ctx.tenantId, id: { in: uniqueCustomerIds } },
+          select: { id: true },
+        }),
+      ]);
+
+      if (!kurator) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
+      }
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const validCustomerIds = new Set(customers.map((c) => c.id));
+      const missing = uniqueCustomerIds.filter((id) => !validCustomerIds.has(id));
+      if (missing.length > 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Ba'zi o'quvchilar topilmadi" });
+      }
+
+      await prisma.$transaction(
+        uniqueCustomerIds.map((customerId) =>
+          prisma.kuratorAssignment.upsert({
+            where: {
+              tenantId_kuratorUserId_customerId_courseRunId: {
+                tenantId: ctx.tenantId,
+                kuratorUserId: input.kuratorUserId,
+                customerId,
+                courseRunId: input.courseRunId,
+              },
+            },
+            create: {
+              tenantId: ctx.tenantId,
+              kuratorUserId: input.kuratorUserId,
+              customerId,
+              courseRunId: input.courseRunId,
+              isActive: true,
+            },
+            update: { isActive: true },
+          }),
+        ),
+      );
+
+      return { assignedCount: uniqueCustomerIds.length };
+    }),
 });
