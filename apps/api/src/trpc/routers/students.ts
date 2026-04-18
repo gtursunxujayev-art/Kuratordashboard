@@ -101,14 +101,30 @@ export const studentsRouter = router({
         !user.roles.includes('Manager');
 
       let scopedCustomerIds: string[] | undefined;
+      let courseRunCourseId: string | undefined;
 
       if (input.courseRunId) {
+        const selectedRun = await prisma.courseRun
+          .findFirst({
+            where: { id: input.courseRunId, tenantId },
+            select: { courseId: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return null;
+            }
+            throw error;
+          });
+        courseRunCourseId = selectedRun?.courseId;
+      }
+
+      if (input.courseRunId && isKurator) {
         const assignments = await prisma.kuratorAssignment.findMany({
           where: {
             tenantId,
             courseRunId: input.courseRunId,
             isActive: true,
-            ...(isKurator ? { kuratorUserId: user.userId } : {}),
+            kuratorUserId: user.userId,
           },
           select: { customerId: true },
         });
@@ -129,7 +145,11 @@ export const studentsRouter = router({
         ...ACTIVE_ENROLLMENT_FILTER,
       };
       if (input.tariffId) incomeFilter.tariffId = input.tariffId;
-      if (input.courseId) incomeFilter.courseId = input.courseId;
+      if (input.courseId) {
+        incomeFilter.courseId = input.courseId;
+      } else if (courseRunCourseId) {
+        incomeFilter.courseId = courseRunCourseId;
+      }
 
       const buildWhere = (support: CustomerColumnSupport): Record<string, unknown> => ({
         tenantId,
@@ -146,7 +166,7 @@ export const studentsRouter = router({
               ],
             }
           : {}),
-        ...(input.courseId || input.tariffId
+        ...(input.courseId || input.tariffId || courseRunCourseId
           ? {
               incomes: {
                 some: incomeFilter,
