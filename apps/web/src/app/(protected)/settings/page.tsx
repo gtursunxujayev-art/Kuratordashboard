@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
@@ -234,6 +234,9 @@ function CourseRunsTab({
 }) {
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
+  const [selectedTariffId, setSelectedTariffId] = useState('');
+  const [selectedKuratorId, setSelectedKuratorId] = useState('');
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
@@ -243,9 +246,25 @@ function CourseRunsTab({
     premiumExtraLessons: 2,
   });
   const [error, setError] = useState('');
+  const [assignError, setAssignError] = useState('');
+  const [assignSuccess, setAssignSuccess] = useState('');
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
+  const { data: kurators } = trpc.settings.listKurators.useQuery();
+  const { data: runTariffs } = trpc.settings.listTariffsByCourseRun.useQuery(
+    { courseRunId: selectedRunId },
+    { enabled: Boolean(selectedRunId) },
+  );
+  const { data: studentsForRun, isLoading: studentsLoading } = trpc.students.list.useQuery(
+    {
+      courseRunId: selectedRunId || undefined,
+      tariffId: selectedTariffId || undefined,
+      page: 1,
+      limit: 200,
+    },
+    { enabled: Boolean(selectedRunId) },
+  );
 
   const createMutation = trpc.settings.createCourseRun.useMutation({
     onSuccess: () => {
@@ -263,6 +282,31 @@ function CourseRunsTab({
     },
     onError: (err) => setError(err.message),
   });
+  const assignBulkMutation = trpc.settings.assignStudentsBulk.useMutation({
+    onSuccess: (result) => {
+      setAssignError('');
+      setAssignSuccess(`${result.assignedCount} ta o'quvchi kuratorga biriktirildi.`);
+      setSelectedStudentIds([]);
+      void utils.kurators.assignments.invalidate();
+    },
+    onError: (err) => {
+      setAssignSuccess('');
+      setAssignError(err.message);
+    },
+  });
+
+  const studentOptions = useMemo(() => studentsForRun?.data ?? [], [studentsForRun?.data]);
+
+  useEffect(() => {
+    setSelectedTariffId('');
+    setSelectedStudentIds([]);
+    setAssignError('');
+    setAssignSuccess('');
+  }, [selectedRunId]);
+
+  useEffect(() => {
+    setSelectedStudentIds([]);
+  }, [selectedTariffId]);
 
   const handleCreate = () => {
     if (!form.courseId || !form.name || !form.startDate) {
@@ -277,6 +321,34 @@ function CourseRunsTab({
       durationWeeks: form.durationWeeks,
       baseLessons: form.baseLessons,
       premiumExtraLessons: form.premiumExtraLessons,
+    });
+  };
+
+  const toggleStudent = (studentId: string) => {
+    setSelectedStudentIds((prev) =>
+      prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId],
+    );
+  };
+
+  const selectAllStudents = () => {
+    setSelectedStudentIds(studentOptions.map((s) => s.id));
+  };
+
+  const clearSelectedStudents = () => {
+    setSelectedStudentIds([]);
+  };
+
+  const handleBulkAssign = () => {
+    setAssignError('');
+    setAssignSuccess('');
+    if (!selectedRunId || !selectedKuratorId || selectedStudentIds.length === 0) {
+      setAssignError("Oqim, kurator va kamida bitta o'quvchini tanlang.");
+      return;
+    }
+    assignBulkMutation.mutate({
+      courseRunId: selectedRunId,
+      kuratorUserId: selectedKuratorId,
+      customerIds: selectedStudentIds,
     });
   };
 
@@ -382,6 +454,118 @@ function CourseRunsTab({
               className="px-4 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50"
             >
               Bekor qilish
+            </button>
+          </div>
+        </div>
+      )}
+
+      {selectedRunId && (
+        <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-medium text-gray-900">Oqim bo'yicha o'quvchilarni tanlash</h3>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
+              <select
+                value={selectedTariffId}
+                onChange={(e) => setSelectedTariffId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              >
+                <option value="">Barcha tariflar</option>
+                {runTariffs?.map((tariff) => (
+                  <option key={tariff.id} value={tariff.id}>
+                    {tariff.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
+              <select
+                value={selectedKuratorId}
+                onChange={(e) => setSelectedKuratorId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              >
+                <option value="">Kuratorni tanlang...</option>
+                {kurators?.map((kurator) => (
+                  <option key={kurator.id} value={kurator.id}>
+                    {kurator.name ?? kurator.username}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex items-end gap-2">
+              <button
+                type="button"
+                onClick={selectAllStudents}
+                disabled={studentOptions.length === 0}
+                className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                Barchasini tanlash
+              </button>
+              <button
+                type="button"
+                onClick={clearSelectedStudents}
+                disabled={selectedStudentIds.length === 0}
+                className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
+              >
+                Tozalash
+              </button>
+            </div>
+          </div>
+
+          <div className="border border-gray-200 rounded-lg p-3 max-h-72 overflow-auto">
+            <div className="text-xs text-gray-500 mb-2">
+              O'quvchilar ({studentOptions.length}) • Tanlangan: {selectedStudentIds.length}
+            </div>
+            {studentsLoading ? (
+              <p className="text-sm text-gray-500">Yuklanmoqda...</p>
+            ) : studentOptions.length === 0 ? (
+              <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
+            ) : (
+              <div className="space-y-2">
+                {studentOptions.map((student) => (
+                  <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
+                    <input
+                      type="checkbox"
+                      checked={selectedStudentIds.includes(student.id)}
+                      onChange={() => toggleStudent(student.id)}
+                      className="h-4 w-4"
+                    />
+                    <span>
+                      {student.customerNumber} - {student.name}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {assignError && <p className="text-sm text-red-600">{assignError}</p>}
+          {assignSuccess && <p className="text-sm text-green-600">{assignSuccess}</p>}
+
+          <div className="flex gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={handleBulkAssign}
+              disabled={
+                assignBulkMutation.isLoading ||
+                !selectedRunId ||
+                !selectedKuratorId ||
+                selectedStudentIds.length === 0
+              }
+              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {assignBulkMutation.isLoading ? 'Biriktirilmoqda...' : "Tanlanganlarni kuratorga biriktirish"}
+            </button>
+            <button
+              type="button"
+              onClick={onOpenAssignments}
+              className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50"
+            >
+              Kurator bog'lash tabiga o'tish
             </button>
           </div>
         </div>
