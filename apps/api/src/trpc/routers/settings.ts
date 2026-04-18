@@ -5,6 +5,7 @@ import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
 
 const scheduleTemplateSchema = z.object({
+  id: z.string().optional(),
   courseCategory: z.string().min(1).max(100),
   durationWeeks: z.number().int().min(1).max(52),
   baseLessons: z.number().int().min(1).max(200),
@@ -387,17 +388,38 @@ export const settingsRouter = router({
   upsertScheduleTemplate: adminProcedure
     .input(scheduleTemplateSchema)
     .mutation(async ({ ctx, input }) => {
+      const normalizedCategory = input.courseCategory.trim();
       try {
+        if (input.id) {
+          const existingById = await prisma.courseScheduleTemplate.findFirst({
+            where: { id: input.id, tenantId: ctx.tenantId },
+            select: { id: true },
+          });
+          if (!existingById) {
+            throw new TRPCError({ code: 'NOT_FOUND', message: "Jadval shabloni topilmadi" });
+          }
+          return await prisma.courseScheduleTemplate.update({
+            where: { id: input.id },
+            data: {
+              courseCategory: normalizedCategory,
+              durationWeeks: input.durationWeeks,
+              baseLessons: input.baseLessons,
+              premiumExtraLessons: input.premiumExtraLessons,
+              updatedAt: new Date(),
+            },
+          });
+        }
+
         return await prisma.courseScheduleTemplate.upsert({
           where: {
             tenantId_courseCategory: {
               tenantId: ctx.tenantId,
-              courseCategory: input.courseCategory,
+              courseCategory: normalizedCategory,
             },
           },
           create: {
             tenantId: ctx.tenantId,
-            courseCategory: input.courseCategory,
+            courseCategory: normalizedCategory,
             durationWeeks: input.durationWeeks,
             baseLessons: input.baseLessons,
             premiumExtraLessons: input.premiumExtraLessons,
@@ -417,17 +439,17 @@ export const settingsRouter = router({
           });
           const now = new Date();
           const templates = readScheduleTemplatesFromSettings(tenant?.settings, ctx.tenantId);
-          const normalizedCategory = input.courseCategory.trim().toLowerCase();
-          const existingIndex = templates.findIndex(
-            (row) => row.courseCategory.trim().toLowerCase() === normalizedCategory,
-          );
+          const normalizedCategoryKey = normalizedCategory.toLowerCase();
+          const existingIndex = input.id
+            ? templates.findIndex((row) => row.id === input.id)
+            : templates.findIndex((row) => row.courseCategory.trim().toLowerCase() === normalizedCategoryKey);
 
           let saved: ScheduleTemplateFallbackRow;
           if (existingIndex >= 0) {
             const current = templates[existingIndex];
             saved = {
               ...current,
-              courseCategory: input.courseCategory.trim(),
+              courseCategory: normalizedCategory,
               durationWeeks: input.durationWeeks,
               baseLessons: input.baseLessons,
               premiumExtraLessons: input.premiumExtraLessons,
@@ -436,9 +458,9 @@ export const settingsRouter = router({
             templates[existingIndex] = saved;
           } else {
             saved = {
-              id: `fallback-${ctx.tenantId}-${normalizedCategory}`,
+              id: input.id || `fallback-${ctx.tenantId}-${normalizedCategoryKey}`,
               tenantId: ctx.tenantId,
-              courseCategory: input.courseCategory.trim(),
+              courseCategory: normalizedCategory,
               durationWeeks: input.durationWeeks,
               baseLessons: input.baseLessons,
               premiumExtraLessons: input.premiumExtraLessons,
