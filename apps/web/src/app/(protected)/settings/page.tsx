@@ -240,6 +240,7 @@ function CourseRunsTab({
   const [createTariffId, setCreateTariffId] = useState('');
   const [createKuratorId, setCreateKuratorId] = useState('');
   const [createStudentIds, setCreateStudentIds] = useState<string[]>([]);
+  const [createStudentsOpen, setCreateStudentsOpen] = useState(false);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
@@ -313,6 +314,7 @@ function CourseRunsTab({
   useEffect(() => {
     setCreateTariffId('');
     setCreateStudentIds([]);
+    setCreateStudentsOpen(false);
   }, [form.courseId]);
 
   useEffect(() => {
@@ -489,41 +491,61 @@ function CourseRunsTab({
             </div>
           </div>
 
-          {form.courseId && (
-            <div className="border border-gray-200 rounded-lg p-3 space-y-3">
-              <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun o'quvchilarni tanlash (ixtiyoriy)</h4>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
-                  <select
-                    value={createTariffId}
-                    onChange={(e) => setCreateTariffId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  >
-                    <option value="">Barcha tariflar</option>
-                    {createTariffs?.map((tariff) => (
-                      <option key={tariff.id} value={tariff.id}>
-                        {tariff.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
-                  <select
-                    value={createKuratorId}
-                    onChange={(e) => setCreateKuratorId(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                  >
-                    <option value="">Kuratorni tanlang...</option>
-                    {kurators?.map((kurator) => (
-                      <option key={kurator.id} value={kurator.id}>
-                        {kurator.name ?? kurator.username}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-end gap-2">
+          <div className="border border-gray-200 rounded-lg p-3 space-y-3">
+            <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun tarif va o'quvchilar (ixtiyoriy)</h4>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
+                <select
+                  value={createTariffId}
+                  onChange={(e) => setCreateTariffId(e.target.value)}
+                  disabled={!form.courseId}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100 disabled:text-gray-400"
+                >
+                  <option value="">Barcha tariflar</option>
+                  {createTariffs?.map((tariff) => (
+                    <option key={tariff.id} value={tariff.id}>
+                      {tariff.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
+                <select
+                  value={createKuratorId}
+                  onChange={(e) => setCreateKuratorId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                >
+                  <option value="">Kuratorni tanlang...</option>
+                  {kurators?.map((kurator) => (
+                    <option key={kurator.id} value={kurator.id}>
+                      {kurator.name ?? kurator.username}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={() => setCreateStudentsOpen((prev) => !prev)}
+                  disabled={!form.courseId}
+                  className="w-full px-3 py-2 border border-gray-300 text-left text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
+                >
+                  {createStudentIds.length > 0
+                    ? `O'quvchilar tanlandi: ${createStudentIds.length}`
+                    : "O'quvchilarni tanlang..."}
+                </button>
+              </div>
+            </div>
+
+            {!form.courseId && (
+              <p className="text-xs text-gray-500">Avval kursni tanlang, keyin tarif va o'quvchilar ro'yxati chiqadi.</p>
+            )}
+
+            {form.courseId && createStudentsOpen && (
+              <div className="border border-gray-200 rounded-lg p-3 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={selectAllCreateStudents}
@@ -540,37 +562,37 @@ function CourseRunsTab({
                   >
                     Tozalash
                   </button>
+                  <span className="text-xs text-gray-500">
+                    O'quvchilar ({createStudentOptions.length}) • Tanlangan: {createStudentIds.length}
+                  </span>
                 </div>
-              </div>
 
-              <div className="border border-gray-200 rounded-lg p-3 max-h-64 overflow-auto">
-                <div className="text-xs text-gray-500 mb-2">
-                  O'quvchilar ({createStudentOptions.length}) • Tanlangan: {createStudentIds.length}
+                <div className="max-h-64 overflow-auto border border-gray-200 rounded-lg p-3">
+                  {studentsForCreateLoading ? (
+                    <p className="text-sm text-gray-500">Yuklanmoqda...</p>
+                  ) : createStudentOptions.length === 0 ? (
+                    <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {createStudentOptions.map((student) => (
+                        <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
+                          <input
+                            type="checkbox"
+                            checked={createStudentIds.includes(student.id)}
+                            onChange={() => toggleCreateStudent(student.id)}
+                            className="h-4 w-4"
+                          />
+                          <span>
+                            {student.customerNumber} - {student.name}
+                          </span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                {studentsForCreateLoading ? (
-                  <p className="text-sm text-gray-500">Yuklanmoqda...</p>
-                ) : createStudentOptions.length === 0 ? (
-                  <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {createStudentOptions.map((student) => (
-                      <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
-                        <input
-                          type="checkbox"
-                          checked={createStudentIds.includes(student.id)}
-                          onChange={() => toggleCreateStudent(student.id)}
-                          className="h-4 w-4"
-                        />
-                        <span>
-                          {student.customerNumber} - {student.name}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
 
