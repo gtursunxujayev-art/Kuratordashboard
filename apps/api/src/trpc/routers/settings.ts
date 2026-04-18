@@ -719,6 +719,33 @@ export const settingsRouter = router({
     });
   }),
 
+  listTariffsByCourse: protectedProcedure
+    .input(z.object({ courseId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const course = await prisma.course.findFirst({
+        where: {
+          id: input.courseId,
+          tenantId: ctx.tenantId,
+          isActive: true,
+        },
+        select: { id: true },
+      });
+
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      return prisma.tariff.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: input.courseId,
+          isActive: true,
+        },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      });
+    }),
+
   listTariffsByCourseRun: protectedProcedure
     .input(z.object({ courseRunId: z.string() }))
     .query(async ({ ctx, input }) => {
