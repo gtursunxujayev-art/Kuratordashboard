@@ -46,7 +46,13 @@ export default function SettingsPage() {
       </div>
 
       {activeTab === 'templates' && <ScheduleTemplatesTab />}
-      {activeTab === 'courseRuns' && <CourseRunsTab onSelectRun={setSelectedCourseRunId} />}
+      {activeTab === 'courseRuns' && (
+        <CourseRunsTab
+          selectedRunId={selectedCourseRunId}
+          onSelectRun={setSelectedCourseRunId}
+          onOpenAssignments={() => setActiveTab('assignments')}
+        />
+      )}
       {activeTab === 'exercises' && (
         <ExercisesTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
       )}
@@ -76,6 +82,7 @@ function ScheduleTemplatesTab() {
     onSuccess: () => {
       void utils.settings.listScheduleTemplates.invalidate();
       void refetch();
+      setEditingTemplateId(null);
       setError('');
       setSuccess("Jadval shabloni muvaffaqiyatli saqlandi.");
     },
@@ -87,7 +94,10 @@ function ScheduleTemplatesTab() {
 
   const handleSave = () => {
     setSuccess('');
-    upsertMutation.mutate(form);
+    upsertMutation.mutate({
+      id: editingTemplateId ?? undefined,
+      ...form,
+    });
   };
 
   return (
@@ -213,7 +223,15 @@ function ScheduleTemplatesTab() {
   );
 }
 
-function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
+function CourseRunsTab({
+  selectedRunId,
+  onSelectRun,
+  onOpenAssignments,
+}: {
+  selectedRunId: string;
+  onSelectRun: (id: string) => void;
+  onOpenAssignments: () => void;
+}) {
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
@@ -401,8 +419,15 @@ function CourseRunsTab({ onSelectRun }: { onSelectRun: (id: string) => void }) {
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
                   <td className="px-4 py-3">
-                    <button onClick={() => onSelectRun(run.id)} className="text-blue-600 text-xs hover:underline">
-                      Tanlash
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onSelectRun(run.id);
+                        onOpenAssignments();
+                      }}
+                      className="text-blue-600 text-xs hover:underline"
+                    >
+                      {selectedRunId === run.id ? 'Tanlangan' : 'Tanlash'}
                     </button>
                   </td>
                 </tr>
