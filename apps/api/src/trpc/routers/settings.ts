@@ -272,6 +272,48 @@ export const settingsRouter = router({
       }
   }),
 
+  updateStaffUserName: adminProcedure
+    .input(
+      z.object({
+        userId: z.string().min(1),
+        name: z.string().max(160).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const name = normalizeOptional(input.name);
+
+      const existing = await prisma.user.findFirst({
+        where: {
+          id: input.userId,
+          tenantId: ctx.tenantId,
+          roles: { hasSome: ['Manager', 'Kurator'] },
+        },
+        select: { id: true },
+      });
+
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: "Foydalanuvchi topilmadi" });
+      }
+
+      return prisma.user.update({
+        where: { id: input.userId },
+        data: {
+          name: name ?? null,
+        },
+        select: {
+          id: true,
+          name: true,
+          username: true,
+          email: true,
+          phone: true,
+          roles: true,
+          isActive: true,
+          lastLoginAt: true,
+          createdAt: true,
+        },
+      });
+    }),
+
   listRegions: protectedProcedure.query(async ({ ctx }) => {
     try {
       return await prisma.regionConfig.findMany({
