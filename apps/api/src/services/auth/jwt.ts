@@ -10,8 +10,21 @@ export interface JWTPayload {
   phone?: string;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'change-me-in-production-min-32-chars!!';
+function getRequiredJWTSecret(): string {
+  const secret = process.env.JWT_SECRET?.trim();
+  if (!secret) {
+    throw new Error('[Auth] JWT_SECRET is required. Set JWT_SECRET before starting the API.');
+  }
+  return secret;
+}
+
+const JWT_SECRET = getRequiredJWTSecret();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+
+export function assertJWTConfiguration(): void {
+  // Accessing the constant guarantees startup validation has already happened.
+  void JWT_SECRET;
+}
 
 export function signJWT(payload: JWTPayload): string {
   return jwt.sign(payload as object, JWT_SECRET, {
