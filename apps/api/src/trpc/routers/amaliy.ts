@@ -429,13 +429,32 @@ export const amaliyRouter = router({
         !user.roles.includes('Admin') &&
         !user.roles.includes('Manager');
 
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: {
+            id: input.courseRunId,
+            tenantId,
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            return null;
+          }
+          throw error;
+        });
+
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
       if (isKurator) {
         const assignment = await prisma.kuratorAssignment.findFirst({
           where: {
             tenantId,
             kuratorUserId: user.userId,
             customerId: input.customerId,
-            courseRunId: input.courseRunId,
+            courseRunId: courseRun.id,
             isActive: true,
           },
           select: { id: true },
@@ -462,7 +481,7 @@ export const amaliyRouter = router({
           tenantId_customerId_courseRunId_lessonDate_lessonType: {
             tenantId,
             customerId: input.customerId,
-            courseRunId: input.courseRunId,
+            courseRunId: courseRun.id,
             lessonDate,
             lessonType: input.lessonType,
           },
@@ -470,7 +489,7 @@ export const amaliyRouter = router({
         create: {
           tenantId,
           customerId: input.customerId,
-          courseRunId: input.courseRunId,
+          courseRunId: courseRun.id,
           lessonDate,
           lessonType: input.lessonType,
           attended: input.attended,
