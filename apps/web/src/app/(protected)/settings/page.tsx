@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
@@ -234,13 +234,16 @@ function CourseRunsTab({
 }) {
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
+  const [createTariffId, setCreateTariffId] = useState('');
+  const [createStudentIds, setCreateStudentIds] = useState<string[]>([]);
+  const [createStudentsOpen, setCreateStudentsOpen] = useState(false);
+  const [pendingCreatePrefill, setPendingCreatePrefill] = useState<{
+    tariffId: string;
+    studentIds: string[];
+  } | null>(null);
   const [selectedTariffId, setSelectedTariffId] = useState('');
   const [selectedKuratorId, setSelectedKuratorId] = useState('');
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
-  const [createTariffId, setCreateTariffId] = useState('');
-  const [createKuratorId, setCreateKuratorId] = useState('');
-  const [createStudentIds, setCreateStudentIds] = useState<string[]>([]);
-  const [createStudentsOpen, setCreateStudentsOpen] = useState(false);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
@@ -250,6 +253,7 @@ function CourseRunsTab({
     premiumExtraLessons: 2,
   });
   const [error, setError] = useState('');
+  const [createSuccess, setCreateSuccess] = useState('');
   const [assignError, setAssignError] = useState('');
   const [assignSuccess, setAssignSuccess] = useState('');
 
@@ -258,7 +262,7 @@ function CourseRunsTab({
   const { data: kurators } = trpc.settings.listKurators.useQuery();
   const { data: createTariffs } = trpc.settings.listTariffsByCourse.useQuery(
     { courseId: form.courseId || '' },
-    { enabled: showForm && Boolean(form.courseId) },
+    { enabled: Boolean(showForm && form.courseId) },
   );
   const { data: runTariffs } = trpc.settings.listTariffsByCourseRun.useQuery(
     { courseRunId: selectedRunId },
@@ -271,9 +275,14 @@ function CourseRunsTab({
       page: 1,
       limit: 200,
     },
-    { enabled: showForm && Boolean(form.courseId) },
+    { enabled: Boolean(showForm && form.courseId) },
   );
-  const { data: studentsForRun, isLoading: studentsLoading } = trpc.students.list.useQuery(
+  const {
+    data: studentsForRun,
+    isLoading: studentsLoading,
+    error: studentsError,
+    refetch: refetchStudentsForRun,
+  } = trpc.students.list.useQuery(
     {
       courseRunId: selectedRunId || undefined,
       tariffId: selectedTariffId || undefined,
@@ -297,12 +306,21 @@ function CourseRunsTab({
     },
   });
 
+  const createStudentOptions = useMemo(
+    () => studentsForCreate?.data ?? [],
+    [studentsForCreate?.data],
+  );
   const studentOptions = useMemo(() => studentsForRun?.data ?? [], [studentsForRun?.data]);
-  const createStudentOptions = useMemo(() => studentsForCreate?.data ?? [], [studentsForCreate?.data]);
 
   useEffect(() => {
-    setSelectedTariffId('');
-    setSelectedStudentIds([]);
+    if (pendingCreatePrefill) {
+      setSelectedTariffId(pendingCreatePrefill.tariffId);
+      setSelectedStudentIds(pendingCreatePrefill.studentIds);
+      setPendingCreatePrefill(null);
+    } else {
+      setSelectedTariffId('');
+      setSelectedStudentIds([]);
+    }
     setAssignError('');
     setAssignSuccess('');
   }, [selectedRunId]);
@@ -324,11 +342,13 @@ function CourseRunsTab({
   const handleCreate = async () => {
     if (!form.courseId || !form.name || !form.startDate) {
       setError("Barcha maydonlarni to'ldiring");
+      setCreateSuccess('');
       return;
     }
 
     try {
       setError('');
+      setCreateSuccess('');
       const createdRun = await createMutation.mutateAsync({
         courseId: form.courseId,
         name: form.name,
@@ -338,17 +358,14 @@ function CourseRunsTab({
         premiumExtraLessons: form.premiumExtraLessons,
       });
 
-      if (createKuratorId && createStudentIds.length > 0) {
-        await assignBulkMutation.mutateAsync({
-          courseRunId: createdRun.id,
-          kuratorUserId: createKuratorId,
-          customerIds: createStudentIds,
-        });
-      }
-
       await utils.settings.listCourseRuns.invalidate();
+      setPendingCreatePrefill({
+        tariffId: createTariffId,
+        studentIds: createStudentIds,
+      });
       onSelectRun(createdRun.id);
       setShowForm(false);
+      setCreateSuccess("Oqim yaratildi. Endi o'quvchilarni pastdagi bo'limda kuratorga biriktiring.");
       setForm({
         courseId: '',
         name: '',
@@ -358,9 +375,12 @@ function CourseRunsTab({
         premiumExtraLessons: 2,
       });
       setCreateTariffId('');
-      setCreateKuratorId('');
       setCreateStudentIds([]);
+      setCreateStudentsOpen(false);
+      setSelectedKuratorId('');
+      void refetchStudentsForRun();
     } catch (err: any) {
+      setCreateSuccess('');
       setError(err?.message ?? "Oqim yaratishda xatolik yuz berdi");
     }
   };
@@ -386,7 +406,7 @@ function CourseRunsTab({
   };
 
   const selectAllCreateStudents = () => {
-    setCreateStudentIds(createStudentOptions.map((s) => s.id));
+    setCreateStudentIds(createStudentOptions.map((student) => student.id));
   };
 
   const clearCreateStudents = () => {
@@ -493,7 +513,7 @@ function CourseRunsTab({
 
           <div className="border border-gray-200 rounded-lg p-3 space-y-3">
             <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun tarif va o'quvchilar (ixtiyoriy)</h4>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
                 <select
@@ -506,21 +526,6 @@ function CourseRunsTab({
                   {createTariffs?.map((tariff) => (
                     <option key={tariff.id} value={tariff.id}>
                       {tariff.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
-                <select
-                  value={createKuratorId}
-                  onChange={(e) => setCreateKuratorId(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-                >
-                  <option value="">Kuratorni tanlang...</option>
-                  {kurators?.map((kurator) => (
-                    <option key={kurator.id} value={kurator.id}>
-                      {kurator.name ?? kurator.username}
                     </option>
                   ))}
                 </select>
@@ -595,6 +600,7 @@ function CourseRunsTab({
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
+          {createSuccess && <p className="text-sm text-green-600">{createSuccess}</p>}
 
           <div className="flex gap-2">
             <button
@@ -680,6 +686,17 @@ function CourseRunsTab({
             </div>
             {studentsLoading ? (
               <p className="text-sm text-gray-500">Yuklanmoqda...</p>
+            ) : studentsError ? (
+              <div className="space-y-2">
+                <p className="text-sm text-red-600">{studentsError.message}</p>
+                <button
+                  type="button"
+                  onClick={() => void refetchStudentsForRun()}
+                  className="px-3 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-md hover:bg-gray-50"
+                >
+                  Qayta yuklash
+                </button>
+              </div>
             ) : studentOptions.length === 0 ? (
               <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
             ) : (
@@ -1054,6 +1071,9 @@ function RegionsTab() {
 function UsersTab() {
   const utils = trpc.useContext();
   const [error, setError] = useState('');
+  const [updateError, setUpdateError] = useState('');
+  const [updateSuccess, setUpdateSuccess] = useState('');
+  const [nameDraftByUserId, setNameDraftByUserId] = useState<Record<string, string>>({});
   const [form, setForm] = useState({
     role: 'Kurator' as 'Kurator' | 'Manager',
     name: '',
@@ -1080,6 +1100,33 @@ function UsersTab() {
     onError: (err) => setError(err.message),
   });
 
+  const updateNameMutation = trpc.settings.updateStaffUserName.useMutation({
+    onSuccess: async () => {
+      await utils.settings.listStaffUsers.invalidate();
+      setUpdateError('');
+      setUpdateSuccess("Foydalanuvchi ismi saqlandi");
+    },
+    onError: (err) => {
+      setUpdateSuccess('');
+      setUpdateError(err.message);
+    },
+  });
+
+  useEffect(() => {
+    if (!users) {
+      return;
+    }
+    setNameDraftByUserId((prev) => {
+      const next = { ...prev };
+      for (const user of users) {
+        if (next[user.id] === undefined) {
+          next[user.id] = user.name ?? '';
+        }
+      }
+      return next;
+    });
+  }, [users]);
+
   const handleCreate = () => {
     if (!form.password.trim()) {
       setError('Parol kiriting');
@@ -1096,6 +1143,16 @@ function UsersTab() {
       email: form.email || undefined,
       phone: form.phone || undefined,
       password: form.password,
+    });
+  };
+
+  const handleSaveName = (userId: string) => {
+    setUpdateError('');
+    setUpdateSuccess('');
+    const nextName = (nameDraftByUserId[userId] ?? '').trim();
+    updateNameMutation.mutate({
+      userId,
+      name: nextName || undefined,
     });
   };
 
@@ -1165,6 +1222,8 @@ function UsersTab() {
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}
+        {updateError && <p className="text-sm text-red-600">{updateError}</p>}
+        {updateSuccess && <p className="text-sm text-green-700">{updateSuccess}</p>}
 
         <button
           onClick={handleCreate}
@@ -1192,16 +1251,28 @@ function UsersTab() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Email</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Telefon</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Holat</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Amal</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {users.map((user) => (
                 <tr key={user.id}>
-                  <td className="px-4 py-3 text-gray-900">{user.name ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-900">
+                    <input
+                      value={nameDraftByUserId[user.id] ?? user.name ?? ''}
+                      onChange={(e) =>
+                        setNameDraftByUserId((prev) => ({
+                          ...prev,
+                          [user.id]: e.target.value,
+                        }))}
+                      className="w-full min-w-48 px-2 py-1.5 border border-gray-300 rounded-md text-sm"
+                      placeholder="Ism kiriting"
+                    />
+                  </td>
                   <td className="px-4 py-3 text-gray-700">{user.roles.includes('Manager') ? 'Menejer' : 'Kurator'}</td>
-                  <td className="px-4 py-3 text-gray-700">{user.username ?? '—'}</td>
-                  <td className="px-4 py-3 text-gray-700">{user.email ?? '—'}</td>
-                  <td className="px-4 py-3 text-gray-700">{user.phone ?? '—'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.username ?? '-'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.email ?? '-'}</td>
+                  <td className="px-4 py-3 text-gray-700">{user.phone ?? '-'}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`px-2 py-0.5 rounded-full text-xs font-medium ${
@@ -1210,6 +1281,17 @@ function UsersTab() {
                     >
                       {user.isActive ? 'Faol' : 'Nofaol'}
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleSaveName(user.id)}
+                      disabled={updateNameMutation.isLoading}
+                      className="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {updateNameMutation.isLoading && updateNameMutation.variables?.userId === user.id
+                        ? 'Saqlanmoqda...'
+                        : 'Saqlash'}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1220,7 +1302,6 @@ function UsersTab() {
     </div>
   );
 }
-
 function AssignmentsTab({
   courseRunId,
   onSelectCourseRun,
@@ -1358,3 +1439,6 @@ function AssignmentsTab({
     </div>
   );
 }
+
+
+
