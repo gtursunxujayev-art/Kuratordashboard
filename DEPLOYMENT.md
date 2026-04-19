@@ -4,7 +4,7 @@
 
 ### API (Railway)
 - `DATABASE_URL`
-- `JWT_SECRET`
+- `JWT_SECRET` (required; API fails to start when missing)
 - `JWT_EXPIRES_IN` (optional, default `7d`)
 - `PORT`
 - `NODE_ENV`
@@ -17,6 +17,11 @@
 
 If Kuratordashboard and Dashboarduz use the same database and shared credentials,
 `JWT_SECRET` should be aligned with Dashboarduz.
+
+## Security behavior
+
+- Protected endpoints revalidate user `isActive` and current roles from DB on each request.
+- Role changes and deactivations take effect immediately for existing bearer tokens.
 
 ## Deploy order
 
