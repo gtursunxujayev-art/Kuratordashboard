@@ -632,10 +632,33 @@ export const settingsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: {
+            id: input.courseRunId,
+            tenantId: ctx.tenantId,
+          },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
       return prisma.exerciseDefinition.create({
         data: {
           tenantId: ctx.tenantId,
-          ...input,
+          courseRunId: courseRun.id,
+          name: input.name,
+          type: input.type,
+          targetCount: input.targetCount,
+          orderIndex: input.orderIndex,
         },
       });
     }),
