@@ -42,8 +42,42 @@ export const protectedProcedure = publicProcedure.use(async (opts) => {
     });
   }
 
+  const dbUser = await prisma.user.findFirst({
+    where: {
+      id: ctx.user.userId,
+      tenantId: ctx.tenantId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+      tenantId: true,
+      roles: true,
+      username: true,
+      name: true,
+      email: true,
+      phone: true,
+    },
+  });
+
+  if (!dbUser) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'Tizimga kirish talab etiladi',
+    });
+  }
+
+  const revalidatedUser = {
+    userId: dbUser.id,
+    tenantId: dbUser.tenantId,
+    roles: dbUser.roles,
+    username: dbUser.username ?? undefined,
+    name: dbUser.name ?? undefined,
+    email: dbUser.email ?? undefined,
+    phone: dbUser.phone ?? undefined,
+  };
+
   try {
-    await prisma.$executeRaw`SELECT app.set_tenant_context(${ctx.tenantId}::uuid, ${ctx.user.userId}::uuid)`;
+    await prisma.$executeRaw`SELECT app.set_tenant_context(${revalidatedUser.tenantId}::uuid, ${revalidatedUser.userId}::uuid)`;
   } catch (error: any) {
     if (isMissingTenantContextFunctionError(error)) {
       console.warn(
@@ -53,8 +87,8 @@ export const protectedProcedure = publicProcedure.use(async (opts) => {
       return opts.next({
         ctx: {
           ...ctx,
-          user: ctx.user,
-          tenantId: ctx.tenantId,
+          user: revalidatedUser,
+          tenantId: revalidatedUser.tenantId,
         },
       });
     }
@@ -69,8 +103,8 @@ export const protectedProcedure = publicProcedure.use(async (opts) => {
   return opts.next({
     ctx: {
       ...ctx,
-      user: ctx.user,
-      tenantId: ctx.tenantId,
+      user: revalidatedUser,
+      tenantId: revalidatedUser.tenantId,
     },
   });
 });
