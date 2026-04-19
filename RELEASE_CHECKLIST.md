@@ -2,7 +2,7 @@
 
 1. Verify environment parity:
 - `DATABASE_URL` points to the shared production DB.
-- `JWT_SECRET` matches Dashboarduz when shared login is expected.
+- `JWT_SECRET` is set (API startup fails fast if missing) and matches Dashboarduz when shared login is expected.
 - `NEXT_PUBLIC_API_URL` points to Railway production API.
 - `CORS_ORIGIN` includes Vercel production URL.
 
@@ -20,7 +20,10 @@
 - Students page combined filters work together.
 - Amaliy `today/yesterday/all` works and `all` is admin-only.
 - Premium/VIP attendance tracking does not fail for non-premium students.
+- Deactivated user with previously valid token receives `UNAUTHORIZED` on protected endpoints.
+- Admin role removal takes effect immediately (admin-only endpoints reject old token).
 
 5. Post-release checks:
 - Inspect API logs for slow requests (`durationMs >= 1000`).
 - Watch for repeated `UNAUTHORIZED`, `FORBIDDEN`, or `CORS blocked` errors.
+- Track short-term `UNAUTHORIZED` increase during rollout while old sessions are revalidated.
