@@ -139,7 +139,7 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
   }, [students]);
 
   return (
-    <div className="p-5 md:p-6 space-y-5">
+    <div className="p-4 md:p-6 space-y-5">
       <div className="kd-card kd-topbar p-4">
         <h1 className="text-2xl font-semibold kd-title">Bosh sahifa</h1>
         <p className="text-sm kd-subtle mt-1">Kurs bo'yicha umumiy ko'rsatkichlar va samaradorlik</p>
@@ -188,7 +188,7 @@ export default function DashboardPage({ forcedCategory }: { forcedCategory?: 'of
         <div className="kd-card p-5 kd-subtle text-sm">Yuklanmoqda...</div>
       ) : stats ? (
         <>
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
             <CompactStatCard title="Umumiy o'quvchilar" value={String(stats.total)} subtitle={`Erkak: ${stats.male} | Ayol: ${stats.female}`} />
             <CompactStatCard title="Tarif turlari" value={String(stats.tariffs.length)} subtitle="Faol tarif segmentlari" />
             <CompactStatCard
