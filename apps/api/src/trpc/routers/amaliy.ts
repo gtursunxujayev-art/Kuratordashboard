@@ -412,6 +412,70 @@ export const amaliyRouter = router({
       return { success: true };
     }),
 
+  listRecentLogs: protectedProcedure
+    .input(
+      z.object({
+        customerId: z.string(),
+        date: z.string(),
+        courseRunId: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const isKurator =
+        user.roles.includes('Kurator') &&
+        !user.roles.includes('Admin') &&
+        !user.roles.includes('Manager');
+
+      if (isKurator) {
+        const assignment = await prisma.kuratorAssignment.findFirst({
+          where: {
+            tenantId,
+            kuratorUserId: user.userId,
+            customerId: input.customerId,
+            isActive: true,
+            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+          },
+          select: { id: true },
+        });
+        if (!assignment) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+        }
+      }
+
+      const date = parseDateInput(input.date);
+      const dayStart = startOfDayLocal(date);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      const logs = await prisma.studentExerciseLog.findMany({
+        where: {
+          tenantId,
+          customerId: input.customerId,
+          completedAt: { gte: dayStart, lt: dayEnd },
+          ...(input.courseRunId
+            ? { exerciseDefinition: { courseRunId: input.courseRunId } }
+            : {}),
+        },
+        select: {
+          id: true,
+          exerciseDefinitionId: true,
+          completedAt: true,
+          loggedByUserId: true,
+          loggedBy: { select: { id: true, name: true, username: true } },
+        },
+        orderBy: { completedAt: 'desc' },
+      });
+
+      return logs.map((log) => ({
+        id: log.id,
+        exerciseDefinitionId: log.exerciseDefinitionId,
+        completedAt: log.completedAt,
+        loggedByUserId: log.loggedByUserId,
+        loggedByName: log.loggedBy?.name ?? log.loggedBy?.username ?? null,
+      }));
+    }),
+
   markAttendance: protectedProcedure
     .input(
       z.object({
