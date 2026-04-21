@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
@@ -18,9 +18,11 @@ const adminNavItems = [{ href: '/settings', label: 'Sozlamalar', icon: 'SZ' }] a
 export function Sidebar({
   theme,
   onToggleTheme,
+  onNavigate,
 }: {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
+  onNavigate?: () => void;
 }) {
   const pathname = usePathname();
   const { user, logout, isAdmin } = useAuth();
@@ -70,7 +72,8 @@ export function Sidebar({
             <Link
               key={item.href}
               href={item.href}
-              className="flex items-center gap-3 px-4 py-2.5 text-sm font-semibold rounded-md transition-colors mb-1"
+              onClick={onNavigate}
+              className="flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-md transition-colors mb-1"
               style={
                 isActive
                   ? {
@@ -98,7 +101,8 @@ export function Sidebar({
               <Link
                 key={item.href}
                 href={item.href}
-                className="flex items-center gap-3 px-4 py-2.5 text-sm font-semibold rounded-md transition-colors mb-1"
+                onClick={onNavigate}
+                className="flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-md transition-colors mb-1"
                 style={
                   isActive
                     ? {
@@ -122,7 +126,10 @@ export function Sidebar({
 
       <div className="p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.35)' }}>
         <button
-          onClick={logout}
+          onClick={() => {
+            onNavigate?.();
+            logout();
+          }}
           className="w-full text-sm text-left px-3 py-2 rounded-md transition-colors"
           style={{
             color: '#ffffff',
