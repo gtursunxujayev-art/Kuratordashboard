@@ -39,7 +39,7 @@ export default function StudentsPage() {
   const totalPages = data ? Math.ceil(data.pagination.total / data.pagination.limit) : 0;
 
   return (
-    <div className="p-6">
+    <div className="p-4 md:p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">O'quvchilar</h1>
 
       {(filterOptionsError || courseRunsError || error) && (
@@ -140,7 +140,7 @@ export default function StudentsPage() {
             setPage(1);
           }}
           placeholder="Ism yoki raqam bo'yicha qidirish..."
-          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700 min-w-64"
+          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700 w-full sm:min-w-64 sm:w-auto"
         />
       </div>
 
