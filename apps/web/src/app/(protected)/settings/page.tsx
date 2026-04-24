@@ -257,6 +257,9 @@ function CourseRunsTab({
   const [createSuccess, setCreateSuccess] = useState('');
   const [assignError, setAssignError] = useState('');
   const [assignSuccess, setAssignSuccess] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [deleteSuccess, setDeleteSuccess] = useState('');
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
@@ -294,6 +297,7 @@ function CourseRunsTab({
   );
 
   const createMutation = trpc.settings.createCourseRun.useMutation();
+  const deleteCourseRunMutation = trpc.settings.deleteCourseRun.useMutation();
   const assignBulkMutation = trpc.settings.assignStudentsBulk.useMutation({
     onSuccess: (result) => {
       setAssignError('');
@@ -428,6 +432,35 @@ function CourseRunsTab({
     });
   };
 
+  const handleDeleteCourseRun = async (runId: string, runName: string) => {
+    const confirmed = window.confirm(`"${runName}" oqimini o'chirmoqchimisiz?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setDeleteError('');
+    setDeleteSuccess('');
+    setDeletingRunId(runId);
+
+    try {
+      await deleteCourseRunMutation.mutateAsync({ courseRunId: runId });
+      await utils.settings.listCourseRuns.invalidate();
+
+      if (selectedRunId === runId) {
+        onSelectRun('');
+        setSelectedTariffId('');
+        setSelectedKuratorId('');
+        setSelectedStudentIds([]);
+      }
+
+      setDeleteSuccess('Oqim muvaffaqiyatli o\'chirildi.');
+    } catch (err: any) {
+      setDeleteError(err?.message ?? "Oqimni o'chirishda xatolik yuz berdi");
+    } finally {
+      setDeletingRunId(null);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -439,6 +472,9 @@ function CourseRunsTab({
           + Yangi oqim
         </button>
       </div>
+
+      {deleteError && <p className="text-sm text-red-600">{deleteError}</p>}
+      {deleteSuccess && <p className="text-sm text-green-600">{deleteSuccess}</p>}
 
       {showForm && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
@@ -779,16 +815,28 @@ function CourseRunsTab({
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
                   <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectRun(run.id);
-                        onOpenAssignments();
-                      }}
-                      className="text-blue-600 text-xs hover:underline"
-                    >
-                      {selectedRunId === run.id ? 'Tanlangan' : 'Tanlash'}
-                    </button>
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectRun(run.id);
+                          onOpenAssignments();
+                        }}
+                        className="text-blue-600 text-xs hover:underline"
+                      >
+                        {selectedRunId === run.id ? 'Tanlangan' : 'Tanlash'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteCourseRun(run.id, run.name)}
+                        disabled={deleteCourseRunMutation.isLoading && deletingRunId === run.id}
+                        className="text-red-600 text-xs hover:underline disabled:opacity-50"
+                      >
+                        {deleteCourseRunMutation.isLoading && deletingRunId === run.id
+                          ? "O'chirilmoqda..."
+                          : "O'chirish"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
