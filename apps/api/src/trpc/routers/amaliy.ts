@@ -171,6 +171,173 @@ export const amaliyRouter = router({
       }
     }),
 
+  listPracticeStudents: protectedProcedure
+    .input(
+      z.object({
+        exerciseDefinitionId: z.string(),
+        date: z.string(),
+        courseRunId: z.string().optional(),
+        search: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const kuratorOnly =
+        user.roles.includes('Kurator') &&
+        !user.roles.includes('Admin') &&
+        !user.roles.includes('Manager');
+
+      const exercise = await prisma.exerciseDefinition.findFirst({
+        where: {
+          id: input.exerciseDefinitionId,
+          tenantId,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          courseId: true,
+        },
+      });
+
+      if (!exercise) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
+      let selectedRunCourseId: string | null = null;
+      if (input.courseRunId) {
+        const selectedRun = await prisma.courseRun
+          .findFirst({
+            where: {
+              id: input.courseRunId,
+              tenantId,
+            },
+            select: { id: true, courseId: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return null;
+            }
+            throw error;
+          });
+
+        if (!selectedRun) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+        }
+
+        selectedRunCourseId = selectedRun.courseId;
+      }
+
+      if (selectedRunCourseId && selectedRunCourseId !== exercise.courseId) {
+        return [];
+      }
+
+      const assignments = await prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          ...(input.courseRunId
+            ? { courseRunId: input.courseRunId }
+            : { courseRun: { courseId: exercise.courseId } }),
+          isActive: true,
+          ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
+        },
+        select: { customerId: true },
+      });
+
+      const assignedCustomerIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+      if (assignedCustomerIds.length === 0) {
+        return [];
+      }
+
+      const date = parseDateInput(input.date);
+      const dayStart = startOfDayLocal(date);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      const completedRows = await prisma.studentExerciseLog.findMany({
+        where: {
+          tenantId,
+          exerciseDefinitionId: exercise.id,
+          customerId: { in: assignedCustomerIds },
+          completedAt: { gte: dayStart, lt: dayEnd },
+        },
+        select: { customerId: true },
+        distinct: ['customerId'],
+      });
+
+      const completedSet = new Set(completedRows.map((row) => row.customerId));
+      const pendingCustomerIds = assignedCustomerIds.filter((customerId) => !completedSet.has(customerId));
+
+      if (pendingCustomerIds.length === 0) {
+        return [];
+      }
+
+      const search = input.search?.trim().toLowerCase();
+
+      try {
+        const rows = await prisma.customer.findMany({
+          where: {
+            tenantId,
+            id: { in: pendingCustomerIds },
+            ...(search
+              ? {
+                  OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { customerNumber: { contains: search, mode: 'insensitive' } },
+                    { telegramUsername: { contains: search, mode: 'insensitive' } },
+                  ],
+                }
+              : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            customerNumber: true,
+            telegramUsername: true,
+          },
+          orderBy: { name: 'asc' },
+        });
+
+        return rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          phone: row.customerNumber,
+          telegramUsername: row.telegramUsername ?? null,
+        }));
+      } catch (error) {
+        if (!isMissingCustomerTelegramColumnError(error)) {
+          throw error;
+        }
+
+        const rows = await prisma.customer.findMany({
+          where: {
+            tenantId,
+            id: { in: pendingCustomerIds },
+            ...(search
+              ? {
+                  OR: [
+                    { name: { contains: search, mode: 'insensitive' } },
+                    { customerNumber: { contains: search, mode: 'insensitive' } },
+                  ],
+                }
+              : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            customerNumber: true,
+          },
+          orderBy: { name: 'asc' },
+        });
+
+        return rows.map((row) => ({
+          id: row.id,
+          name: row.name,
+          phone: row.customerNumber,
+          telegramUsername: null,
+        }));
+      }
+    }),
+
   getStudentExercises: protectedProcedure
     .input(
       z.object({
@@ -233,14 +400,29 @@ export const amaliyRouter = router({
 
       const whereDefinitions = {
         tenantId,
-        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
         isActive: true,
         ...(input.mode === 'day' ? { type: classDay ? 'class' : 'homework' } : {}),
       };
 
       const definitions = await prisma.exerciseDefinition.findMany({
         where: whereDefinitions,
-        orderBy: { orderIndex: 'asc' },
+        include: {
+          colorPoints: {
+            where: { colorOption: { isActive: true } },
+            include: {
+              colorOption: {
+                select: {
+                  id: true,
+                  label: true,
+                  colorHex: true,
+                  orderIndex: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
       });
 
       const definitionIds = definitions.map((d) => d.id);
@@ -317,6 +499,14 @@ export const amaliyRouter = router({
           targetCount: def.targetCount,
           doneToday: input.mode === 'day' ? (doneTodayByDef.get(def.id) ?? 0) : 0,
           doneTotal: doneTotalByDef.get(def.id) ?? 0,
+          colorPoints: def.colorPoints
+            .sort((left, right) => left.colorOption.orderIndex - right.colorOption.orderIndex)
+            .map((row) => ({
+              colorOptionId: row.colorOptionId,
+              label: row.colorOption.label,
+              colorHex: row.colorOption.colorHex,
+              points: row.points,
+            })),
         })),
         attendanceSummary: {
           base: {
@@ -341,6 +531,7 @@ export const amaliyRouter = router({
       z.object({
         customerId: z.string(),
         exerciseDefinitionId: z.string(),
+        colorOptionId: z.string(),
         completedAt: z.string(),
         note: z.string().optional(),
       }),
@@ -354,10 +545,35 @@ export const amaliyRouter = router({
 
       const definition = await prisma.exerciseDefinition.findFirst({
         where: { id: input.exerciseDefinitionId, tenantId },
-        select: { id: true },
+        select: { id: true, targetCount: true },
       });
       if (!definition) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
+      const colorOption = await prisma.exerciseColorOption.findFirst({
+        where: {
+          id: input.colorOptionId,
+          tenantId,
+          isActive: true,
+        },
+        select: { id: true, colorHex: true, points: true },
+      });
+      if (!colorOption) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Rang sozlamasi topilmadi' });
+      }
+
+      const definitionColorPoint = await prisma.exerciseDefinitionColorPoint.findFirst({
+        where: {
+          tenantId,
+          exerciseDefinitionId: definition.id,
+          colorOptionId: colorOption.id,
+        },
+        select: { points: true },
+      });
+
+      if (!definitionColorPoint) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ushbu mashq uchun rang balli sozlanmagan' });
       }
 
       if (isKurator) {
@@ -375,11 +591,29 @@ export const amaliyRouter = router({
         }
       }
 
+      const completedCount = await prisma.studentExerciseLog.count({
+        where: {
+          tenantId,
+          customerId: input.customerId,
+          exerciseDefinitionId: definition.id,
+        },
+      });
+
+      if (completedCount >= definition.targetCount) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Bu mashq uchun maksimal ${definition.targetCount} marta bajarish mumkin`,
+        });
+      }
+
       return prisma.studentExerciseLog.create({
         data: {
           tenantId,
           customerId: input.customerId,
           exerciseDefinitionId: input.exerciseDefinitionId,
+          colorOptionId: colorOption.id,
+          colorHex: colorOption.colorHex,
+          points: definitionColorPoint.points,
           completedAt: parseDateInput(input.completedAt),
           loggedByUserId: user.userId,
           note: input.note,
@@ -448,18 +682,41 @@ export const amaliyRouter = router({
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
+      let courseIdFilter: string | undefined;
+      if (input.courseRunId) {
+        const selectedRun = await prisma.courseRun
+          .findFirst({
+            where: { id: input.courseRunId, tenantId },
+            select: { courseId: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return null;
+            }
+            throw error;
+          });
+
+        if (!selectedRun) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+        }
+        courseIdFilter = selectedRun.courseId;
+      }
+
       const logs = await prisma.studentExerciseLog.findMany({
         where: {
           tenantId,
           customerId: input.customerId,
           completedAt: { gte: dayStart, lt: dayEnd },
-          ...(input.courseRunId
-            ? { exerciseDefinition: { courseRunId: input.courseRunId } }
+          ...(courseIdFilter
+            ? { exerciseDefinition: { courseId: courseIdFilter } }
             : {}),
         },
         select: {
           id: true,
           exerciseDefinitionId: true,
+          colorOptionId: true,
+          colorHex: true,
+          points: true,
           completedAt: true,
           loggedByUserId: true,
           loggedBy: { select: { id: true, name: true, username: true } },
@@ -470,6 +727,9 @@ export const amaliyRouter = router({
       return logs.map((log) => ({
         id: log.id,
         exerciseDefinitionId: log.exerciseDefinitionId,
+        colorOptionId: log.colorOptionId,
+        colorHex: log.colorHex,
+        points: log.points,
         completedAt: log.completedAt,
         loggedByUserId: log.loggedByUserId,
         loggedByName: log.loggedBy?.name ?? log.loggedBy?.username ?? null,
