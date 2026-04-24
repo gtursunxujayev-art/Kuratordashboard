@@ -1,12 +1,21 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { StudentDetailModal } from './student-detail-modal';
 
 type SecondaryFilter = 'tariff' | 'region';
+type CourseType = '' | 'offline' | 'online' | 'intensiv';
+
+function normalizeCourseCategory(raw?: string | null): Exclude<CourseType, ''> {
+  const value = (raw ?? '').toLowerCase();
+  if (value.includes('intens')) return 'intensiv';
+  if (value.includes('online') || value.includes('onlayn')) return 'online';
+  return 'offline';
+}
 
 export default function StudentsPage() {
+  const [selectedCourseType, setSelectedCourseType] = useState<CourseType>('');
   const [selectedCourseId, setSelectedCourseId] = useState('');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [secondaryFilter, setSecondaryFilter] = useState<SecondaryFilter>('tariff');
@@ -18,10 +27,57 @@ export default function StudentsPage() {
 
   const { data: filterOptions, error: filterOptionsError } = trpc.students.filterOptions.useQuery();
   const { data: courseRuns, error: courseRunsError } = trpc.dashboard.courseRuns.useQuery();
+  const { data: courses, error: coursesError } = trpc.dashboard.courses.useQuery();
 
-  const filteredTariffs = selectedCourseId
-    ? (filterOptions?.tariffs ?? []).filter((tariff) => tariff.courseId === selectedCourseId)
-    : (filterOptions?.tariffs ?? []);
+  const filteredCourses = useMemo(
+    () =>
+      (courses ?? []).filter((course) => (
+        !selectedCourseType || normalizeCourseCategory(course.category) === selectedCourseType
+      )),
+    [courses, selectedCourseType],
+  );
+
+  const filteredCourseRuns = useMemo(
+    () =>
+      (courseRuns ?? []).filter((run) => {
+        if (selectedCourseId && run.courseId !== selectedCourseId) return false;
+        if (!selectedCourseType) return true;
+        return normalizeCourseCategory(run.course.category) === selectedCourseType;
+      }),
+    [courseRuns, selectedCourseId, selectedCourseType],
+  );
+
+  const allowedCourseIds = useMemo(
+    () => new Set(filteredCourses.map((course) => course.id)),
+    [filteredCourses],
+  );
+
+  const filteredTariffs = useMemo(() => {
+    const tariffs = filterOptions?.tariffs ?? [];
+    if (selectedCourseId) {
+      return tariffs.filter((tariff) => tariff.courseId === selectedCourseId);
+    }
+    if (selectedCourseType) {
+      return tariffs.filter((tariff) => allowedCourseIds.has(tariff.courseId));
+    }
+    return tariffs;
+  }, [allowedCourseIds, filterOptions?.tariffs, selectedCourseId, selectedCourseType]);
+
+  useEffect(() => {
+    if (!selectedCourseId) return;
+    if (allowedCourseIds.has(selectedCourseId)) return;
+    setSelectedCourseId('');
+    setSelectedCourseRunId('');
+    setSelectedTariffId('');
+    setPage(1);
+  }, [allowedCourseIds, selectedCourseId]);
+
+  useEffect(() => {
+    if (!selectedCourseRunId) return;
+    if (filteredCourseRuns.some((run) => run.id === selectedCourseRunId)) return;
+    setSelectedCourseRunId('');
+    setPage(1);
+  }, [filteredCourseRuns, selectedCourseRunId]);
 
   const { data, isLoading, error } = trpc.students.list.useQuery(
     {
@@ -42,14 +98,31 @@ export default function StudentsPage() {
     <div className="p-4 md:p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">O'quvchilar</h1>
 
-      {(filterOptionsError || courseRunsError || error) && (
+      {(filterOptionsError || courseRunsError || coursesError || error) && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-          {filterOptionsError?.message || courseRunsError?.message || error?.message || "Ma'lumotni yuklashda xatolik"}
+          {filterOptionsError?.message || coursesError?.message || courseRunsError?.message || error?.message || "Ma'lumotni yuklashda xatolik"}
         </div>
       )}
 
       <div className="flex flex-wrap gap-3 mb-4">
-        {courseRuns && courseRuns.length > 0 && (
+        <select
+          value={selectedCourseType}
+          onChange={(e) => {
+            setSelectedCourseType(e.target.value as CourseType);
+            setSelectedCourseId('');
+            setSelectedCourseRunId('');
+            setSelectedTariffId('');
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
+        >
+          <option value="">Barcha kurs turlari</option>
+          <option value="offline">Offline</option>
+          <option value="online">Online</option>
+          <option value="intensiv">Intensiv</option>
+        </select>
+
+        {filteredCourseRuns.length > 0 && (
           <select
             value={selectedCourseRunId}
             onChange={(e) => {
@@ -59,7 +132,7 @@ export default function StudentsPage() {
             className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
           >
             <option value="">Barcha oqimlar</option>
-            {courseRuns.map((run) => (
+            {filteredCourseRuns.map((run) => (
               <option key={run.id} value={run.id}>
                 {run.name}
               </option>
@@ -77,7 +150,7 @@ export default function StudentsPage() {
           className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
         >
           <option value="">Barcha kurslar</option>
-          {filterOptions?.courses.map((course) => (
+          {filteredCourses.map((course) => (
             <option key={course.id} value={course.id}>
               {course.name}
             </option>
