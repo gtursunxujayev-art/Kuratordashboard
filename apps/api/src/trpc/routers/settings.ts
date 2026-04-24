@@ -184,6 +184,20 @@ function normalizeOptional(input?: string): string | undefined {
   return value ? value : undefined;
 }
 
+function normalizeColorHex(input: string): string {
+  const raw = input.trim().toUpperCase();
+  const withHash = raw.startsWith('#') ? raw : `#${raw}`;
+
+  if (!/^#[0-9A-F]{6}$/.test(withHash)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Rang HEX formatida bo\'lishi kerak (#RRGGBB)',
+    });
+  }
+
+  return withHash;
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return String((error as { code?: string })?.code || '') === 'P2002';
 }
@@ -612,55 +626,218 @@ export const settingsRouter = router({
       }
     }),
 
-  listExerciseDefinitions: protectedProcedure
-    .input(z.object({ courseRunId: z.string() }))
-    .query(async ({ ctx, input }) => {
-      return prisma.exerciseDefinition.findMany({
-        where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
-        orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }],
+  listExerciseColorOptions: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.exerciseColorOption.findMany({
+      where: { tenantId: ctx.tenantId },
+      select: {
+        id: true,
+        label: true,
+        colorHex: true,
+        orderIndex: true,
+        isActive: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+    });
+  }),
+
+  upsertExerciseColorOption: adminProcedure
+    .input(
+      z.object({
+        id: z.string().optional(),
+        label: z.string().min(1).max(80),
+        colorHex: z.string().min(3).max(16),
+        orderIndex: z.number().int().min(0).max(999).default(0),
+        isActive: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const normalizedLabel = input.label.trim();
+      const normalizedColorHex = normalizeColorHex(input.colorHex);
+
+      if (input.id) {
+        const existing = await prisma.exerciseColorOption.findFirst({
+          where: { id: input.id, tenantId: ctx.tenantId },
+          select: { id: true },
+        });
+        if (!existing) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Rang sozlamasi topilmadi' });
+        }
+
+        return prisma.exerciseColorOption.update({
+          where: { id: input.id },
+          data: {
+            label: normalizedLabel,
+            colorHex: normalizedColorHex,
+            orderIndex: input.orderIndex,
+            ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
+            updatedAt: new Date(),
+          },
+        });
+      }
+
+      return prisma.exerciseColorOption.create({
+        data: {
+          tenantId: ctx.tenantId,
+          label: normalizedLabel,
+          colorHex: normalizedColorHex,
+          points: 0,
+          orderIndex: input.orderIndex,
+          isActive: input.isActive ?? true,
+        },
       });
+    }),
+
+  setExerciseColorOptionActive: adminProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        isActive: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.exerciseColorOption.findFirst({
+        where: { id: input.id, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Rang sozlamasi topilmadi' });
+      }
+
+      return prisma.exerciseColorOption.update({
+        where: { id: input.id },
+        data: {
+          isActive: input.isActive,
+          updatedAt: new Date(),
+        },
+      });
+    }),
+
+  listExerciseDefinitions: protectedProcedure
+    .input(z.object({ courseId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const course = await prisma.course.findFirst({
+        where: { id: input.courseId, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      return prisma.exerciseDefinition.findMany({
+        where: { tenantId: ctx.tenantId, courseId: input.courseId },
+        include: {
+          colorPoints: {
+            include: {
+              colorOption: {
+                select: {
+                  id: true,
+                  label: true,
+                  colorHex: true,
+                  isActive: true,
+                  orderIndex: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }],
+      }).then((rows) =>
+        rows.map((row) => ({
+          ...row,
+          colorPoints: row.colorPoints.sort((left, right) => {
+            const leftOrder = left.colorOption.orderIndex ?? 0;
+            const rightOrder = right.colorOption.orderIndex ?? 0;
+            if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+            return left.colorOption.label.localeCompare(right.colorOption.label);
+          }),
+        })),
+      );
     }),
 
   addExerciseDefinition: adminProcedure
     .input(
       z.object({
-        courseRunId: z.string(),
+        courseId: z.string(),
         name: z.string().min(1).max(200),
         type: z.enum(['class', 'homework']),
         targetCount: z.number().int().min(1).max(100),
         orderIndex: z.number().int().min(0).default(0),
+        colorPoints: z.array(
+          z.object({
+            colorOptionId: z.string(),
+            points: z.number().int().min(0).max(10000),
+          }),
+        ).min(1),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const courseRun = await prisma.courseRun
-        .findFirst({
+      const [course, activeColorOptions] = await Promise.all([
+        prisma.course.findFirst({
           where: {
-            id: input.courseRunId,
+            id: input.courseId,
             tenantId: ctx.tenantId,
+            isActive: true,
           },
           select: { id: true },
-        })
-        .catch((error) => {
-          if (isMissingCourseRunsTableError(error)) {
-            throwMissingCourseRunsMigrationError();
-          }
-          throw error;
-        });
+        }),
+        prisma.exerciseColorOption.findMany({
+          where: { tenantId: ctx.tenantId, isActive: true },
+          select: { id: true },
+          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+        }),
+      ]);
 
-      if (!courseRun) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
       }
 
-      return prisma.exerciseDefinition.create({
-        data: {
-          tenantId: ctx.tenantId,
-          courseRunId: courseRun.id,
-          name: input.name,
-          type: input.type,
-          targetCount: input.targetCount,
-          orderIndex: input.orderIndex,
-        },
+      if (activeColorOptions.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Avval rang sozlamalarini kiriting' });
+      }
+
+      const activeColorIds = new Set(activeColorOptions.map((row) => row.id));
+      const providedColorIds = new Set<string>();
+      for (const row of input.colorPoints) {
+        if (!activeColorIds.has(row.colorOptionId)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ranglar ro\'yxati noto\'g\'ri' });
+        }
+        if (providedColorIds.has(row.colorOptionId)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Bir xil rang ikki marta kiritildi' });
+        }
+        providedColorIds.add(row.colorOptionId);
+      }
+
+      if (providedColorIds.size !== activeColorIds.size) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Har bir faol rang uchun ball kiriting' });
+      }
+
+      const created = await prisma.$transaction(async (tx) => {
+        const definition = await tx.exerciseDefinition.create({
+          data: {
+            tenantId: ctx.tenantId,
+            courseId: course.id,
+            name: input.name,
+            type: input.type,
+            targetCount: input.targetCount,
+            orderIndex: input.orderIndex,
+          },
+        });
+
+        await tx.exerciseDefinitionColorPoint.createMany({
+          data: input.colorPoints.map((row) => ({
+            tenantId: ctx.tenantId,
+            exerciseDefinitionId: definition.id,
+            colorOptionId: row.colorOptionId,
+            points: row.points,
+          })),
+        });
+
+        return definition;
       });
+
+      return created;
     }),
 
   updateExerciseDefinition: adminProcedure
@@ -672,6 +849,12 @@ export const settingsRouter = router({
         targetCount: z.number().int().min(1).max(100).optional(),
         orderIndex: z.number().int().min(0).optional(),
         isActive: z.boolean().optional(),
+        colorPoints: z.array(
+          z.object({
+            colorOptionId: z.string(),
+            points: z.number().int().min(0).max(10000),
+          }),
+        ).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -683,8 +866,53 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
       }
 
-      const { id, ...data } = input;
-      return prisma.exerciseDefinition.update({ where: { id }, data });
+      const { id, colorPoints, ...data } = input;
+
+      if (!colorPoints) {
+        return prisma.exerciseDefinition.update({ where: { id }, data });
+      }
+
+      const activeColorOptions = await prisma.exerciseColorOption.findMany({
+        where: { tenantId: ctx.tenantId, isActive: true },
+        select: { id: true },
+      });
+
+      if (activeColorOptions.length === 0) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Avval rang sozlamalarini kiriting' });
+      }
+
+      const activeColorIds = new Set(activeColorOptions.map((row) => row.id));
+      const providedColorIds = new Set<string>();
+      for (const row of colorPoints) {
+        if (!activeColorIds.has(row.colorOptionId)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ranglar ro\'yxati noto\'g\'ri' });
+        }
+        if (providedColorIds.has(row.colorOptionId)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Bir xil rang ikki marta kiritildi' });
+        }
+        providedColorIds.add(row.colorOptionId);
+      }
+
+      if (providedColorIds.size !== activeColorIds.size) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Har bir faol rang uchun ball kiriting' });
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.exerciseDefinition.update({ where: { id }, data });
+        await tx.exerciseDefinitionColorPoint.deleteMany({
+          where: { tenantId: ctx.tenantId, exerciseDefinitionId: id },
+        });
+        await tx.exerciseDefinitionColorPoint.createMany({
+          data: colorPoints.map((row) => ({
+            tenantId: ctx.tenantId,
+            exerciseDefinitionId: id,
+            colorOptionId: row.colorOptionId,
+            points: row.points,
+          })),
+        });
+      });
+
+      return prisma.exerciseDefinition.findUniqueOrThrow({ where: { id } });
     }),
 
   listKurators: protectedProcedure.query(async ({ ctx }) => {
