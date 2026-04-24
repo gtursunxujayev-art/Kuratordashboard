@@ -626,6 +626,47 @@ export const settingsRouter = router({
       }
     }),
 
+  deleteCourseRun: adminProcedure
+    .input(z.object({ courseRunId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.courseRun
+        .findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          select: { id: true, name: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      try {
+        await prisma.courseRun.delete({
+          where: { id: input.courseRunId },
+        });
+      } catch (error) {
+        if (isMissingCourseRunsTableError(error)) {
+          throwMissingCourseRunsMigrationError();
+        }
+
+        const code = String((error as any)?.code || '');
+        if (code === 'P2003') {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: "Oqimga bog'langan ma'lumotlar bor. Avval bog'liqliklarni tozalang.",
+          });
+        }
+        throw error;
+      }
+
+      return { success: true };
+    }),
+
   listExerciseColorOptions: protectedProcedure.query(async ({ ctx }) => {
     return prisma.exerciseColorOption.findMany({
       where: { tenantId: ctx.tenantId },
