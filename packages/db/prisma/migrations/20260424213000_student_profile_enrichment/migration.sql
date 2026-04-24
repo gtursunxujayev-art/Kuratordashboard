@@ -1,0 +1,6 @@
+ALTER TABLE "customers"
+  ADD COLUMN IF NOT EXISTS "secondaryPhone" TEXT,
+  ADD COLUMN IF NOT EXISTS "specialty" TEXT,
+  ADD COLUMN IF NOT EXISTS "address" TEXT,
+  ADD COLUMN IF NOT EXISTS "instagramUsername" TEXT,
+  ADD COLUMN IF NOT EXISTS "socialMediaConsent" BOOLEAN;
