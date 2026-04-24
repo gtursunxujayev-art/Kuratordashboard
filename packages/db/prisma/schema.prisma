@@ -336,6 +336,11 @@ model Customer {
   phone           String?
   gender          String?  // 'male' | 'female'
   region          String?
+  secondaryPhone  String?
+  specialty       String?
+  address         String?
+  instagramUsername String?
+  socialMediaConsent Boolean?
   profileCourseId String?
   profileTariffId String?
   profileSubTariffId String?
