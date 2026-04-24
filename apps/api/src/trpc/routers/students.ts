@@ -277,9 +277,9 @@ export const studentsRouter = router({
         }
       >();
 
-      if (input.courseRunId && courseRun && customerIds.length > 0) {
+      if (input.courseRunId && courseRun && courseRunCourseId && customerIds.length > 0) {
         const exerciseDefs = await prisma.exerciseDefinition.findMany({
-          where: { tenantId, courseRunId: input.courseRunId, isActive: true },
+          where: { tenantId, courseId: courseRunCourseId, isActive: true },
           select: { id: true, name: true, targetCount: true },
           orderBy: { orderIndex: 'asc' },
         });
