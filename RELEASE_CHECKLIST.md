@@ -8,6 +8,7 @@
 
 2. Deploy backend first:
 - Apply DB migration (`packages/db/prisma/migrations/20260405190000_kd_final_spec`).
+- Apply DB migration (`packages/db/prisma/migrations/20260424213000_student_profile_enrichment`) before API deploy.
 - Deploy API and confirm `/health` and `/ready` both return 200.
 - Smoke test `auth.loginWithPassword` and `auth.me`.
 
