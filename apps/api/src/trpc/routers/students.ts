@@ -12,6 +12,11 @@ type CustomerColumnSupport = {
   telegramUsername: boolean;
   gender: boolean;
   region: boolean;
+  secondaryPhone: boolean;
+  specialty: boolean;
+  address: boolean;
+  instagramUsername: boolean;
+  socialMediaConsent: boolean;
 };
 
 let customerColumnSupportPromise: Promise<CustomerColumnSupport> | null = null;
@@ -36,7 +41,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
 
 function isMissingCustomerColumnError(
   error: unknown,
-  column: 'telegramusername' | 'gender' | 'region',
+  column:
+    | 'telegramusername'
+    | 'gender'
+    | 'region'
+    | 'secondaryphone'
+    | 'specialty'
+    | 'address'
+    | 'instagramusername'
+    | 'socialmediaconsent',
 ): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -53,17 +66,40 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'customers'
-        AND column_name IN ('telegramUsername', 'gender', 'region')
+        AND column_name IN (
+          'telegramUsername',
+          'gender',
+          'region',
+          'secondaryPhone',
+          'specialty',
+          'address',
+          'instagramUsername',
+          'socialMediaConsent'
+        )
     `;
     const existing = new Set(rows.map((row) => row.column_name));
     return {
       telegramUsername: existing.has('telegramUsername'),
       gender: existing.has('gender'),
       region: existing.has('region'),
+      secondaryPhone: existing.has('secondaryPhone'),
+      specialty: existing.has('specialty'),
+      address: existing.has('address'),
+      instagramUsername: existing.has('instagramUsername'),
+      socialMediaConsent: existing.has('socialMediaConsent'),
     };
   } catch {
     // If metadata query is blocked, keep legacy behavior and let runtime queries decide.
-    return { telegramUsername: true, gender: true, region: true };
+    return {
+      telegramUsername: true,
+      gender: true,
+      region: true,
+      secondaryPhone: true,
+      specialty: true,
+      address: true,
+      instagramUsername: true,
+      socialMediaConsent: true,
+    };
   }
 }
 
@@ -77,6 +113,30 @@ async function getCustomerColumnSupport(forceRefresh = false): Promise<CustomerC
 function isPremiumTariffName(name: string | null | undefined): boolean {
   const value = (name || '').toLowerCase();
   return value.includes('premium') || value.includes('vip');
+}
+
+function normalizeOptionalText(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function normalizeInstagramUsername(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+
+  const withoutProtocol = trimmed.replace(/^https?:\/\//i, '');
+  const withoutDomain = withoutProtocol
+    .replace(/^www\./i, '')
+    .replace(/^instagram\.com\//i, '')
+    .replace(/^m\.instagram\.com\//i, '');
+
+  const normalized = withoutDomain
+    .replace(/^@+/, '')
+    .replace(/\?.*$/, '')
+    .replace(/\/+$/, '')
+    .trim();
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 export const studentsRouter = router({
@@ -259,6 +319,11 @@ export const studentsRouter = router({
           telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
           gender: missingGender ? false : columnSupport.gender,
           region: missingRegion ? false : columnSupport.region,
+          secondaryPhone: columnSupport.secondaryPhone,
+          specialty: columnSupport.specialty,
+          address: columnSupport.address,
+          instagramUsername: columnSupport.instagramUsername,
+          socialMediaConsent: columnSupport.socialMediaConsent,
         };
         customerColumnSupportPromise = Promise.resolve(columnSupport);
         [customers, total, courseRun] = await runQuery(columnSupport);
@@ -430,6 +495,11 @@ export const studentsRouter = router({
         ...(support.telegramUsername ? { telegramUsername: true } : {}),
         ...(support.gender ? { gender: true } : {}),
         ...(support.region ? { region: true } : {}),
+        ...(support.secondaryPhone ? { secondaryPhone: true } : {}),
+        ...(support.specialty ? { specialty: true } : {}),
+        ...(support.address ? { address: true } : {}),
+        ...(support.instagramUsername ? { instagramUsername: true } : {}),
+        ...(support.socialMediaConsent ? { socialMediaConsent: true } : {}),
         createdAt: true,
         updatedAt: true,
         incomes: {
@@ -447,6 +517,11 @@ export const studentsRouter = router({
         telegramUsername?: string | null;
         gender?: string | null;
         region?: string | null;
+        secondaryPhone?: string | null;
+        specialty?: string | null;
+        address?: string | null;
+        instagramUsername?: string | null;
+        socialMediaConsent?: boolean | null;
         createdAt: Date;
         updatedAt: Date;
         incomes: Array<{
@@ -466,13 +541,32 @@ export const studentsRouter = router({
         const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
         const missingRegion = isMissingCustomerColumnError(error, 'region');
         const missingGender = isMissingCustomerColumnError(error, 'gender');
-        if (!missingTelegram && !missingRegion && !missingGender) {
+        const missingSecondaryPhone = isMissingCustomerColumnError(error, 'secondaryphone');
+        const missingSpecialty = isMissingCustomerColumnError(error, 'specialty');
+        const missingAddress = isMissingCustomerColumnError(error, 'address');
+        const missingInstagramUsername = isMissingCustomerColumnError(error, 'instagramusername');
+        const missingSocialMediaConsent = isMissingCustomerColumnError(error, 'socialmediaconsent');
+        if (
+          !missingTelegram &&
+          !missingRegion &&
+          !missingGender &&
+          !missingSecondaryPhone &&
+          !missingSpecialty &&
+          !missingAddress &&
+          !missingInstagramUsername &&
+          !missingSocialMediaConsent
+        ) {
           throw error;
         }
         columnSupport = {
           telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
           gender: missingGender ? false : columnSupport.gender,
           region: missingRegion ? false : columnSupport.region,
+          secondaryPhone: missingSecondaryPhone ? false : columnSupport.secondaryPhone,
+          specialty: missingSpecialty ? false : columnSupport.specialty,
+          address: missingAddress ? false : columnSupport.address,
+          instagramUsername: missingInstagramUsername ? false : columnSupport.instagramUsername,
+          socialMediaConsent: missingSocialMediaConsent ? false : columnSupport.socialMediaConsent,
         };
         customerColumnSupportPromise = Promise.resolve(columnSupport);
         customer = await prisma.customer.findFirst({
@@ -491,6 +585,11 @@ export const studentsRouter = router({
         telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
+        secondaryPhone: columnSupport.secondaryPhone ? (customer.secondaryPhone ?? null) : null,
+        specialty: columnSupport.specialty ? (customer.specialty ?? null) : null,
+        address: columnSupport.address ? (customer.address ?? null) : null,
+        instagramUsername: columnSupport.instagramUsername ? (customer.instagramUsername ?? null) : null,
+        socialMediaConsent: columnSupport.socialMediaConsent ? (customer.socialMediaConsent ?? null) : null,
       };
     }),
 
@@ -504,6 +603,11 @@ export const studentsRouter = router({
         telegramUsername: z.string().optional(),
         gender: z.enum(['male', 'female']).optional(),
         region: z.string().optional(),
+        secondaryPhone: z.string().optional(),
+        specialty: z.string().optional(),
+        address: z.string().optional(),
+        instagramUsername: z.string().optional(),
+        socialMediaConsent: z.boolean().nullable().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -513,7 +617,7 @@ export const studentsRouter = router({
         throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
       }
 
-      const columnSupport = await getCustomerColumnSupport();
+      let columnSupport = await getCustomerColumnSupport();
       const { customerId, ...data } = input;
 
       const existing = await prisma.customer.findFirst({
@@ -524,25 +628,81 @@ export const studentsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
       }
 
-      const syncFields: Record<string, unknown> = {};
-      if (data.name !== undefined) syncFields.name = data.name;
-      if (data.customerNumber !== undefined) {
-        syncFields.customerNumber = data.customerNumber;
-      } else if (data.phone !== undefined) {
-        syncFields.customerNumber = data.phone;
-      }
-      if (data.telegramUsername !== undefined && columnSupport.telegramUsername) {
-        syncFields.telegramUsername = data.telegramUsername;
-      }
+      const applyUpdate = async (support: CustomerColumnSupport) => {
+        const syncFields: Record<string, unknown> = {};
+        if (data.name !== undefined) syncFields.name = data.name;
+        if (data.customerNumber !== undefined) {
+          syncFields.customerNumber = data.customerNumber;
+        } else if (data.phone !== undefined) {
+          syncFields.customerNumber = data.phone;
+        }
+        if (data.telegramUsername !== undefined && support.telegramUsername) {
+          syncFields.telegramUsername = data.telegramUsername;
+        }
 
-      const kdFields: Record<string, unknown> = {};
-      if (data.gender !== undefined && columnSupport.gender) kdFields.gender = data.gender;
-      if (data.region !== undefined && columnSupport.region) kdFields.region = data.region;
+        const kdFields: Record<string, unknown> = {};
+        if (data.gender !== undefined && support.gender) kdFields.gender = data.gender;
+        if (data.region !== undefined && support.region) kdFields.region = data.region;
+        if (data.secondaryPhone !== undefined && support.secondaryPhone) {
+          kdFields.secondaryPhone = normalizeOptionalText(data.secondaryPhone);
+        }
+        if (data.specialty !== undefined && support.specialty) {
+          kdFields.specialty = normalizeOptionalText(data.specialty);
+        }
+        if (data.address !== undefined && support.address) {
+          kdFields.address = normalizeOptionalText(data.address);
+        }
+        if (data.instagramUsername !== undefined && support.instagramUsername) {
+          kdFields.instagramUsername = normalizeInstagramUsername(data.instagramUsername);
+        }
+        if (data.socialMediaConsent !== undefined && support.socialMediaConsent) {
+          kdFields.socialMediaConsent = data.socialMediaConsent;
+        }
 
-      return prisma.customer.update({
-        where: { id: customerId },
-        data: { ...syncFields, ...kdFields, updatedAt: new Date() },
-      });
+        return prisma.customer.update({
+          where: { id: customerId },
+          data: { ...syncFields, ...kdFields, updatedAt: new Date() },
+        });
+      };
+
+      try {
+        return await applyUpdate(columnSupport);
+      } catch (error) {
+        const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
+        const missingRegion = isMissingCustomerColumnError(error, 'region');
+        const missingGender = isMissingCustomerColumnError(error, 'gender');
+        const missingSecondaryPhone = isMissingCustomerColumnError(error, 'secondaryphone');
+        const missingSpecialty = isMissingCustomerColumnError(error, 'specialty');
+        const missingAddress = isMissingCustomerColumnError(error, 'address');
+        const missingInstagramUsername = isMissingCustomerColumnError(error, 'instagramusername');
+        const missingSocialMediaConsent = isMissingCustomerColumnError(error, 'socialmediaconsent');
+
+        if (
+          !missingTelegram &&
+          !missingRegion &&
+          !missingGender &&
+          !missingSecondaryPhone &&
+          !missingSpecialty &&
+          !missingAddress &&
+          !missingInstagramUsername &&
+          !missingSocialMediaConsent
+        ) {
+          throw error;
+        }
+
+        columnSupport = {
+          telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
+          gender: missingGender ? false : columnSupport.gender,
+          region: missingRegion ? false : columnSupport.region,
+          secondaryPhone: missingSecondaryPhone ? false : columnSupport.secondaryPhone,
+          specialty: missingSpecialty ? false : columnSupport.specialty,
+          address: missingAddress ? false : columnSupport.address,
+          instagramUsername: missingInstagramUsername ? false : columnSupport.instagramUsername,
+          socialMediaConsent: missingSocialMediaConsent ? false : columnSupport.socialMediaConsent,
+        };
+        customerColumnSupportPromise = Promise.resolve(columnSupport);
+        return applyUpdate(columnSupport);
+      }
     }),
 
   filterOptions: protectedProcedure.query(async ({ ctx }) => {
