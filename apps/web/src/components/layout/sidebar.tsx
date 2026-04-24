@@ -13,7 +13,10 @@ const navItems = [
   { href: '/amaliy', label: 'Amaliy', icon: 'AM' },
 ] as const;
 
-const adminNavItems = [{ href: '/settings', label: 'Sozlamalar', icon: 'SZ' }] as const;
+const adminNavItems = [
+  { href: '/hisobot', label: 'Hisobot', icon: 'HS' },
+  { href: '/settings', label: 'Sozlamalar', icon: 'SZ' },
+] as const;
 
 export function Sidebar({
   theme,
