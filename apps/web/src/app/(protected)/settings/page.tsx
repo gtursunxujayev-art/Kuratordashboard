@@ -248,7 +248,6 @@ function CourseRunsTab({
   const [form, setForm] = useState({
     courseId: '',
     name: '',
-    startDate: '',
     durationWeeks: 6,
     baseLessons: 12,
     premiumExtraLessons: 2,
@@ -345,7 +344,7 @@ function CourseRunsTab({
   }, [createTariffId]);
 
   const handleCreate = async () => {
-    if (!form.courseId || !form.name || !form.startDate) {
+    if (!form.courseId || !form.name) {
       setError("Barcha maydonlarni to'ldiring");
       setCreateSuccess('');
       return;
@@ -357,7 +356,6 @@ function CourseRunsTab({
       const createdRun = await createMutation.mutateAsync({
         courseId: form.courseId,
         name: form.name,
-        startDate: form.startDate,
         durationWeeks: form.durationWeeks,
         baseLessons: form.baseLessons,
         premiumExtraLessons: form.premiumExtraLessons,
@@ -374,7 +372,6 @@ function CourseRunsTab({
       setForm({
         courseId: '',
         name: '',
-        startDate: '',
         durationWeeks: 6,
         baseLessons: 12,
         premiumExtraLessons: 2,
@@ -505,15 +502,6 @@ function CourseRunsTab({
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Boshlanish (Shanba)</label>
-              <input
-                type="date"
-                value={form.startDate}
-                onChange={(e) => setForm({ ...form, startDate: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-              />
-            </div>
-            <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Davomiylik (hafta)</label>
               <input
                 type="number"
@@ -547,6 +535,9 @@ function CourseRunsTab({
               />
             </div>
           </div>
+          <p className="text-xs text-gray-500">
+            Boshlanish sanasi kursning `start date` qiymatidan avtomatik olinadi.
+          </p>
 
           <div className="border border-gray-200 rounded-lg p-3 space-y-3">
             <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun tarif va o'quvchilar (ixtiyoriy)</h4>
