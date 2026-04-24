@@ -39,6 +39,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingExerciseDefinitionCourseIdColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('exercise_definitions.courseid') && message.includes('does not exist');
+  }
+  return message.includes('exercise_definitions.courseid');
+}
+
 function isMissingCustomerColumnError(
   error: unknown,
   column:
@@ -343,11 +352,31 @@ export const studentsRouter = router({
       >();
 
       if (input.courseRunId && courseRun && courseRunCourseId && customerIds.length > 0) {
-        const exerciseDefs = await prisma.exerciseDefinition.findMany({
-          where: { tenantId, courseId: courseRunCourseId, isActive: true },
-          select: { id: true, name: true, targetCount: true },
-          orderBy: { orderIndex: 'asc' },
-        });
+        let exerciseDefs: Array<{ id: string; name: string; targetCount: number }> = [];
+        try {
+          exerciseDefs = await prisma.exerciseDefinition.findMany({
+            where: { tenantId, courseId: courseRunCourseId, isActive: true },
+            select: { id: true, name: true, targetCount: true },
+            orderBy: { orderIndex: 'asc' },
+          });
+        } catch (error) {
+          if (!isMissingExerciseDefinitionCourseIdColumnError(error)) {
+            throw error;
+          }
+
+          try {
+            exerciseDefs = await prisma.$queryRaw<Array<{ id: string; name: string; targetCount: number }>>`
+              SELECT "id", "name", "targetCount"
+              FROM "exercise_definitions"
+              WHERE "tenantId" = ${tenantId}
+                AND "courseRunId" = ${input.courseRunId}
+                AND "isActive" = true
+              ORDER BY "orderIndex" ASC
+            `;
+          } catch {
+            exerciseDefs = [];
+          }
+        }
 
         const exerciseDefIds = exerciseDefs.map((def) => def.id);
 
