@@ -44,6 +44,8 @@ model Tenant {
   courseRuns        CourseRun[]
   kuratorAssignments KuratorAssignment[]
   exerciseDefinitions ExerciseDefinition[]
+  exerciseColorOptions ExerciseColorOption[]
+  exerciseDefinitionColorPoints ExerciseDefinitionColorPoint[]
   studentExerciseLogs StudentExerciseLog[]
   classAttendances  ClassAttendance[]
   kuratorTasks      KuratorTask[]
@@ -381,6 +383,7 @@ model Course {
 
   // KD-specific
   courseRuns CourseRun[]
+  exerciseDefinitions ExerciseDefinition[]
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -561,7 +564,6 @@ model CourseRun {
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   course              Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
   kuratorAssignments  KuratorAssignment[]
-  exerciseDefinitions ExerciseDefinition[]
   attendances         ClassAttendance[]
 
   @@index([tenantId])
@@ -570,11 +572,11 @@ model CourseRun {
   @@map("course_runs")
 }
 
-// Defines an exercise type students should complete in a course run
+// Defines an exercise type students should complete in a course
 model ExerciseDefinition {
   id          String   @id @default(uuid())
   tenantId    String
-  courseRunId String
+  courseId    String
   name        String   // e.g. "Shat", "Uy ishi"
   type        String   // 'class' | 'homework'
   targetCount Int      @default(1) // how many times per period
@@ -583,11 +585,12 @@ model ExerciseDefinition {
   createdAt   DateTime @default(now())
 
   tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  courseRun   CourseRun           @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+  course      Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
   exerciseLogs StudentExerciseLog[]
+  colorPoints ExerciseDefinitionColorPoint[]
 
   @@index([tenantId])
-  @@index([courseRunId])
+  @@index([courseId])
   @@map("exercise_definitions")
 }
 
@@ -597,6 +600,9 @@ model StudentExerciseLog {
   tenantId             String
   customerId           String
   exerciseDefinitionId String
+  colorOptionId        String?
+  colorHex             String?
+  points               Int?
   completedAt          DateTime // the date the exercise was done
   loggedByUserId       String
   note                 String?
@@ -605,14 +611,57 @@ model StudentExerciseLog {
   tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer           Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
   exerciseDefinition ExerciseDefinition @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
+  colorOption        ExerciseColorOption? @relation(fields: [colorOptionId], references: [id], onDelete: SetNull)
   loggedBy           User               @relation(fields: [loggedByUserId], references: [id], onDelete: Restrict)
 
   @@index([tenantId])
   @@index([customerId])
   @@index([exerciseDefinitionId])
+  @@index([colorOptionId])
   @@index([completedAt])
+  @@index([tenantId, exerciseDefinitionId, completedAt])
   @@index([tenantId, customerId, exerciseDefinitionId])
   @@map("student_exercise_logs")
+}
+
+model ExerciseColorOption {
+  id         String   @id @default(uuid())
+  tenantId   String
+  label      String
+  colorHex   String
+  points     Int // deprecated: kept only for backfill compatibility
+  orderIndex Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  exerciseLogs StudentExerciseLog[]
+  definitionPoints ExerciseDefinitionColorPoint[]
+
+  @@index([tenantId])
+  @@index([tenantId, isActive, orderIndex])
+  @@map("exercise_color_options")
+}
+
+model ExerciseDefinitionColorPoint {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  exerciseDefinitionId String
+  colorOptionId        String
+  points               Int
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  exerciseDefinition ExerciseDefinition @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
+  colorOption        ExerciseColorOption @relation(fields: [colorOptionId], references: [id], onDelete: Cascade)
+
+  @@unique([exerciseDefinitionId, colorOptionId])
+  @@index([tenantId])
+  @@index([exerciseDefinitionId])
+  @@index([colorOptionId])
+  @@map("exercise_definition_color_points")
 }
 
 // Tracks student attendance per class session (each Saturday/Sunday)
