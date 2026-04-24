@@ -13,6 +13,7 @@ const SECTION_TITLES: Record<string, string> = {
   '/intensiv': 'Intensiv',
   '/students': "O'quvchilar",
   '/amaliy': 'Amaliy',
+  '/hisobot': 'Hisobot',
   '/settings': 'Sozlamalar',
 };
 
