@@ -12,6 +12,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('templates');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
+  const [selectedExerciseCourseId, setSelectedExerciseCourseId] = useState('');
 
   if (!isLoading && !isAdmin) {
     router.replace('/dashboard');
@@ -54,7 +55,7 @@ export default function SettingsPage() {
         />
       )}
       {activeTab === 'exercises' && (
-        <ExercisesTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
+        <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} />
       )}
       {activeTab === 'regions' && <RegionsTab />}
       {activeTab === 'users' && <UsersTab />}
@@ -800,32 +801,70 @@ function CourseRunsTab({
 }
 
 function ExercisesTab({
-  courseRunId,
-  onSelectCourseRun,
+  courseId,
+  onSelectCourse,
 }: {
-  courseRunId: string;
-  onSelectCourseRun: (id: string) => void;
+  courseId: string;
+  onSelectCourse: (id: string) => void;
 }) {
+  type ExerciseColorOption = {
+    id: string;
+    label: string;
+    colorHex: string;
+    orderIndex: number;
+    isActive: boolean;
+  };
+
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
+  const [editingExerciseId, setEditingExerciseId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: '',
     type: 'class' as 'class' | 'homework',
     targetCount: 1,
     orderIndex: 0,
   });
+  const [exerciseColorPoints, setExerciseColorPoints] = useState<Record<string, number>>({});
   const [error, setError] = useState('');
+  const [colorError, setColorError] = useState('');
+  const [colorSuccess, setColorSuccess] = useState('');
+  const [editingColorId, setEditingColorId] = useState<string | null>(null);
+  const [colorForm, setColorForm] = useState({
+    label: '',
+    colorHex: '#22C55E',
+    orderIndex: 0,
+    isActive: true,
+  });
 
-  const { data: courseRuns } = trpc.settings.listCourseRuns.useQuery();
+  const { data: courses } = trpc.settings.listCourses.useQuery();
   const { data: exercises, isLoading } = trpc.settings.listExerciseDefinitions.useQuery(
-    { courseRunId },
-    { enabled: !!courseRunId },
+    { courseId },
+    { enabled: !!courseId },
+  );
+  const { data: colorOptions, isLoading: colorOptionsLoading } = trpc.settings.listExerciseColorOptions.useQuery();
+
+  const activeColorOptions = useMemo(
+    () => ((colorOptions ?? []) as ExerciseColorOption[])
+      .filter((option) => option.isActive)
+      .sort((left, right) => left.orderIndex - right.orderIndex),
+    [colorOptions],
   );
 
+  useEffect(() => {
+    setExerciseColorPoints((prev) => {
+      const next: Record<string, number> = {};
+      for (const option of activeColorOptions) {
+        next[option.id] = prev[option.id] ?? 0;
+      }
+      return next;
+    });
+  }, [activeColorOptions]);
+
   const createMutation = trpc.settings.addExerciseDefinition.useMutation({
-    onSuccess: () => {
-      void utils.settings.listExerciseDefinitions.invalidate();
+    onSuccess: async () => {
+      await utils.settings.listExerciseDefinitions.invalidate();
       setShowForm(false);
+      setEditingExerciseId(null);
       setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
       setError('');
     },
@@ -833,34 +872,290 @@ function ExercisesTab({
   });
 
   const updateMutation = trpc.settings.updateExerciseDefinition.useMutation({
-    onSuccess: () => void utils.settings.listExerciseDefinitions.invalidate(),
+    onSuccess: async () => {
+      await utils.settings.listExerciseDefinitions.invalidate();
+      setShowForm(false);
+      setEditingExerciseId(null);
+      setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
+      setError('');
+    },
+    onError: (err) => setError(err.message),
   });
+
+  const upsertColorMutation = trpc.settings.upsertExerciseColorOption.useMutation({
+    onSuccess: async () => {
+      await utils.settings.listExerciseColorOptions.invalidate();
+      await utils.settings.listExerciseDefinitions.invalidate();
+      setEditingColorId(null);
+      setColorForm({
+        label: '',
+        colorHex: '#22C55E',
+        orderIndex: 0,
+        isActive: true,
+      });
+      setColorError('');
+      setColorSuccess("Rang sozlamasi saqlandi");
+    },
+    onError: (err) => {
+      setColorSuccess('');
+      setColorError(err.message);
+    },
+  });
+
+  const setColorActiveMutation = trpc.settings.setExerciseColorOptionActive.useMutation({
+    onSuccess: async () => {
+      await utils.settings.listExerciseColorOptions.invalidate();
+      await utils.settings.listExerciseDefinitions.invalidate();
+    },
+  });
+
+  const openCreateForm = () => {
+    const nextPoints: Record<string, number> = {};
+    for (const option of activeColorOptions) {
+      nextPoints[option.id] = 0;
+    }
+    setEditingExerciseId(null);
+    setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
+    setExerciseColorPoints(nextPoints);
+    setError('');
+    setShowForm(true);
+  };
+
+  const openEditForm = (exercise: any) => {
+    const nextPoints: Record<string, number> = {};
+    for (const option of activeColorOptions) {
+      const found = exercise.colorPoints.find((row: any) => row.colorOptionId === option.id);
+      nextPoints[option.id] = found?.points ?? 0;
+    }
+
+    setEditingExerciseId(exercise.id);
+    setForm({
+      name: exercise.name,
+      type: exercise.type,
+      targetCount: exercise.targetCount,
+      orderIndex: exercise.orderIndex,
+    });
+    setExerciseColorPoints(nextPoints);
+    setError('');
+    setShowForm(true);
+  };
+
+  const handleSaveExercise = () => {
+    if (!courseId) {
+      setError('Avval kursni tanlang');
+      return;
+    }
+    if (!form.name.trim()) {
+      setError('Mashq nomini kiriting');
+      return;
+    }
+    if (activeColorOptions.length === 0) {
+      setError("Avval kamida bitta faol rang qo'shing");
+      return;
+    }
+
+    const colorPointsPayload = activeColorOptions.map((option) => ({
+      colorOptionId: option.id,
+      points: Math.max(0, Number(exerciseColorPoints[option.id] ?? 0)),
+    }));
+
+    if (editingExerciseId) {
+      updateMutation.mutate({
+        id: editingExerciseId,
+        name: form.name,
+        type: form.type,
+        targetCount: form.targetCount,
+        orderIndex: form.orderIndex,
+        colorPoints: colorPointsPayload,
+      });
+      return;
+    }
+
+    createMutation.mutate({
+      courseId,
+      name: form.name,
+      type: form.type,
+      targetCount: form.targetCount,
+      orderIndex: form.orderIndex,
+      colorPoints: colorPointsPayload,
+    });
+  };
 
   return (
     <div className="space-y-4">
       <h2 className="text-base font-semibold text-gray-900">Amaliy mashqlar</h2>
 
+      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-gray-900">Amaliy ranglari</h3>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Nomi</label>
+            <input
+              value={colorForm.label}
+              onChange={(e) => setColorForm({ ...colorForm, label: e.target.value })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              placeholder="Masalan: A'lo"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Rang</label>
+            <input
+              type="color"
+              value={colorForm.colorHex}
+              onChange={(e) => setColorForm({ ...colorForm, colorHex: e.target.value })}
+              className="w-full h-10 px-1 py-1 border border-gray-300 rounded-md bg-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Tartib</label>
+            <input
+              type="number"
+              min={0}
+              max={999}
+              value={colorForm.orderIndex}
+              onChange={(e) => setColorForm({ ...colorForm, orderIndex: Number(e.target.value) })}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <button
+              onClick={() =>
+                upsertColorMutation.mutate({
+                  ...(editingColorId ? { id: editingColorId } : {}),
+                  label: colorForm.label,
+                  colorHex: colorForm.colorHex,
+                  orderIndex: colorForm.orderIndex,
+                  isActive: colorForm.isActive,
+                })
+              }
+              disabled={upsertColorMutation.isLoading || !colorForm.label.trim()}
+              className="flex-1 px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {upsertColorMutation.isLoading ? '...' : editingColorId ? 'Yangilash' : "Qo'shish"}
+            </button>
+            {editingColorId && (
+              <button
+                onClick={() => {
+                  setEditingColorId(null);
+                  setColorForm({
+                    label: '',
+                    colorHex: '#22C55E',
+                    orderIndex: 0,
+                    isActive: true,
+                  });
+                  setColorError('');
+                  setColorSuccess('');
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50"
+              >
+                Bekor
+              </button>
+            )}
+          </div>
+        </div>
+
+        {colorError && <p className="text-sm text-red-600">{colorError}</p>}
+        {colorSuccess && <p className="text-sm text-green-700">{colorSuccess}</p>}
+
+        {colorOptionsLoading ? (
+          <p className="text-sm text-gray-500">Ranglar yuklanmoqda...</p>
+        ) : !colorOptions || colorOptions.length === 0 ? (
+          <p className="text-sm text-gray-500">Hozircha rang sozlamalari yo'q</p>
+        ) : (
+          <div className="overflow-x-auto border border-gray-200 rounded-lg">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="text-left px-4 py-2 font-medium text-gray-600">Nomi</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-600">Rang</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-600">Tartib</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-600">Holat</th>
+                  <th className="text-left px-4 py-2 font-medium text-gray-600">Amal</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {((colorOptions ?? []) as ExerciseColorOption[]).map((option) => (
+                  <tr key={option.id}>
+                    <td className="px-4 py-2 text-gray-900">{option.label}</td>
+                    <td className="px-4 py-2">
+                      <div className="inline-flex items-center gap-2">
+                        <span
+                          className="inline-block w-4 h-4 rounded-full border border-gray-300"
+                          style={{ backgroundColor: option.colorHex }}
+                        />
+                        <span className="text-gray-700">{option.colorHex}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-gray-700">{option.orderIndex}</td>
+                    <td className="px-4 py-2">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                          option.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        {option.isActive ? 'Faol' : 'Nofaol'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2">
+                      <div className="inline-flex items-center gap-3">
+                        <button
+                          onClick={() => {
+                            setEditingColorId(option.id);
+                            setColorForm({
+                              label: option.label,
+                              colorHex: option.colorHex,
+                              orderIndex: option.orderIndex,
+                              isActive: option.isActive,
+                            });
+                            setColorError('');
+                            setColorSuccess('');
+                          }}
+                          className="text-blue-600 text-xs hover:underline"
+                        >
+                          Tahrirlash
+                        </button>
+                        <button
+                          onClick={() =>
+                            setColorActiveMutation.mutate({
+                              id: option.id,
+                              isActive: !option.isActive,
+                            })
+                          }
+                          className="text-xs text-gray-700 hover:underline"
+                        >
+                          {option.isActive ? 'Nofaol qilish' : 'Faol qilish'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1">Kurs oqimi</label>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Kurs</label>
         <select
-          value={courseRunId}
-          onChange={(e) => onSelectCourseRun(e.target.value)}
+          value={courseId}
+          onChange={(e) => onSelectCourse(e.target.value)}
           className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700 min-w-64"
         >
-          <option value="">Oqimni tanlang...</option>
-          {courseRuns?.map((r) => (
-            <option key={r.id} value={r.id}>
-              {r.name} ({r.course.name})
+          <option value="">Kursni tanlang...</option>
+          {courses?.map((course) => (
+            <option key={course.id} value={course.id}>
+              {course.name}
             </option>
           ))}
         </select>
       </div>
 
-      {courseRunId && (
+      {courseId && (
         <>
           <div className="flex justify-end">
             <button
-              onClick={() => setShowForm(true)}
+              onClick={openCreateForm}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
             >
               + Mashq qo'shish
@@ -869,7 +1164,7 @@ function ExercisesTab({
 
           {showForm && (
             <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Mashq nomi</label>
                   <input
@@ -912,27 +1207,47 @@ function ExercisesTab({
                 </div>
               </div>
 
+              <div className="border border-gray-200 rounded-lg p-3">
+                <p className="text-xs font-semibold text-gray-700 mb-2">Ranglar bo&apos;yicha ball</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  {activeColorOptions.map((option) => (
+                    <div key={option.id}>
+                      <label className="block text-xs text-gray-600 mb-1">{option.label}</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={exerciseColorPoints[option.id] ?? 0}
+                        onChange={(e) =>
+                          setExerciseColorPoints((prev) => ({
+                            ...prev,
+                            [option.id]: Number(e.target.value),
+                          }))
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               {error && <p className="text-sm text-red-600">{error}</p>}
 
               <div className="flex gap-2">
                 <button
-                  onClick={() =>
-                    createMutation.mutate({
-                      courseRunId,
-                      name: form.name,
-                      type: form.type,
-                      targetCount: form.targetCount,
-                      orderIndex: form.orderIndex,
-                    })
-                  }
-                  disabled={createMutation.isLoading}
+                  onClick={handleSaveExercise}
+                  disabled={createMutation.isLoading || updateMutation.isLoading}
                   className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg disabled:opacity-50"
                 >
-                  Saqlash
+                  {createMutation.isLoading || updateMutation.isLoading
+                    ? 'Saqlanmoqda...'
+                    : editingExerciseId
+                    ? 'Yangilash'
+                    : 'Saqlash'}
                 </button>
                 <button
                   onClick={() => {
                     setShowForm(false);
+                    setEditingExerciseId(null);
                     setError('');
                   }}
                   className="px-4 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg"
@@ -957,27 +1272,50 @@ function ExercisesTab({
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Nomi</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Turi</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Maqsad</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Maks. ball</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Holati</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Amal</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {exercises.map((exercise) => (
-                    <tr key={exercise.id}>
-                      <td className="px-4 py-3 font-medium text-gray-900">{exercise.name}</td>
-                      <td className="px-4 py-3 text-gray-600">{exercise.type === 'class' ? 'Dars mashqi' : 'Uy vazifasi'}</td>
-                      <td className="px-4 py-3 text-gray-600">{exercise.targetCount} marta</td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => updateMutation.mutate({ id: exercise.id, isActive: !exercise.isActive })}
-                          className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                            exercise.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
-                          }`}
-                        >
-                          {exercise.isActive ? 'Faol' : 'Nofaol'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {exercises.map((exercise) => {
+                    const activePoints = exercise.colorPoints
+                      .filter((row) => row.colorOption.isActive)
+                      .map((row) => row.points);
+                    const maxColorPoint = activePoints.length > 0 ? Math.max(...activePoints) : 0;
+                    const maxTotalPoints = maxColorPoint * exercise.targetCount;
+
+                    return (
+                      <tr key={exercise.id}>
+                        <td className="px-4 py-3 font-medium text-gray-900">{exercise.name}</td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {exercise.type === 'class' ? 'Dars mashqi' : 'Uy vazifasi'}
+                        </td>
+                        <td className="px-4 py-3 text-gray-600">{exercise.targetCount} marta</td>
+                        <td className="px-4 py-3 text-gray-600">{maxTotalPoints}</td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() =>
+                              updateMutation.mutate({ id: exercise.id, isActive: !exercise.isActive })
+                            }
+                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              exercise.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                            }`}
+                          >
+                            {exercise.isActive ? 'Faol' : 'Nofaol'}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => openEditForm(exercise)}
+                            className="text-blue-600 text-xs hover:underline"
+                          >
+                            Tahrirlash
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
