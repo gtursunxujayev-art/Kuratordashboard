@@ -125,6 +125,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseStartDateColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('courses.startdate') && message.includes('does not exist');
+  }
+  return message.includes('courses.startdate');
+}
+
 function isMissingCourseScheduleTemplatesTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -161,6 +170,14 @@ function throwMissingCourseRunsMigrationError(): never {
     code: 'PRECONDITION_FAILED',
     message:
       "Oqim sozlamalari uchun DB migratsiya qo'llanmagan (`course_runs`). Avval migration deploy qiling.",
+  });
+}
+
+function throwMissingCourseStartDateMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Kurs boshlanish sanasi ustuni topilmadi (`courses.startDate`). Avval migration deploy qiling.",
   });
 }
 
@@ -562,30 +579,57 @@ export const settingsRouter = router({
       z.object({
         courseId: z.string(),
         name: z.string().min(1).max(200),
-        startDate: z.string(),
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const start = new Date(input.startDate);
-      if (Number.isNaN(start.getTime())) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Sana noto\'g\'ri formatda' });
-      }
-      if (start.getDay() !== 6) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: "Boshlanish sanasi shanba kuni bo'lishi kerak",
-        });
-      }
-
       const course = await prisma.course.findFirst({
         where: { id: input.courseId, tenantId: ctx.tenantId },
         select: { id: true, category: true },
       });
       if (!course) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      let start: Date;
+      try {
+        const rows = await prisma.$queryRaw<Array<{ startDate: Date | string | null }>>`
+          SELECT "startDate"
+          FROM "courses"
+          WHERE "id" = ${input.courseId}
+            AND "tenantId" = ${ctx.tenantId}
+          LIMIT 1
+        `;
+
+        const rawStartDate = rows[0]?.startDate;
+        if (!rawStartDate) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: "Kursning boshlanish sanasi topilmadi. Avval kurs start date ni kiriting.",
+          });
+        }
+
+        start = rawStartDate instanceof Date ? rawStartDate : new Date(String(rawStartDate));
+      } catch (error) {
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+        if (isMissingCourseStartDateColumnError(error)) {
+          throwMissingCourseStartDateMigrationError();
+        }
+        throw error;
+      }
+
+      if (Number.isNaN(start.getTime())) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Kursning boshlanish sanasi noto'g'ri" });
+      }
+      if (start.getDay() !== 6) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Kursning boshlanish sanasi shanba kuni bo'lishi kerak",
+        });
       }
 
       let template: { durationWeeks: number; baseLessons: number; premiumExtraLessons: number } | null = null;
