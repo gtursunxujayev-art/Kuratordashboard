@@ -1,9 +1,19 @@
-import { router, protectedProcedure } from '../trpc';
+import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
+const amaliyReportDatePresetSchema = z.enum([
+  'today',
+  'week1',
+  'week2',
+  'week3',
+  'week4',
+  'week5',
+  'week6',
+  'all',
+]);
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -55,6 +65,21 @@ function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
   return next;
+}
+
+function maxDate(left: Date, right: Date): Date {
+  return left.getTime() >= right.getTime() ? left : right;
+}
+
+function minDate(left: Date, right: Date): Date {
+  return left.getTime() <= right.getTime() ? left : right;
+}
+
+function toDateLabel(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function getCalendarDateRange(filter: Exclude<z.infer<typeof dateFilterSchema>, 'all'>): { from: Date; to: Date } {
@@ -143,6 +168,56 @@ async function resolveDateRange(
   return getCalendarDateRange(dateFilter);
 }
 
+function getFirstMondayOnOrAfter(startDate: Date): Date {
+  const day = startDate.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
+  if (day === 1) return startDate;
+  const daysToMonday = (8 - day) % 7;
+  return addDays(startDate, daysToMonday);
+}
+
+function resolveAmaliyReportDateRange(params: {
+  datePreset: z.infer<typeof amaliyReportDatePresetSchema>;
+  runStart: Date;
+  runEndExclusive: Date;
+}): { from: Date; to: Date } {
+  const { datePreset, runStart, runEndExclusive } = params;
+
+  if (datePreset === 'today') {
+    const todayStart = startOfDayLocal(new Date());
+    return { from: todayStart, to: addDays(todayStart, 1) };
+  }
+
+  if (datePreset === 'all') {
+    return { from: runStart, to: runEndExclusive };
+  }
+
+  const weekNumber = Number(datePreset.replace('week', ''));
+  const startsOnMonday = runStart.getDay() === 1;
+
+  let from: Date;
+  let to: Date;
+
+  if (startsOnMonday) {
+    from = addDays(runStart, (weekNumber - 1) * 7);
+    to = addDays(from, 7);
+  } else {
+    const firstMonday = getFirstMondayOnOrAfter(runStart);
+    if (weekNumber === 1) {
+      // Partial week from run start until Sunday, as requested by product spec.
+      from = runStart;
+      to = firstMonday;
+    } else {
+      from = addDays(firstMonday, (weekNumber - 2) * 7);
+      to = addDays(from, 7);
+    }
+  }
+
+  return {
+    from: maxDate(from, runStart),
+    to: minDate(to, runEndExclusive),
+  };
+}
+
 function intersectCustomerIds(base?: string[], extra?: string[]): string[] | undefined {
   if (!base && !extra) return undefined;
   if (!base) return extra;
@@ -188,6 +263,22 @@ async function getCourseScopedCustomerIds(
   return rows.map((row) => row.customerId);
 }
 
+async function getCourseIdFromRun(tenantId: string, courseRunId?: string): Promise<string | undefined> {
+  if (!courseRunId) return undefined;
+  try {
+    const run = await prisma.courseRun.findFirst({
+      where: { id: courseRunId, tenantId },
+      select: { courseId: true },
+    });
+    return run?.courseId;
+  } catch (error) {
+    if (!isMissingCourseRunsTableError(error)) {
+      throw error;
+    }
+    return undefined;
+  }
+}
+
 type StudentPerformance = {
   completedTasks: number;
   pendingTasks: number;
@@ -201,11 +292,11 @@ async function buildStudentPerformanceMap(params: {
   tenantId: string;
   customerIds: string[];
   dateRange: { from: Date; to: Date } | null;
-  courseId?: string;
+  exerciseCourseId?: string;
   courseRunId?: string;
   kuratorUserId?: string;
 }): Promise<Map<string, StudentPerformance>> {
-  const { tenantId, customerIds, dateRange, courseId, courseRunId, kuratorUserId } = params;
+  const { tenantId, customerIds, dateRange, exerciseCourseId, courseRunId, kuratorUserId } = params;
   const map = new Map<string, StudentPerformance>();
   if (customerIds.length === 0) return map;
 
@@ -245,7 +336,9 @@ async function buildStudentPerformanceMap(params: {
   let attendanceTotals: Array<{ customerId: string; _count: { id: number } }> = [];
   let attendanceAttended: Array<{ customerId: string; _count: { id: number } }> = [];
   const attendanceWhereWithCourse =
-    courseId && !courseRunId ? { ...attendanceBaseWhere, courseRun: { courseId } } : attendanceBaseWhere;
+    exerciseCourseId && !courseRunId
+      ? { ...attendanceBaseWhere, courseRun: { courseId: exerciseCourseId } }
+      : attendanceBaseWhere;
   try {
     [attendanceTotals, attendanceAttended] = await Promise.all([
       prisma.classAttendance.groupBy({
@@ -260,7 +353,7 @@ async function buildStudentPerformanceMap(params: {
       }),
     ]);
   } catch (error) {
-    if (!(courseId && !courseRunId && isMissingCourseRunsTableError(error))) {
+    if (!(exerciseCourseId && !courseRunId && isMissingCourseRunsTableError(error))) {
       throw error;
     }
     [attendanceTotals, attendanceAttended] = await Promise.all([
@@ -281,10 +374,8 @@ async function buildStudentPerformanceMap(params: {
     tenantId,
     customerId: { in: customerIds },
     ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
-    ...(courseRunId
-      ? { exerciseDefinition: { courseRunId } }
-      : courseId
-      ? { exerciseDefinition: { courseRun: { courseId } } }
+    ...(exerciseCourseId
+      ? { exerciseDefinition: { courseId: exerciseCourseId } }
       : {}),
   };
 
@@ -296,7 +387,7 @@ async function buildStudentPerformanceMap(params: {
       _count: { id: true },
     } as any);
   } catch (error) {
-    if (!(courseId && !courseRunId && isMissingCourseRunsTableError(error))) {
+    if (!isMissingCourseRunsTableError(error)) {
       throw error;
     }
     exerciseCounts = await prisma.studentExerciseLog.groupBy(
@@ -627,6 +718,8 @@ export const dashboardRouter = router({
       const start = (input.page - 1) * input.limit;
       const pageCustomers = customers.slice(start, start + input.limit);
       const pageIds = pageCustomers.map((c) => c.id);
+      const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
+      const effectiveExerciseCourseId = input.courseId ?? runCourseId;
 
       let perfMap = new Map<string, StudentPerformance>();
       try {
@@ -634,7 +727,7 @@ export const dashboardRouter = router({
           tenantId,
           customerIds: pageIds,
           dateRange,
-          courseId: input.courseId,
+          exerciseCourseId: effectiveExerciseCourseId,
           courseRunId: input.courseRunId,
         });
       } catch (error) {
@@ -717,13 +810,15 @@ export const dashboardRouter = router({
       }
 
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
+      const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
+      const effectiveExerciseCourseId = input.courseId ?? runCourseId;
       let perfMap = new Map<string, StudentPerformance>();
       try {
         perfMap = await buildStudentPerformanceMap({
           tenantId,
           customerIds: [input.customerId],
           dateRange,
-          courseId: input.courseId,
+          exerciseCourseId: effectiveExerciseCourseId,
           courseRunId: input.courseRunId,
         });
       } catch (error) {
@@ -809,10 +904,8 @@ export const dashboardRouter = router({
         tenantId,
         customerId: input.customerId,
         ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
-        ...(input.courseRunId
-          ? { exerciseDefinition: { courseRunId: input.courseRunId } }
-          : input.courseId
-          ? { exerciseDefinition: { courseRun: { courseId: input.courseId } } }
+        ...(effectiveExerciseCourseId
+          ? { exerciseDefinition: { courseId: effectiveExerciseCourseId } }
           : {}),
       };
       let recentExercises: Array<{
@@ -907,6 +1000,8 @@ export const dashboardRouter = router({
 
       const dateRange = await resolveDateRange(tenantId, input.dateFilter, input.courseRunId);
       const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
+      const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
+      const effectiveExerciseCourseId = input.courseId ?? runCourseId;
 
       const assignments = await prisma.kuratorAssignment.findMany({
         where: {
@@ -924,7 +1019,7 @@ export const dashboardRouter = router({
         tenantId,
         customerIds: studentIds,
         dateRange,
-        courseId: input.courseId,
+        exerciseCourseId: effectiveExerciseCourseId,
         courseRunId: input.courseRunId,
         kuratorUserId: input.kuratorUserId,
       });
@@ -975,6 +1070,212 @@ export const dashboardRouter = router({
           performanceNote: 'Vaqtinchalik formula',
         },
         students: enrichedStudents,
+      };
+    }),
+
+  amaliyReportMatrix: adminProcedure
+    .input(
+      z.object({
+        courseId: z.string(),
+        courseRunId: z.string(),
+        tariffId: z.string().optional(),
+        kuratorUserId: z.string().optional(),
+        datePreset: amaliyReportDatePresetSchema.default('today'),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId } = ctx;
+
+      const run = await prisma.courseRun.findFirst({
+        where: {
+          id: input.courseRunId,
+          courseId: input.courseId,
+          tenantId,
+        },
+        select: {
+          id: true,
+          name: true,
+          courseId: true,
+          startDate: true,
+          endDate: true,
+          course: { select: { name: true } },
+        },
+      });
+
+      if (!run) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
+      }
+
+      const runStart = startOfDayLocal(run.startDate);
+      const runEndExclusive = addDays(startOfDayLocal(run.endDate), 1);
+      const dateRange = resolveAmaliyReportDateRange({
+        datePreset: input.datePreset,
+        runStart,
+        runEndExclusive,
+      });
+
+      const assignments = await prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          courseRunId: run.id,
+          isActive: true,
+          ...(input.kuratorUserId ? { kuratorUserId: input.kuratorUserId } : {}),
+        },
+        select: {
+          customerId: true,
+          kurator: { select: { id: true, name: true, username: true } },
+        },
+      });
+
+      const kuratorsByStudent = new Map<string, Set<string>>();
+      for (const row of assignments) {
+        const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
+        const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
+        current.add(kuratorName);
+        kuratorsByStudent.set(row.customerId, current);
+      }
+
+      const assignedStudentIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+
+      const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
+      if (assignedStudentIds.length > 0) {
+        const incomes = await prisma.income.findMany({
+          where: {
+            tenantId,
+            customerId: { in: assignedStudentIds },
+            courseId: input.courseId,
+            ...ACTIVE_ENROLLMENT_FILTER,
+          },
+          select: {
+            customerId: true,
+            tariffId: true,
+            tariff: { select: { name: true } },
+            entryDate: true,
+          },
+          orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }],
+        });
+
+        for (const income of incomes) {
+          if (!latestTariffByStudent.has(income.customerId)) {
+            latestTariffByStudent.set(income.customerId, {
+              tariffId: income.tariffId,
+              tariffName: income.tariff?.name ?? null,
+            });
+          }
+        }
+      }
+
+      const filteredStudentIds = input.tariffId
+        ? assignedStudentIds.filter((customerId) => latestTariffByStudent.get(customerId)?.tariffId === input.tariffId)
+        : assignedStudentIds;
+
+      const practices = await prisma.exerciseDefinition.findMany({
+        where: {
+          tenantId,
+          courseId: run.courseId,
+          isActive: true,
+        },
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          orderIndex: true,
+        },
+        orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+      });
+
+      const students = filteredStudentIds.length
+        ? await prisma.customer.findMany({
+            where: {
+              tenantId,
+              id: { in: filteredStudentIds },
+            },
+            select: {
+              id: true,
+              name: true,
+              customerNumber: true,
+            },
+            orderBy: { name: 'asc' },
+          })
+        : [];
+
+      const practiceIds = practices.map((practice) => practice.id);
+      const shouldLoadLogs =
+        students.length > 0 &&
+        practiceIds.length > 0 &&
+        dateRange.from.getTime() < dateRange.to.getTime();
+
+      const logs = shouldLoadLogs
+        ? await prisma.studentExerciseLog.findMany({
+            where: {
+              tenantId,
+              customerId: { in: students.map((student) => student.id) },
+              exerciseDefinitionId: { in: practiceIds },
+              completedAt: { gte: dateRange.from, lt: dateRange.to },
+            },
+            select: {
+              customerId: true,
+              exerciseDefinitionId: true,
+              points: true,
+              colorHex: true,
+              completedAt: true,
+              createdAt: true,
+            },
+            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+          })
+        : [];
+
+      const sumPointsByCell = new Map<string, number>();
+      const latestColorByCell = new Map<string, string | null>();
+      const seenLogsByCell = new Set<string>();
+
+      for (const log of logs) {
+        const key = `${log.customerId}:${log.exerciseDefinitionId}`;
+        sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + (log.points ?? 0));
+        seenLogsByCell.add(key);
+        if (!latestColorByCell.has(key)) {
+          latestColorByCell.set(key, log.colorHex ?? null);
+        }
+      }
+
+      const rows = students.map((student) => {
+        const cells: Record<string, { points: number; colorHex: string | null; hasLogs: boolean }> = {};
+        let totalPoints = 0;
+
+        for (const practice of practices) {
+          const key = `${student.id}:${practice.id}`;
+          const points = sumPointsByCell.get(key) ?? 0;
+          const colorHex = latestColorByCell.get(key) ?? null;
+          const hasLogs = seenLogsByCell.has(key);
+          cells[practice.id] = { points, colorHex, hasLogs };
+          totalPoints += points;
+        }
+
+        return {
+          id: student.id,
+          name: student.name,
+          phone: student.customerNumber,
+          tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
+          kuratorNames: Array.from(kuratorsByStudent.get(student.id) ?? []).sort((a, b) => a.localeCompare(b)),
+          cells,
+          totalPoints,
+        };
+      });
+
+      return {
+        meta: {
+          courseId: run.courseId,
+          courseName: run.course.name,
+          courseRunId: run.id,
+          courseRunName: run.name,
+          datePreset: input.datePreset,
+          dateFrom: toDateLabel(dateRange.from),
+          dateToExclusive: toDateLabel(dateRange.to),
+          dateToInclusive:
+            dateRange.to.getTime() > dateRange.from.getTime() ? toDateLabel(addDays(dateRange.to, -1)) : null,
+        },
+        practices,
+        students: rows,
       };
     }),
 
