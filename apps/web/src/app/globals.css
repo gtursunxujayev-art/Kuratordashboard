@@ -229,3 +229,32 @@ body {
 [data-theme='dark'] .text-gray-400 {
   color: var(--kd-muted);
 }
+
+.kd-dust-out {
+  pointer-events: none;
+  animation: kd-dust-out 480ms ease-out forwards;
+}
+
+@keyframes kd-dust-out {
+  0% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateX(0) scale(1);
+  }
+  40% {
+    opacity: 0.85;
+    transform: translateX(6px) scale(0.99);
+  }
+  100% {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateX(34px) scale(0.95);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kd-dust-out {
+    animation: none;
+    opacity: 0;
+  }
+}
