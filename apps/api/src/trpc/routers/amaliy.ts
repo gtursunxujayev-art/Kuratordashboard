@@ -2,6 +2,7 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -117,17 +118,41 @@ export const amaliyRouter = router({
 
       let customerIds: string[] | undefined;
 
-      if (input.courseRunId || isKurator) {
-        const assignments = await prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            isActive: true,
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-            ...(isKurator ? { kuratorUserId: user.userId } : {}),
-          },
-          select: { customerId: true },
+      if (isKurator) {
+        customerIds = await getCustomersScopedToKurator({
+          tenantId,
+          kuratorUserId: user.userId,
+          courseRunId: input.courseRunId,
         });
-        customerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
+      } else if (input.courseRunId) {
+        // Admin/manager filtering by run: union assignment rows with enrolled
+        // customers when the run has a kurator attached.
+        const [assignments, run] = await Promise.all([
+          prisma.kuratorAssignment.findMany({
+            where: { tenantId, isActive: true, courseRunId: input.courseRunId },
+            select: { customerId: true },
+          }),
+          prisma.courseRun.findFirst({
+            where: { tenantId, id: input.courseRunId },
+            select: { courseId: true, kuratorUserId: true },
+          }),
+        ]);
+        const ids = new Set<string>(assignments.map((row) => row.customerId));
+        if (run?.kuratorUserId) {
+          const enrolled = await prisma.income.findMany({
+            where: {
+              tenantId,
+              courseId: run.courseId,
+              ...ACTIVE_ENROLLMENT_FILTER,
+            },
+            select: { customerId: true },
+            distinct: ['customerId'],
+          });
+          for (const row of enrolled) {
+            if (row.customerId) ids.add(row.customerId);
+          }
+        }
+        customerIds = Array.from(ids);
       }
 
       try {
@@ -243,7 +268,35 @@ export const amaliyRouter = router({
         select: { customerId: true },
       });
 
-      const assignedCustomerIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+      // Run-level branch: include enrolled students attached via CourseRun.kuratorUserId.
+      const ownedRuns = await prisma.courseRun.findMany({
+        where: {
+          tenantId,
+          courseId: exercise.courseId,
+          ...(input.courseRunId ? { id: input.courseRunId } : {}),
+          kuratorUserId: kuratorOnly ? user.userId : { not: null },
+        },
+        select: { id: true },
+      });
+      const runDerivedIds = new Set<string>();
+      if (ownedRuns.length > 0) {
+        const enrolled = await prisma.income.findMany({
+          where: {
+            tenantId,
+            courseId: exercise.courseId,
+            ...ACTIVE_ENROLLMENT_FILTER,
+          },
+          select: { customerId: true },
+          distinct: ['customerId'],
+        });
+        for (const row of enrolled) {
+          if (row.customerId) runDerivedIds.add(row.customerId);
+        }
+      }
+
+      const assignedCustomerIds = Array.from(
+        new Set([...assignments.map((row) => row.customerId), ...runDerivedIds]),
+      );
       if (assignedCustomerIds.length === 0) {
         return [];
       }
@@ -360,16 +413,12 @@ export const amaliyRouter = router({
       }
 
       if (isKurator) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            isActive: true,
-          },
-          select: { id: true },
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
         });
-        if (!assignment) {
+        if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
@@ -577,16 +626,12 @@ export const amaliyRouter = router({
       }
 
       if (isKurator) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            isActive: true,
-          },
-          select: { id: true },
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
         });
-        if (!assignment) {
+        if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
@@ -662,17 +707,13 @@ export const amaliyRouter = router({
         !user.roles.includes('Manager');
 
       if (isKurator) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            isActive: true,
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-          },
-          select: { id: true },
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
+          courseRunId: input.courseRunId,
         });
-        if (!assignment) {
+        if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
@@ -773,17 +814,13 @@ export const amaliyRouter = router({
       }
 
       if (isKurator) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            courseRunId: courseRun.id,
-            isActive: true,
-          },
-          select: { id: true },
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
+          courseRunId: courseRun.id,
         });
-        if (!assignment) {
+        if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
