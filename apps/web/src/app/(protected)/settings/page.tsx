@@ -809,10 +809,7 @@ function CourseRunsTab({
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => {
-                          onSelectRun(run.id);
-                          onOpenAssignments();
-                        }}
+                        onClick={() => onSelectRun(run.id)}
                         className="text-blue-600 text-xs hover:underline"
                       >
                         {selectedRunId === run.id ? 'Tanlangan' : 'Tanlash'}
