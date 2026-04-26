@@ -89,6 +89,7 @@ model User {
   kuratorTasks       KuratorTask[]
   exerciseLogsMarked StudentExerciseLog[]
   attendancesMarked  ClassAttendance[]
+  ownedCourseRuns    CourseRun[] @relation("CourseRunKurator")
 
   @@unique([tenantId, email])
   @@unique([tenantId, phone])
@@ -564,17 +565,20 @@ model CourseRun {
   durationWeeks Int    @default(6)
   baseLessons Int      @default(12) // 12 Saturday+Sunday lessons
   premiumExtraLessons Int @default(2) // additional lessons for Premium/VIP students
+  kuratorUserId String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   course              Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  kurator             User?                @relation("CourseRunKurator", fields: [kuratorUserId], references: [id], onDelete: SetNull)
   kuratorAssignments  KuratorAssignment[]
   attendances         ClassAttendance[]
 
   @@index([tenantId])
   @@index([courseId])
   @@index([startDate])
+  @@index([tenantId, kuratorUserId])
   @@map("course_runs")
 }
 
