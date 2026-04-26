@@ -11,8 +11,8 @@ export default function SettingsPage() {
   const { isAdmin, isLoading } = useAuth();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('templates');
-  const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [selectedExerciseCourseId, setSelectedExerciseCourseId] = useState('');
+  const [selectedCourseRunIdInTab, setSelectedCourseRunIdInTab] = useState('');
 
   if (!isLoading && !isAdmin) {
     router.replace('/dashboard');
@@ -49,9 +49,8 @@ export default function SettingsPage() {
       {activeTab === 'templates' && <ScheduleTemplatesTab />}
       {activeTab === 'courseRuns' && (
         <CourseRunsTab
-          selectedRunId={selectedCourseRunId}
-          onSelectRun={setSelectedCourseRunId}
-          onOpenAssignments={() => setActiveTab('assignments')}
+          selectedRunId={selectedCourseRunIdInTab}
+          onSelectRun={setSelectedCourseRunIdInTab}
         />
       )}
       {activeTab === 'exercises' && (
@@ -59,9 +58,7 @@ export default function SettingsPage() {
       )}
       {activeTab === 'regions' && <RegionsTab />}
       {activeTab === 'users' && <UsersTab />}
-      {activeTab === 'assignments' && (
-        <AssignmentsTab courseRunId={selectedCourseRunId} onSelectCourseRun={setSelectedCourseRunId} />
-      )}
+      {activeTab === 'assignments' && <AssignmentsTab />}
     </div>
   );
 }
@@ -227,24 +224,13 @@ function ScheduleTemplatesTab() {
 function CourseRunsTab({
   selectedRunId,
   onSelectRun,
-  onOpenAssignments,
 }: {
   selectedRunId: string;
   onSelectRun: (id: string) => void;
-  onOpenAssignments: () => void;
 }) {
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
-  const [createTariffId, setCreateTariffId] = useState('');
-  const [createStudentIds, setCreateStudentIds] = useState<string[]>([]);
-  const [createStudentsOpen, setCreateStudentsOpen] = useState(false);
-  const [pendingCreatePrefill, setPendingCreatePrefill] = useState<{
-    tariffId: string;
-    studentIds: string[];
-  } | null>(null);
-  const [selectedTariffId, setSelectedTariffId] = useState('');
-  const [selectedKuratorId, setSelectedKuratorId] = useState('');
-  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [editingRunId, setEditingRunId] = useState<string | null>(null);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
@@ -254,98 +240,67 @@ function CourseRunsTab({
   });
   const [error, setError] = useState('');
   const [createSuccess, setCreateSuccess] = useState('');
-  const [assignError, setAssignError] = useState('');
-  const [assignSuccess, setAssignSuccess] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [deleteSuccess, setDeleteSuccess] = useState('');
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
-  const { data: kurators } = trpc.settings.listKurators.useQuery();
-  const { data: createTariffs } = trpc.settings.listTariffsByCourse.useQuery(
-    { courseId: form.courseId || '' },
-    { enabled: Boolean(showForm && form.courseId) },
-  );
-  const { data: runTariffs } = trpc.settings.listTariffsByCourseRun.useQuery(
-    { courseRunId: selectedRunId },
-    { enabled: Boolean(selectedRunId) },
-  );
-  const { data: studentsForCreate, isLoading: studentsForCreateLoading } = trpc.students.list.useQuery(
-    {
-      courseId: form.courseId || undefined,
-      tariffId: createTariffId || undefined,
-      page: 1,
-      limit: 200,
-    },
-    { enabled: Boolean(showForm && form.courseId) },
-  );
-  const {
-    data: studentsForRun,
-    isLoading: studentsLoading,
-    error: studentsError,
-    refetch: refetchStudentsForRun,
-  } = trpc.students.list.useQuery(
-    {
-      courseRunId: selectedRunId || undefined,
-      tariffId: selectedTariffId || undefined,
-      page: 1,
-      limit: 200,
-    },
-    { enabled: Boolean(selectedRunId) },
-  );
+
+  const isEditing = editingRunId !== null;
 
   const createMutation = trpc.settings.createCourseRun.useMutation();
+  const updateMutation = trpc.settings.updateCourseRun.useMutation();
   const deleteCourseRunMutation = trpc.settings.deleteCourseRun.useMutation();
-  const assignBulkMutation = trpc.settings.assignStudentsBulk.useMutation({
-    onSuccess: (result) => {
-      setAssignError('');
-      setAssignSuccess(`${result.assignedCount} ta o'quvchi kuratorga biriktirildi.`);
-      setSelectedStudentIds([]);
-      void utils.kurators.assignments.invalidate();
-    },
-    onError: (err) => {
-      setAssignSuccess('');
-      setAssignError(err.message);
-    },
-  });
 
-  const createStudentOptions = useMemo(
-    () => studentsForCreate?.data ?? [],
-    [studentsForCreate?.data],
-  );
-  const studentOptions = useMemo(() => studentsForRun?.data ?? [], [studentsForRun?.data]);
+  const resetForm = () => {
+    setForm({
+      courseId: '',
+      name: '',
+      durationWeeks: 6,
+      baseLessons: 12,
+      premiumExtraLessons: 2,
+    });
+  };
 
-  useEffect(() => {
-    if (pendingCreatePrefill) {
-      setSelectedTariffId(pendingCreatePrefill.tariffId);
-      setSelectedStudentIds(pendingCreatePrefill.studentIds);
-      setPendingCreatePrefill(null);
-    } else {
-      setSelectedTariffId('');
-      setSelectedStudentIds([]);
+  const openCreate = () => {
+    setEditingRunId(null);
+    resetForm();
+    setError('');
+    setCreateSuccess('');
+    setShowForm(true);
+  };
+
+  const openEdit = (run: {
+    id: string;
+    courseId: string;
+    name: string;
+    durationWeeks: number;
+    baseLessons: number;
+    premiumExtraLessons: number;
+  }) => {
+    setEditingRunId(run.id);
+    setForm({
+      courseId: run.courseId,
+      name: run.name,
+      durationWeeks: run.durationWeeks,
+      baseLessons: run.baseLessons,
+      premiumExtraLessons: run.premiumExtraLessons,
+    });
+    setError('');
+    setCreateSuccess('');
+    setShowForm(true);
+    onSelectRun(run.id);
+  };
+
+  const handleSave = async () => {
+    if (!form.name) {
+      setError("Oqim nomini kiriting");
+      setCreateSuccess('');
+      return;
     }
-    setAssignError('');
-    setAssignSuccess('');
-  }, [selectedRunId]);
-
-  useEffect(() => {
-    setSelectedStudentIds([]);
-  }, [selectedTariffId]);
-
-  useEffect(() => {
-    setCreateTariffId('');
-    setCreateStudentIds([]);
-    setCreateStudentsOpen(false);
-  }, [form.courseId]);
-
-  useEffect(() => {
-    setCreateStudentIds([]);
-  }, [createTariffId]);
-
-  const handleCreate = async () => {
-    if (!form.courseId || !form.name) {
-      setError("Barcha maydonlarni to'ldiring");
+    if (!isEditing && !form.courseId) {
+      setError("Kursni tanlang");
       setCreateSuccess('');
       return;
     }
@@ -353,80 +308,38 @@ function CourseRunsTab({
     try {
       setError('');
       setCreateSuccess('');
-      const createdRun = await createMutation.mutateAsync({
-        courseId: form.courseId,
-        name: form.name,
-        durationWeeks: form.durationWeeks,
-        baseLessons: form.baseLessons,
-        premiumExtraLessons: form.premiumExtraLessons,
-      });
 
-      await utils.settings.listCourseRuns.invalidate();
-      setPendingCreatePrefill({
-        tariffId: createTariffId,
-        studentIds: createStudentIds,
-      });
-      onSelectRun(createdRun.id);
-      setShowForm(false);
-      setCreateSuccess("Oqim yaratildi. Endi o'quvchilarni pastdagi bo'limda kuratorga biriktiring.");
-      setForm({
-        courseId: '',
-        name: '',
-        durationWeeks: 6,
-        baseLessons: 12,
-        premiumExtraLessons: 2,
-      });
-      setCreateTariffId('');
-      setCreateStudentIds([]);
-      setCreateStudentsOpen(false);
-      setSelectedKuratorId('');
-      void refetchStudentsForRun();
+      if (isEditing && editingRunId) {
+        await updateMutation.mutateAsync({
+          courseRunId: editingRunId,
+          name: form.name,
+          durationWeeks: form.durationWeeks,
+          baseLessons: form.baseLessons,
+          premiumExtraLessons: form.premiumExtraLessons,
+        });
+        await utils.settings.listCourseRuns.invalidate();
+        setCreateSuccess('Oqim yangilandi.');
+        setShowForm(false);
+        setEditingRunId(null);
+        resetForm();
+      } else {
+        const createdRun = await createMutation.mutateAsync({
+          courseId: form.courseId,
+          name: form.name,
+          durationWeeks: form.durationWeeks,
+          baseLessons: form.baseLessons,
+          premiumExtraLessons: form.premiumExtraLessons,
+        });
+        await utils.settings.listCourseRuns.invalidate();
+        onSelectRun(createdRun.id);
+        setShowForm(false);
+        setCreateSuccess("Oqim yaratildi. Kuratorga biriktirish uchun Kurator bog'lash tabiga o'ting.");
+        resetForm();
+      }
     } catch (err: any) {
       setCreateSuccess('');
-      setError(err?.message ?? "Oqim yaratishda xatolik yuz berdi");
+      setError(err?.message ?? 'Saqlashda xatolik yuz berdi');
     }
-  };
-
-  const toggleStudent = (studentId: string) => {
-    setSelectedStudentIds((prev) =>
-      prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId],
-    );
-  };
-
-  const selectAllStudents = () => {
-    setSelectedStudentIds(studentOptions.map((s) => s.id));
-  };
-
-  const clearSelectedStudents = () => {
-    setSelectedStudentIds([]);
-  };
-
-  const toggleCreateStudent = (studentId: string) => {
-    setCreateStudentIds((prev) =>
-      prev.includes(studentId) ? prev.filter((id) => id !== studentId) : [...prev, studentId],
-    );
-  };
-
-  const selectAllCreateStudents = () => {
-    setCreateStudentIds(createStudentOptions.map((student) => student.id));
-  };
-
-  const clearCreateStudents = () => {
-    setCreateStudentIds([]);
-  };
-
-  const handleBulkAssign = () => {
-    setAssignError('');
-    setAssignSuccess('');
-    if (!selectedRunId || !selectedKuratorId || selectedStudentIds.length === 0) {
-      setAssignError("Oqim, kurator va kamida bitta o'quvchini tanlang.");
-      return;
-    }
-    assignBulkMutation.mutate({
-      courseRunId: selectedRunId,
-      kuratorUserId: selectedKuratorId,
-      customerIds: selectedStudentIds,
-    });
   };
 
   const handleDeleteCourseRun = async (runId: string, runName: string) => {
@@ -445,9 +358,11 @@ function CourseRunsTab({
 
       if (selectedRunId === runId) {
         onSelectRun('');
-        setSelectedTariffId('');
-        setSelectedKuratorId('');
-        setSelectedStudentIds([]);
+      }
+      if (editingRunId === runId) {
+        setEditingRunId(null);
+        setShowForm(false);
+        resetForm();
       }
 
       setDeleteSuccess('Oqim muvaffaqiyatli o\'chirildi.');
@@ -463,7 +378,7 @@ function CourseRunsTab({
       <div className="flex items-center justify-between">
         <h2 className="text-base font-semibold text-gray-900">Kurs oqimlari</h2>
         <button
-          onClick={() => setShowForm(true)}
+          onClick={openCreate}
           className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700"
         >
           + Yangi oqim
@@ -475,14 +390,17 @@ function CourseRunsTab({
 
       {showForm && (
         <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-900">Yangi oqim yaratish</h3>
+          <h3 className="text-sm font-medium text-gray-900">
+            {isEditing ? 'Oqimni tahrirlash' : 'Yangi oqim yaratish'}
+          </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Kurs</label>
               <select
                 value={form.courseId}
                 onChange={(e) => setForm({ ...form, courseId: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                disabled={isEditing}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100 disabled:text-gray-500"
               >
                 <option value="">Tanlang...</option>
                 {courses?.map((course) => (
@@ -539,236 +457,32 @@ function CourseRunsTab({
             Boshlanish sanasi kursning `start date` qiymatidan avtomatik olinadi.
           </p>
 
-          <div className="border border-gray-200 rounded-lg p-3 space-y-3">
-            <h4 className="text-sm font-medium text-gray-900">Yangi oqim uchun tarif va o'quvchilar (ixtiyoriy)</h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
-                <select
-                  value={createTariffId}
-                  onChange={(e) => setCreateTariffId(e.target.value)}
-                  disabled={!form.courseId}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100 disabled:text-gray-400"
-                >
-                  <option value="">Barcha tariflar</option>
-                  {createTariffs?.map((tariff) => (
-                    <option key={tariff.id} value={tariff.id}>
-                      {tariff.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-end">
-                <button
-                  type="button"
-                  onClick={() => setCreateStudentsOpen((prev) => !prev)}
-                  disabled={!form.courseId}
-                  className="w-full px-3 py-2 border border-gray-300 text-left text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
-                >
-                  {createStudentIds.length > 0
-                    ? `O'quvchilar tanlandi: ${createStudentIds.length}`
-                    : "O'quvchilarni tanlang..."}
-                </button>
-              </div>
-            </div>
-
-            {!form.courseId && (
-              <p className="text-xs text-gray-500">Avval kursni tanlang, keyin tarif va o'quvchilar ro'yxati chiqadi.</p>
-            )}
-
-            {form.courseId && createStudentsOpen && (
-              <div className="border border-gray-200 rounded-lg p-3 space-y-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={selectAllCreateStudents}
-                    disabled={createStudentOptions.length === 0}
-                    className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    Barchasini tanlash
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearCreateStudents}
-                    disabled={createStudentIds.length === 0}
-                    className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    Tozalash
-                  </button>
-                  <span className="text-xs text-gray-500">
-                    O'quvchilar ({createStudentOptions.length}) • Tanlangan: {createStudentIds.length}
-                  </span>
-                </div>
-
-                <div className="max-h-64 overflow-auto border border-gray-200 rounded-lg p-3">
-                  {studentsForCreateLoading ? (
-                    <p className="text-sm text-gray-500">Yuklanmoqda...</p>
-                  ) : createStudentOptions.length === 0 ? (
-                    <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
-                  ) : (
-                    <div className="space-y-2">
-                      {createStudentOptions.map((student) => (
-                        <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
-                          <input
-                            type="checkbox"
-                            checked={createStudentIds.includes(student.id)}
-                            onChange={() => toggleCreateStudent(student.id)}
-                            className="h-4 w-4"
-                          />
-                          <span>
-                            {student.customerNumber} - {student.name}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
           {error && <p className="text-sm text-red-600">{error}</p>}
           {createSuccess && <p className="text-sm text-green-600">{createSuccess}</p>}
 
           <div className="flex gap-2">
             <button
-              onClick={handleCreate}
-              disabled={createMutation.isLoading}
+              onClick={handleSave}
+              disabled={createMutation.isLoading || updateMutation.isLoading}
               className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
-              {createMutation.isLoading ? 'Yaratilmoqda...' : 'Yaratish'}
+              {isEditing
+                ? updateMutation.isLoading
+                  ? 'Saqlanmoqda...'
+                  : 'Saqlash'
+                : createMutation.isLoading
+                ? 'Yaratilmoqda...'
+                : 'Yaratish'}
             </button>
             <button
               onClick={() => {
                 setShowForm(false);
+                setEditingRunId(null);
                 setError('');
               }}
               className="px-4 py-2 border border-gray-200 text-gray-600 text-sm rounded-lg hover:bg-gray-50"
             >
               Bekor qilish
-            </button>
-          </div>
-        </div>
-      )}
-
-      {selectedRunId && (
-        <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-medium text-gray-900">Oqim bo'yicha o'quvchilarni tanlash</h3>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Tariflar ro'yxati</label>
-              <select
-                value={selectedTariffId}
-                onChange={(e) => setSelectedTariffId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-              >
-                <option value="">Barcha tariflar</option>
-                {runTariffs?.map((tariff) => (
-                  <option key={tariff.id} value={tariff.id}>
-                    {tariff.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Kurator tanlash</label>
-              <select
-                value={selectedKuratorId}
-                onChange={(e) => setSelectedKuratorId(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-              >
-                <option value="">Kuratorni tanlang...</option>
-                {kurators?.map((kurator) => (
-                  <option key={kurator.id} value={kurator.id}>
-                    {kurator.name ?? kurator.username}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-end gap-2">
-              <button
-                type="button"
-                onClick={selectAllStudents}
-                disabled={studentOptions.length === 0}
-                className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
-              >
-                Barchasini tanlash
-              </button>
-              <button
-                type="button"
-                onClick={clearSelectedStudents}
-                disabled={selectedStudentIds.length === 0}
-                className="px-3 py-2 border border-gray-300 text-gray-700 text-sm rounded-md hover:bg-gray-50 disabled:opacity-50"
-              >
-                Tozalash
-              </button>
-            </div>
-          </div>
-
-          <div className="border border-gray-200 rounded-lg p-3 max-h-72 overflow-auto">
-            <div className="text-xs text-gray-500 mb-2">
-              O'quvchilar ({studentOptions.length}) • Tanlangan: {selectedStudentIds.length}
-            </div>
-            {studentsLoading ? (
-              <p className="text-sm text-gray-500">Yuklanmoqda...</p>
-            ) : studentsError ? (
-              <div className="space-y-2">
-                <p className="text-sm text-red-600">{studentsError.message}</p>
-                <button
-                  type="button"
-                  onClick={() => void refetchStudentsForRun()}
-                  className="px-3 py-1.5 border border-gray-300 text-gray-700 text-xs rounded-md hover:bg-gray-50"
-                >
-                  Qayta yuklash
-                </button>
-              </div>
-            ) : studentOptions.length === 0 ? (
-              <p className="text-sm text-gray-500">Bu filtrda o'quvchilar topilmadi.</p>
-            ) : (
-              <div className="space-y-2">
-                {studentOptions.map((student) => (
-                  <label key={student.id} className="flex items-center gap-2 text-sm text-gray-800">
-                    <input
-                      type="checkbox"
-                      checked={selectedStudentIds.includes(student.id)}
-                      onChange={() => toggleStudent(student.id)}
-                      className="h-4 w-4"
-                    />
-                    <span>
-                      {student.customerNumber} - {student.name}
-                    </span>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {assignError && <p className="text-sm text-red-600">{assignError}</p>}
-          {assignSuccess && <p className="text-sm text-green-600">{assignSuccess}</p>}
-
-          <div className="flex gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={handleBulkAssign}
-              disabled={
-                assignBulkMutation.isLoading ||
-                !selectedRunId ||
-                !selectedKuratorId ||
-                selectedStudentIds.length === 0
-              }
-              className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
-            >
-              {assignBulkMutation.isLoading ? 'Biriktirilmoqda...' : "Tanlanganlarni kuratorga biriktirish"}
-            </button>
-            <button
-              type="button"
-              onClick={onOpenAssignments}
-              className="px-4 py-2 border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50"
-            >
-              Kurator bog'lash tabiga o'tish
             </button>
           </div>
         </div>
@@ -809,10 +523,19 @@ function CourseRunsTab({
                     <div className="flex items-center gap-3">
                       <button
                         type="button"
-                        onClick={() => onSelectRun(run.id)}
+                        onClick={() =>
+                          openEdit({
+                            id: run.id,
+                            courseId: run.courseId,
+                            name: run.name,
+                            durationWeeks: run.durationWeeks,
+                            baseLessons: run.baseLessons,
+                            premiumExtraLessons: run.premiumExtraLessons,
+                          })
+                        }
                         className="text-blue-600 text-xs hover:underline"
                       >
-                        {selectedRunId === run.id ? 'Tanlangan' : 'Tanlash'}
+                        {editingRunId === run.id ? 'Tahrirlanmoqda' : 'Tahrirlash'}
                       </button>
                       <button
                         type="button"
@@ -1676,139 +1399,210 @@ function UsersTab() {
     </div>
   );
 }
-function AssignmentsTab({
-  courseRunId,
-  onSelectCourseRun,
-}: {
-  courseRunId: string;
-  onSelectCourseRun: (id: string) => void;
-}) {
+function AssignmentsTab() {
   const utils = trpc.useContext();
-  const [selectedKuratorId, setSelectedKuratorId] = useState('');
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedCourseId, setSelectedCourseId] = useState('');
+  const [attachRunId, setAttachRunId] = useState('');
+  const [attachKuratorId, setAttachKuratorId] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const { data: courseRuns } = trpc.settings.listCourseRuns.useQuery();
+  const { data: courses } = trpc.settings.listCourses.useQuery();
+  const { data: courseRuns, isLoading: courseRunsLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: kurators } = trpc.settings.listKurators.useQuery();
-  const { data: assignments } = trpc.kurators.assignments.useQuery(
-    { courseRunId: courseRunId || undefined },
-    { enabled: !!courseRunId },
-  );
-  const { data: students } = trpc.students.list.useQuery(
-    { courseRunId: courseRunId || undefined, page: 1, limit: 100 },
-    { enabled: !!courseRunId },
+
+  const filteredRuns = useMemo(
+    () => (courseRuns ?? []).filter((run) => !selectedCourseId || run.courseId === selectedCourseId),
+    [courseRuns, selectedCourseId],
   );
 
-  const studentOptions = useMemo(() => students?.data ?? [], [students?.data]);
+  const attachRun = useMemo(
+    () => filteredRuns.find((run) => run.id === attachRunId),
+    [filteredRuns, attachRunId],
+  );
+  const replacementWarning = attachRun?.kurator
+    ? `${attachRun.kurator.name ?? attachRun.kurator.username ?? 'Kurator'} bilan almashtiriladi`
+    : '';
 
-  const assignMutation = trpc.settings.assignStudent.useMutation({
-    onSuccess: () => void utils.kurators.assignments.invalidate(),
+  const handleSettled = () => {
+    void utils.settings.listCourseRuns.invalidate();
+  };
+
+  const attachMutation = trpc.settings.attachKuratorToRun.useMutation({
+    onSuccess: (data) => {
+      setError('');
+      setSuccess(`Kurator biriktirildi (${data.syncedCount} o'quvchi sinxronlandi)`);
+      setAttachKuratorId('');
+      handleSettled();
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
   });
 
-  const unassignMutation = trpc.settings.unassignStudent.useMutation({
-    onSuccess: () => void utils.kurators.assignments.invalidate(),
+  const detachMutation = trpc.settings.detachKuratorFromRun.useMutation({
+    onSuccess: () => {
+      setError('');
+      setSuccess('Kurator ajratildi');
+      handleSettled();
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
   });
+
+  const handleAttach = () => {
+    if (!attachRunId) {
+      setError('Oqimni tanlang');
+      setSuccess('');
+      return;
+    }
+    if (!attachKuratorId) {
+      setError('Kuratorni tanlang');
+      setSuccess('');
+      return;
+    }
+    attachMutation.mutate({ courseRunId: attachRunId, kuratorUserId: attachKuratorId });
+  };
+
+  const handleDetach = (runId: string, runName: string) => {
+    const ok = window.confirm(`"${runName}" oqimidan kuratorni ajratmoqchimisiz?`);
+    if (!ok) return;
+    detachMutation.mutate({ courseRunId: runId });
+  };
 
   return (
     <div className="space-y-4">
-      <h2 className="text-base font-semibold text-gray-900">Kurator - O'quvchi bog'lash</h2>
+      <h2 className="text-base font-semibold text-gray-900">Kurator - Kurs oqimi bog'lash</h2>
 
       <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1">Kurs oqimi</label>
+        <label className="block text-xs font-medium text-gray-500 mb-1">Kurs</label>
         <select
-          value={courseRunId}
-          onChange={(e) => onSelectCourseRun(e.target.value)}
+          value={selectedCourseId}
+          onChange={(e) => {
+            setSelectedCourseId(e.target.value);
+            setAttachRunId('');
+          }}
           className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm min-w-64"
         >
-          <option value="">Oqimni tanlang...</option>
-          {courseRuns?.map((run) => (
-            <option key={run.id} value={run.id}>
-              {run.name} ({run.course.name})
+          <option value="">Barcha kurslar</option>
+          {courses?.map((course) => (
+            <option key={course.id} value={course.id}>
+              {course.name}
             </option>
           ))}
         </select>
       </div>
 
-      {courseRunId && (
-        <>
-          <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
-            <h3 className="text-sm font-medium text-gray-900">Yangi bog'lash</h3>
-            <div className="flex gap-3 flex-wrap">
-              <select
-                value={selectedKuratorId}
-                onChange={(e) => setSelectedKuratorId(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-48"
-              >
-                <option value="">Kuratorni tanlang...</option>
-                {kurators?.map((kurator) => (
-                  <option key={kurator.id} value={kurator.id}>
-                    {kurator.name ?? kurator.username}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={selectedCustomerId}
-                onChange={(e) => setSelectedCustomerId(e.target.value)}
-                className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-48"
-              >
-                <option value="">O'quvchini tanlang...</option>
-                {studentOptions.map((student) => (
-                  <option key={student.id} value={student.id}>
-                    {student.name}
-                  </option>
-                ))}
-              </select>
-              <button
-                onClick={() =>
-                  assignMutation.mutate({
-                    kuratorUserId: selectedKuratorId,
-                    customerId: selectedCustomerId,
-                    courseRunId,
-                  })
-                }
-                disabled={!selectedKuratorId || !selectedCustomerId || assignMutation.isLoading}
-                className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
-              >
-                {assignMutation.isLoading ? '...' : "Bog'lash"}
-              </button>
-            </div>
-          </div>
+      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <h3 className="text-sm font-medium text-gray-900">Yangi bog'lash</h3>
+        <div className="flex gap-3 flex-wrap">
+          <select
+            value={attachRunId}
+            onChange={(e) => setAttachRunId(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-56"
+          >
+            <option value="">Kurs oqimini tanlang...</option>
+            {filteredRuns.map((run) => (
+              <option key={run.id} value={run.id}>
+                {run.name} ({run.course.name})
+                {run.kurator ? ` - ${run.kurator.name ?? run.kurator.username}` : ''}
+              </option>
+            ))}
+          </select>
+          <select
+            value={attachKuratorId}
+            onChange={(e) => setAttachKuratorId(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-md text-sm min-w-48"
+          >
+            <option value="">Kuratorni tanlang...</option>
+            {kurators?.map((kurator) => (
+              <option key={kurator.id} value={kurator.id}>
+                {kurator.name ?? kurator.username}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={handleAttach}
+            disabled={!attachRunId || !attachKuratorId || attachMutation.isLoading}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {attachMutation.isLoading ? '...' : "Bog'lash"}
+          </button>
+        </div>
+        {replacementWarning && (
+          <p className="text-xs text-amber-600">{replacementWarning}</p>
+        )}
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {success && <p className="text-sm text-green-700">{success}</p>}
+      </div>
 
-          {assignments && assignments.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">Kurator</th>
-                    <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchi</th>
-                    <th className="px-4 py-3" />
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {assignments.map((assignment) => (
-                    <tr key={assignment.id}>
-                      <td className="px-4 py-3 text-gray-900">{assignment.kurator.name}</td>
-                      <td className="px-4 py-3 text-gray-900">{assignment.customer.name}</td>
-                      <td className="px-4 py-3">
+      {courseRunsLoading ? (
+        <div className="text-gray-500 text-sm">Yuklanmoqda...</div>
+      ) : filteredRuns.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 text-sm">
+          Oqimlar topilmadi
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Oqim</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Kurs</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Boshlanish</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Tugash</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Hozirgi kurator</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredRuns.map((run) => {
+                const kuratorLabel = run.kurator
+                  ? run.kurator.name ?? run.kurator.username ?? 'Kurator'
+                  : '—';
+                const isDetaching = detachMutation.isLoading && detachMutation.variables?.courseRunId === run.id;
+                return (
+                  <tr key={run.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-900">{run.name}</td>
+                    <td className="px-4 py-3 text-gray-600">{run.course.name}</td>
+                    <td className="px-4 py-3 text-gray-600">{new Date(run.startDate).toLocaleDateString('uz-UZ')}</td>
+                    <td className="px-4 py-3 text-gray-600">{new Date(run.endDate).toLocaleDateString('uz-UZ')}</td>
+                    <td className="px-4 py-3 text-gray-700">{kuratorLabel}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-3">
                         <button
-                          onClick={() =>
-                            unassignMutation.mutate({
-                              kuratorUserId: assignment.kuratorUserId,
-                              customerId: assignment.customerId,
-                              courseRunId: assignment.courseRunId,
-                            })
-                          }
-                          className="text-red-500 text-xs hover:underline"
+                          type="button"
+                          onClick={() => {
+                            setAttachRunId(run.id);
+                            setAttachKuratorId(run.kurator?.id ?? '');
+                            setError('');
+                            setSuccess('');
+                          }}
+                          className="text-blue-600 text-xs hover:underline"
                         >
-                          Ajratish
+                          O'zgartirish
                         </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
+                        {run.kurator && (
+                          <button
+                            type="button"
+                            onClick={() => handleDetach(run.id, run.name)}
+                            disabled={isDetaching}
+                            className="text-red-600 text-xs hover:underline disabled:opacity-50"
+                          >
+                            {isDetaching ? 'Ajratilmoqda...' : 'Ajratish'}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
