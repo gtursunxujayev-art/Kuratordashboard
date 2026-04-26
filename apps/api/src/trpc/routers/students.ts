@@ -238,17 +238,9 @@ export const studentsRouter = router({
           : {}),
         ...(effectiveCourseId || input.tariffId
           ? {
-              OR: [
-                {
-                  incomes: {
-                    some: incomeFilter,
-                  },
-                },
-                {
-                  ...(effectiveCourseId ? { profileCourseId: effectiveCourseId } : {}),
-                  ...(input.tariffId ? { profileTariffId: input.tariffId } : {}),
-                },
-              ],
+              incomes: {
+                some: incomeFilter,
+              },
             }
           : {}),
       });
