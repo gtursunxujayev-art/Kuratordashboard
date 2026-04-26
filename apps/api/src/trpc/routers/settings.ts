@@ -563,7 +563,10 @@ export const settingsRouter = router({
     try {
       return await prisma.courseRun.findMany({
         where: { tenantId: ctx.tenantId },
-        include: { course: { select: { name: true, category: true } } },
+        include: {
+          course: { select: { name: true, category: true } },
+          kurator: { select: { id: true, name: true, username: true } },
+        },
         orderBy: { startDate: 'desc' },
       });
     } catch (error) {
@@ -660,6 +663,58 @@ export const settingsRouter = router({
             durationWeeks,
             baseLessons,
             premiumExtraLessons,
+          },
+        });
+      } catch (error) {
+        if (isMissingCourseRunsTableError(error)) {
+          throwMissingCourseRunsMigrationError();
+        }
+        throw error;
+      }
+    }),
+
+  updateCourseRun: adminProcedure
+    .input(
+      z.object({
+        courseRunId: z.string(),
+        name: z.string().min(1).max(200).optional(),
+        durationWeeks: z.number().int().min(1).max(52).optional(),
+        baseLessons: z.number().int().min(1).max(200).optional(),
+        premiumExtraLessons: z.number().int().min(0).max(50).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.courseRun
+        .findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const nextDurationWeeks = input.durationWeeks ?? existing.durationWeeks;
+      const durationChanged = input.durationWeeks !== undefined && input.durationWeeks !== existing.durationWeeks;
+      const nextEndDate = durationChanged
+        ? computeEndDate(existing.startDate, nextDurationWeeks)
+        : existing.endDate;
+
+      try {
+        return await prisma.courseRun.update({
+          where: { id: input.courseRunId },
+          data: {
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.durationWeeks !== undefined ? { durationWeeks: nextDurationWeeks } : {}),
+            ...(input.baseLessons !== undefined ? { baseLessons: input.baseLessons } : {}),
+            ...(input.premiumExtraLessons !== undefined
+              ? { premiumExtraLessons: input.premiumExtraLessons }
+              : {}),
+            ...(durationChanged ? { endDate: nextEndDate } : {}),
           },
         });
       } catch (error) {
@@ -1086,6 +1141,135 @@ export const settingsRouter = router({
         },
         data: { isActive: false },
       });
+      return { success: true };
+    }),
+
+  attachKuratorToRun: adminProcedure
+    .input(
+      z.object({
+        courseRunId: z.string(),
+        kuratorUserId: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          select: { id: true, courseId: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const kurator = await prisma.user.findFirst({
+        where: {
+          id: input.kuratorUserId,
+          tenantId: ctx.tenantId,
+          roles: { has: 'Kurator' },
+          isActive: true,
+        },
+        select: { id: true },
+      });
+      if (!kurator) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
+      }
+
+      const enrolledIncomes = await prisma.income.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: courseRun.courseId,
+          type: 'new_sale',
+          lifecycleStatus: 'active',
+        },
+        select: { customerId: true },
+        distinct: ['customerId'],
+      });
+      const enrolledCustomerIds = enrolledIncomes
+        .map((row) => row.customerId)
+        .filter((id): id is string => Boolean(id));
+
+      await prisma.$transaction([
+        prisma.courseRun.update({
+          where: { id: input.courseRunId },
+          data: { kuratorUserId: input.kuratorUserId },
+        }),
+        prisma.kuratorAssignment.updateMany({
+          where: {
+            tenantId: ctx.tenantId,
+            courseRunId: input.courseRunId,
+            isActive: true,
+            kuratorUserId: { not: input.kuratorUserId },
+          },
+          data: { isActive: false },
+        }),
+        ...enrolledCustomerIds.map((customerId) =>
+          prisma.kuratorAssignment.upsert({
+            where: {
+              tenantId_kuratorUserId_customerId_courseRunId: {
+                tenantId: ctx.tenantId,
+                kuratorUserId: input.kuratorUserId,
+                customerId,
+                courseRunId: input.courseRunId,
+              },
+            },
+            create: {
+              tenantId: ctx.tenantId,
+              kuratorUserId: input.kuratorUserId,
+              customerId,
+              courseRunId: input.courseRunId,
+              isActive: true,
+            },
+            update: { isActive: true },
+          }),
+        ),
+      ]);
+
+      return {
+        runId: input.courseRunId,
+        kuratorUserId: input.kuratorUserId,
+        syncedCount: enrolledCustomerIds.length,
+      };
+    }),
+
+  detachKuratorFromRun: adminProcedure
+    .input(z.object({ courseRunId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          select: { id: true },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            throwMissingCourseRunsMigrationError();
+          }
+          throw error;
+        });
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      await prisma.$transaction([
+        prisma.courseRun.update({
+          where: { id: input.courseRunId },
+          data: { kuratorUserId: null },
+        }),
+        prisma.kuratorAssignment.updateMany({
+          where: {
+            tenantId: ctx.tenantId,
+            courseRunId: input.courseRunId,
+            isActive: true,
+          },
+          data: { isActive: false },
+        }),
+      ]);
+
       return { success: true };
     }),
 
