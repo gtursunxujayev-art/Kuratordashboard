@@ -2,6 +2,7 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -187,27 +188,12 @@ export const studentsRouter = router({
         courseRunCourseId = selectedRun?.courseId;
       }
 
-      if (input.courseRunId && isKurator) {
-        const assignments = await prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            courseRunId: input.courseRunId,
-            isActive: true,
-            kuratorUserId: user.userId,
-          },
-          select: { customerId: true },
+      if (isKurator) {
+        scopedCustomerIds = await getCustomersScopedToKurator({
+          tenantId,
+          kuratorUserId: user.userId,
+          courseRunId: input.courseRunId,
         });
-        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
-      } else if (isKurator) {
-        const assignments = await prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            isActive: true,
-          },
-          select: { customerId: true },
-        });
-        scopedCustomerIds = Array.from(new Set(assignments.map((a) => a.customerId)));
       }
 
       const incomeFilter: Record<string, unknown> = {
@@ -494,16 +480,12 @@ export const studentsRouter = router({
         !user.roles.includes('Manager');
 
       if (isKurator) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            isActive: true,
-          },
-          select: { id: true },
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
         });
-        if (!assignment) {
+        if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
