@@ -2,6 +2,7 @@ import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { getCustomersScopedToKurator } from '../utils/kuratorScope';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -234,16 +235,44 @@ async function getRoleScopedCustomerIds(
   const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
   if (!kuratorOnly && !courseRunId) return undefined;
 
-  const assignments = await prisma.kuratorAssignment.findMany({
-    where: {
+  if (kuratorOnly) {
+    return getCustomersScopedToKurator({
       tenantId,
-      isActive: true,
-      ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
-      ...(courseRunId ? { courseRunId } : {}),
-    },
-    select: { customerId: true },
-  });
-  return Array.from(new Set(assignments.map((row) => row.customerId)));
+      kuratorUserId: user.userId,
+      courseRunId,
+    });
+  }
+
+  // Admin/Manager + courseRunId: customers in this run via per-customer
+  // assignments, plus — if the run has been claimed by a kurator — any
+  // currently-enrolled customer in that course (handles enrollments that
+  // happened after the kurator attached).
+  const [assignments, run] = await Promise.all([
+    prisma.kuratorAssignment.findMany({
+      where: { tenantId, isActive: true, courseRunId },
+      select: { customerId: true },
+    }),
+    prisma.courseRun.findFirst({
+      where: { tenantId, id: courseRunId },
+      select: { courseId: true, kuratorUserId: true },
+    }),
+  ]);
+  const ids = new Set<string>(assignments.map((row) => row.customerId));
+  if (run?.kuratorUserId) {
+    const enrolled = await prisma.income.findMany({
+      where: {
+        tenantId,
+        courseId: run.courseId,
+        ...ACTIVE_ENROLLMENT_FILTER,
+      },
+      select: { customerId: true },
+      distinct: ['customerId'],
+    });
+    for (const row of enrolled) {
+      if (row.customerId) ids.add(row.customerId);
+    }
+  }
+  return Array.from(ids);
 }
 
 async function getCourseScopedCustomerIds(
@@ -614,16 +643,64 @@ export const dashboardRouter = router({
         }),
       ]);
 
+      // Derive (kurator, customer) pairs from run-level kurator links so that
+      // future enrollments not yet in the per-customer table are still counted.
+      const ownedRuns = await prisma.courseRun.findMany({
+        where: {
+          tenantId,
+          kuratorUserId: { not: null },
+          ...(input.courseRunId ? { id: input.courseRunId } : {}),
+          ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
+        },
+        select: { id: true, courseId: true, kuratorUserId: true },
+      });
+
+      const runDerivedPairs: Array<{ kuratorUserId: string; customerId: string }> = [];
+      if (ownedRuns.length > 0) {
+        const courseToKurators = new Map<string, Set<string>>();
+        for (const run of ownedRuns) {
+          if (!run.kuratorUserId) continue;
+          const set = courseToKurators.get(run.courseId) ?? new Set<string>();
+          set.add(run.kuratorUserId);
+          courseToKurators.set(run.courseId, set);
+        }
+        const enrolledIncomes = await prisma.income.findMany({
+          where: {
+            tenantId,
+            courseId: { in: Array.from(courseToKurators.keys()) },
+            ...ACTIVE_ENROLLMENT_FILTER,
+            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
+          },
+          select: { customerId: true, courseId: true },
+          distinct: ['customerId', 'courseId'],
+        });
+        for (const row of enrolledIncomes) {
+          if (!row.customerId || !row.courseId) continue;
+          const kuratorSet = courseToKurators.get(row.courseId) ?? new Set<string>();
+          for (const kuratorUserId of kuratorSet) {
+            runDerivedPairs.push({ kuratorUserId, customerId: row.customerId });
+          }
+        }
+      }
+
       const studentIdsByKurator = new Map<string, Set<string>>();
       const kuratorsByStudent = new Map<string, string[]>();
-      for (const assignment of assignments) {
-        const studentSet = studentIdsByKurator.get(assignment.kuratorUserId) ?? new Set<string>();
-        studentSet.add(assignment.customerId);
-        studentIdsByKurator.set(assignment.kuratorUserId, studentSet);
+      const upsertPair = (kuratorUserId: string, customerId: string) => {
+        const studentSet = studentIdsByKurator.get(kuratorUserId) ?? new Set<string>();
+        studentSet.add(customerId);
+        studentIdsByKurator.set(kuratorUserId, studentSet);
 
-        const linkedKurators = kuratorsByStudent.get(assignment.customerId) ?? [];
-        linkedKurators.push(assignment.kuratorUserId);
-        kuratorsByStudent.set(assignment.customerId, linkedKurators);
+        const linkedKurators = kuratorsByStudent.get(customerId) ?? [];
+        if (!linkedKurators.includes(kuratorUserId)) {
+          linkedKurators.push(kuratorUserId);
+        }
+        kuratorsByStudent.set(customerId, linkedKurators);
+      };
+      for (const assignment of assignments) {
+        upsertPair(assignment.kuratorUserId, assignment.customerId);
+      }
+      for (const pair of runDerivedPairs) {
+        upsertPair(pair.kuratorUserId, pair.customerId);
       }
 
       const uniqueStudentIds = Array.from(kuratorsByStudent.keys());
@@ -1003,18 +1080,14 @@ export const dashboardRouter = router({
       const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
       const effectiveExerciseCourseId = input.courseId ?? runCourseId;
 
-      const assignments = await prisma.kuratorAssignment.findMany({
-        where: {
-          tenantId,
-          kuratorUserId: input.kuratorUserId,
-          isActive: true,
-          ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-          ...(courseScopedIds ? { customerId: { in: courseScopedIds } } : {}),
-        },
-        select: { customerId: true },
+      const scopedIds = await getCustomersScopedToKurator({
+        tenantId,
+        kuratorUserId: input.kuratorUserId,
+        courseRunId: input.courseRunId,
       });
-
-      const studentIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+      const studentIds = courseScopedIds
+        ? scopedIds.filter((id) => courseScopedIds.includes(id))
+        : scopedIds;
       const perfMap = await buildStudentPerformanceMap({
         tenantId,
         customerIds: studentIds,
@@ -1135,7 +1208,40 @@ export const dashboardRouter = router({
         kuratorsByStudent.set(row.customerId, current);
       }
 
-      const assignedStudentIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+      // Run-level link branch: include enrolled students attached to a kurator
+      // through CourseRun.kuratorUserId, even if they don't yet have a per-customer row.
+      const runWithKurator = await prisma.courseRun.findFirst({
+        where: {
+          tenantId,
+          id: run.id,
+          kuratorUserId: input.kuratorUserId ?? { not: null },
+        },
+        select: {
+          courseId: true,
+          kurator: { select: { id: true, name: true, username: true } },
+        },
+      });
+      if (runWithKurator?.kurator) {
+        const enrolled = await prisma.income.findMany({
+          where: {
+            tenantId,
+            courseId: runWithKurator.courseId,
+            ...ACTIVE_ENROLLMENT_FILTER,
+          },
+          select: { customerId: true },
+          distinct: ['customerId'],
+        });
+        const kuratorName =
+          runWithKurator.kurator.name ?? runWithKurator.kurator.username ?? 'Kurator';
+        for (const row of enrolled) {
+          if (!row.customerId) continue;
+          const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
+          current.add(kuratorName);
+          kuratorsByStudent.set(row.customerId, current);
+        }
+      }
+
+      const assignedStudentIds = Array.from(kuratorsByStudent.keys());
 
       const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
       if (assignedStudentIds.length > 0) {
