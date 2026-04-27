@@ -125,6 +125,15 @@ function isMissingCustomerPhoneColumnError(error: unknown): boolean {
   return message.includes('customers.phone');
 }
 
+function isMissingCustomerGenderColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('customers.gender') && message.includes('does not exist');
+  }
+  return message.includes('customers.gender');
+}
+
 function isMissingCourseRunsTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1420,15 +1429,18 @@ export const settingsRouter = router({
         ...(input.tariffId ? { tariffId: input.tariffId } : {}),
       };
 
-      const runQuery = async (includePhone: boolean) =>
+      const runQuery = async (includePhone: boolean, includeGender: boolean) =>
         prisma.income.findMany({
           where,
           select: {
             customerId: true,
             customer: {
-              select: includePhone
-                ? { id: true, name: true, phone: true }
-                : { id: true, name: true },
+              select: {
+                id: true,
+                name: true,
+                ...(includePhone ? { phone: true } : {}),
+                ...(includeGender ? { gender: true } : {}),
+              },
             },
             tariff: { select: { id: true, name: true } },
             entryDate: true,
@@ -1439,17 +1451,26 @@ export const settingsRouter = router({
 
       let incomes: Array<{
         customerId: string;
-        customer: { id: string; name: string; phone?: string | null } | null;
+        customer: { id: string; name: string; phone?: string | null; gender?: string | null } | null;
         tariff: { id: string; name: string } | null;
       }> = [];
 
-      try {
-        incomes = await runQuery(true);
-      } catch (error) {
-        if (!isMissingCustomerPhoneColumnError(error)) {
-          throw error;
+      let includePhone = true;
+      let includeGender = true;
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          incomes = await runQuery(includePhone, includeGender);
+          break;
+        } catch (error) {
+          const missingPhone = includePhone && isMissingCustomerPhoneColumnError(error);
+          const missingGender = includeGender && isMissingCustomerGenderColumnError(error);
+          if (!missingPhone && !missingGender) {
+            throw error;
+          }
+          if (missingPhone) includePhone = false;
+          if (missingGender) includeGender = false;
         }
-        incomes = await runQuery(false);
       }
 
       return incomes
@@ -1458,6 +1479,7 @@ export const settingsRouter = router({
           id: income.customer!.id,
           name: income.customer!.name,
           phone: income.customer?.phone ?? null,
+          gender: income.customer?.gender ?? null,
           tariffId: income.tariff?.id ?? null,
           tariffName: income.tariff?.name ?? null,
         }))
