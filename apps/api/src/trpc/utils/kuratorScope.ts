@@ -1,16 +1,21 @@
 import { prisma } from '@kuratordashboard/db';
 
 /**
- * Customers a kurator is allowed to see, unioned across:
- *   (A) explicit per-customer rows in `kurator_assignments` (the legacy/bulk path), and
- *   (B) customers enrolled (active `new_sale` income) in any course-run whose
- *       `kuratorUserId` equals this kurator (the new run-level link).
+ * "Who is in this run?" resolution rule used by every kurator-scoped query:
+ *   - If a run has any explicit `course_run_members` rows, those — and only those — are members.
+ *   - Otherwise the run uses the default-group fallback: every customer with an active
+ *     `new_sale` income on the run's course.
  *
- * Branch (B) is what makes "future enrollments inherit the kurator" work
- * without a write-time hook on `incomes` (Dashboarduz writes incomes; we can't
- * extend it).
+ * This file exposes that rule via two helpers used everywhere kurator visibility is gated:
+ *   - `getCustomersScopedToKurator`: list customer IDs visible to a given kurator.
+ *   - `kuratorCanAccessCustomer`:    boolean predicate for guard checks.
  *
- * When `courseRunId` is provided, both branches are scoped to that run.
+ * Both unite (A) per-customer `kuratorAssignment` rows (legacy/bulk path) with (B) the
+ * resolved member set of every course-run owned by the kurator (new run-level link).
+ *
+ * Branch (B) is what makes "future enrollments inherit the kurator" work for runs that
+ * use the default-group fallback, without a write-time hook on `incomes` (Dashboarduz
+ * writes incomes; we can't extend it).
  */
 export async function getCustomersScopedToKurator(params: {
   tenantId: string;
@@ -35,18 +40,46 @@ export async function getCustomersScopedToKurator(params: {
         kuratorUserId,
         ...(courseRunId ? { id: courseRunId } : {}),
       },
-      select: { courseId: true },
+      select: { id: true, courseId: true },
     }),
   ]);
 
   const result = new Set<string>(perCustomerRows.map((row) => row.customerId));
 
-  const ownedCourseIds = Array.from(new Set(ownedRuns.map((row) => row.courseId)));
-  if (ownedCourseIds.length > 0) {
+  if (ownedRuns.length === 0) {
+    return Array.from(result);
+  }
+
+  const ownedRunIds = ownedRuns.map((row) => row.id);
+
+  // Pull every explicit roster row across owned runs in one query.
+  const rosterRows = await prisma.courseRunMember.findMany({
+    where: { tenantId, courseRunId: { in: ownedRunIds } },
+    select: { courseRunId: true, customerId: true },
+  });
+  const rosterByRun = new Map<string, string[]>();
+  for (const row of rosterRows) {
+    const list = rosterByRun.get(row.courseRunId);
+    if (list) list.push(row.customerId);
+    else rosterByRun.set(row.courseRunId, [row.customerId]);
+  }
+
+  // Runs that need the default-group fallback (no explicit members).
+  const fallbackCourseIds = new Set<string>();
+  for (const run of ownedRuns) {
+    const explicit = rosterByRun.get(run.id);
+    if (explicit && explicit.length > 0) {
+      for (const id of explicit) result.add(id);
+    } else {
+      fallbackCourseIds.add(run.courseId);
+    }
+  }
+
+  if (fallbackCourseIds.size > 0) {
     const enrolled = await prisma.income.findMany({
       where: {
         tenantId,
-        courseId: { in: ownedCourseIds },
+        courseId: { in: Array.from(fallbackCourseIds) },
         type: 'new_sale',
         lifecycleStatus: 'active',
       },
@@ -63,7 +96,7 @@ export async function getCustomersScopedToKurator(params: {
 
 /**
  * Permission check: may this kurator act on this customer (optionally pinned to a run)?
- * Mirrors the union from getCustomersScopedToKurator but returns a boolean cheaply.
+ * Mirrors the union from `getCustomersScopedToKurator` but returns a boolean cheaply.
  */
 export async function kuratorCanAccessCustomer(params: {
   tenantId: string;
@@ -91,15 +124,41 @@ export async function kuratorCanAccessCustomer(params: {
       kuratorUserId,
       ...(courseRunId ? { id: courseRunId } : {}),
     },
-    select: { courseId: true },
+    select: { id: true, courseId: true },
   });
   if (ownedRuns.length === 0) return false;
+
+  const ownedRunIds = ownedRuns.map((row) => row.id);
+
+  // Find which of the owned runs have an explicit roster, and check membership in those first.
+  const explicitMember = await prisma.courseRunMember.findFirst({
+    where: {
+      tenantId,
+      customerId,
+      courseRunId: { in: ownedRunIds },
+    },
+    select: { id: true },
+  });
+  if (explicitMember) return true;
+
+  // Otherwise, check the default-group fallback only for runs that have no roster.
+  const runsWithRoster = await prisma.courseRunMember.findMany({
+    where: { tenantId, courseRunId: { in: ownedRunIds } },
+    select: { courseRunId: true },
+    distinct: ['courseRunId'],
+  });
+  const rosterRunSet = new Set(runsWithRoster.map((row) => row.courseRunId));
+  const fallbackCourseIds = ownedRuns
+    .filter((run) => !rosterRunSet.has(run.id))
+    .map((run) => run.courseId);
+
+  if (fallbackCourseIds.length === 0) return false;
 
   const incomeHit = await prisma.income.findFirst({
     where: {
       tenantId,
       customerId,
-      courseId: { in: ownedRuns.map((row) => row.courseId) },
+      courseId: { in: fallbackCourseIds },
       type: 'new_sale',
       lifecycleStatus: 'active',
     },
