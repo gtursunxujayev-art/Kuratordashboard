@@ -51,6 +51,7 @@ model Tenant {
   kuratorTasks      KuratorTask[]
   regionConfigs     RegionConfig[]
   scheduleTemplates CourseScheduleTemplate[]
+  courseRunMembers  CourseRunMember[]
 
   @@index([subdomain])
   @@map("tenants")
@@ -361,6 +362,7 @@ model Customer {
   exerciseLogs        StudentExerciseLog[]
   attendances         ClassAttendance[]
   kuratorTasks        KuratorTask[]
+  courseRunMemberships CourseRunMember[]
 
   @@unique([tenantId, customerNumber])
   @@index([tenantId])
@@ -574,12 +576,33 @@ model CourseRun {
   kurator             User?                @relation("CourseRunKurator", fields: [kuratorUserId], references: [id], onDelete: SetNull)
   kuratorAssignments  KuratorAssignment[]
   attendances         ClassAttendance[]
+  members             CourseRunMember[]
 
   @@index([tenantId])
   @@index([courseId])
   @@index([startDate])
   @@index([tenantId, kuratorUserId])
   @@map("course_runs")
+}
+
+// Explicit hand-picked roster of customers that belong to a course-run mini-group.
+// When non-empty, this is the source of truth for "who is in this run".
+// When empty, callers fall back to "all customers with active new_sale income on the run's course".
+model CourseRunMember {
+  id          String   @id @default(cuid())
+  tenantId    String
+  courseRunId String
+  customerId  String
+  addedAt     DateTime @default(now())
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  courseRun CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([courseRunId, customerId])
+  @@index([tenantId, courseRunId])
+  @@index([tenantId, customerId])
+  @@map("course_run_members")
 }
 
 // Defines an exercise type students should complete in a course
