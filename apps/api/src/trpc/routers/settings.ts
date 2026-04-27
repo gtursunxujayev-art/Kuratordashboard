@@ -219,6 +219,90 @@ function isUniqueViolation(error: unknown): boolean {
   return String((error as { code?: string })?.code || '') === 'P2002';
 }
 
+/**
+ * Resolve "who belongs to this run" using the roster-then-fallback rule:
+ *   - If the run has any explicit `course_run_members` rows, those are the members.
+ *   - Otherwise, every customer with an active `new_sale` income on the run's course is a member.
+ */
+async function resolveRunMemberCustomerIds(params: {
+  tenantId: string;
+  courseRunId: string;
+  courseId: string;
+}): Promise<string[]> {
+  const { tenantId, courseRunId, courseId } = params;
+  const explicit = await prisma.courseRunMember.findMany({
+    where: { tenantId, courseRunId },
+    select: { customerId: true },
+  });
+  if (explicit.length > 0) {
+    return explicit.map((row) => row.customerId);
+  }
+  const enrolled = await prisma.income.findMany({
+    where: {
+      tenantId,
+      courseId,
+      type: 'new_sale',
+      lifecycleStatus: 'active',
+    },
+    select: { customerId: true },
+    distinct: ['customerId'],
+  });
+  return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
+}
+
+/**
+ * Re-sync the per-customer `kuratorAssignment` cache so it matches the run's current member set.
+ * Used by both `attachKuratorToRun` and `updateCourseRun` (when the roster changes on a run that
+ * already has a kurator attached).
+ */
+async function syncKuratorAssignmentsForRun(params: {
+  tenantId: string;
+  courseRunId: string;
+  kuratorUserId: string;
+  courseId: string;
+}): Promise<number> {
+  const { tenantId, courseRunId, kuratorUserId, courseId } = params;
+  const memberCustomerIds = await resolveRunMemberCustomerIds({ tenantId, courseRunId, courseId });
+
+  await prisma.$transaction([
+    // Deactivate stale rows: rows under any other kurator OR rows for customers no longer in the set.
+    prisma.kuratorAssignment.updateMany({
+      where: {
+        tenantId,
+        courseRunId,
+        isActive: true,
+        OR: [
+          { kuratorUserId: { not: kuratorUserId } },
+          { customerId: { notIn: memberCustomerIds.length > 0 ? memberCustomerIds : ['__none__'] } },
+        ],
+      },
+      data: { isActive: false },
+    }),
+    ...memberCustomerIds.map((customerId) =>
+      prisma.kuratorAssignment.upsert({
+        where: {
+          tenantId_kuratorUserId_customerId_courseRunId: {
+            tenantId,
+            kuratorUserId,
+            customerId,
+            courseRunId,
+          },
+        },
+        create: {
+          tenantId,
+          kuratorUserId,
+          customerId,
+          courseRunId,
+          isActive: true,
+        },
+        update: { isActive: true },
+      }),
+    ),
+  ]);
+
+  return memberCustomerIds.length;
+}
+
 export const settingsRouter = router({
   listStaffUsers: adminProcedure.query(async ({ ctx }) => {
     return prisma.user.findMany({
@@ -585,6 +669,10 @@ export const settingsRouter = router({
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
+        // Explicit hand-picked roster. When provided & non-empty, becomes the source of truth
+        // for "who is in this run". When empty/omitted, callers fall back to "all customers
+        // with an active new_sale income on the run's course" (the default-group behavior).
+        customerIds: z.array(z.string()).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -652,8 +740,22 @@ export const settingsRouter = router({
       const premiumExtraLessons = input.premiumExtraLessons ?? template?.premiumExtraLessons ?? 2;
       const endDate = computeEndDate(start, durationWeeks);
 
+      const rosterIds = Array.from(new Set(input.customerIds ?? []));
+      if (rosterIds.length > 0) {
+        const validCustomers = await prisma.customer.findMany({
+          where: { tenantId: ctx.tenantId, id: { in: rosterIds } },
+          select: { id: true },
+        });
+        if (validCustomers.length !== rosterIds.length) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: "Tanlangan o'quvchilarning ba'zilari topilmadi",
+          });
+        }
+      }
+
       try {
-        return await prisma.courseRun.create({
+        const created = await prisma.courseRun.create({
           data: {
             tenantId: ctx.tenantId,
             courseId: input.courseId,
@@ -665,6 +767,19 @@ export const settingsRouter = router({
             premiumExtraLessons,
           },
         });
+
+        if (rosterIds.length > 0) {
+          await prisma.courseRunMember.createMany({
+            data: rosterIds.map((customerId) => ({
+              tenantId: ctx.tenantId,
+              courseRunId: created.id,
+              customerId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+
+        return created;
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -681,6 +796,10 @@ export const settingsRouter = router({
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
+        // Replace the run's roster wholesale. When omitted, roster is left untouched.
+        // When provided as [], the roster is cleared and the run reverts to default-group
+        // behavior (all enrolled customers on the course).
+        customerIds: z.array(z.string()).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -704,8 +823,22 @@ export const settingsRouter = router({
         ? computeEndDate(existing.startDate, nextDurationWeeks)
         : existing.endDate;
 
+      const rosterIds = input.customerIds === undefined ? null : Array.from(new Set(input.customerIds));
+      if (rosterIds && rosterIds.length > 0) {
+        const validCustomers = await prisma.customer.findMany({
+          where: { tenantId: ctx.tenantId, id: { in: rosterIds } },
+          select: { id: true },
+        });
+        if (validCustomers.length !== rosterIds.length) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: "Tanlangan o'quvchilarning ba'zilari topilmadi",
+          });
+        }
+      }
+
       try {
-        return await prisma.courseRun.update({
+        const updated = await prisma.courseRun.update({
           where: { id: input.courseRunId },
           data: {
             ...(input.name !== undefined ? { name: input.name } : {}),
@@ -717,6 +850,40 @@ export const settingsRouter = router({
             ...(durationChanged ? { endDate: nextEndDate } : {}),
           },
         });
+
+        if (rosterIds !== null) {
+          // Replace roster wholesale in a transaction.
+          await prisma.$transaction([
+            prisma.courseRunMember.deleteMany({
+              where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
+            }),
+            ...(rosterIds.length > 0
+              ? [
+                  prisma.courseRunMember.createMany({
+                    data: rosterIds.map((customerId) => ({
+                      tenantId: ctx.tenantId,
+                      courseRunId: input.courseRunId,
+                      customerId,
+                    })),
+                    skipDuplicates: true,
+                  }),
+                ]
+              : []),
+          ]);
+
+          // If a kurator is already attached, re-sync their per-customer assignment cache
+          // so it matches the new roster (or the new default-group set when roster cleared).
+          if (existing.kuratorUserId) {
+            await syncKuratorAssignmentsForRun({
+              tenantId: ctx.tenantId,
+              courseRunId: input.courseRunId,
+              kuratorUserId: existing.kuratorUserId,
+              courseId: existing.courseId,
+            });
+          }
+        }
+
+        return updated;
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -1180,61 +1347,94 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
       }
 
-      const enrolledIncomes = await prisma.income.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          courseId: courseRun.courseId,
-          type: 'new_sale',
-          lifecycleStatus: 'active',
-        },
-        select: { customerId: true },
-        distinct: ['customerId'],
+      // 1. Set the run's kurator first (so future scope queries hit the relation).
+      await prisma.courseRun.update({
+        where: { id: input.courseRunId },
+        data: { kuratorUserId: input.kuratorUserId },
       });
-      const enrolledCustomerIds = enrolledIncomes
-        .map((row) => row.customerId)
-        .filter((id): id is string => Boolean(id));
 
-      await prisma.$transaction([
-        prisma.courseRun.update({
-          where: { id: input.courseRunId },
-          data: { kuratorUserId: input.kuratorUserId },
-        }),
-        prisma.kuratorAssignment.updateMany({
-          where: {
-            tenantId: ctx.tenantId,
-            courseRunId: input.courseRunId,
-            isActive: true,
-            kuratorUserId: { not: input.kuratorUserId },
-          },
-          data: { isActive: false },
-        }),
-        ...enrolledCustomerIds.map((customerId) =>
-          prisma.kuratorAssignment.upsert({
-            where: {
-              tenantId_kuratorUserId_customerId_courseRunId: {
-                tenantId: ctx.tenantId,
-                kuratorUserId: input.kuratorUserId,
-                customerId,
-                courseRunId: input.courseRunId,
-              },
-            },
-            create: {
-              tenantId: ctx.tenantId,
-              kuratorUserId: input.kuratorUserId,
-              customerId,
-              courseRunId: input.courseRunId,
-              isActive: true,
-            },
-            update: { isActive: true },
-          }),
-        ),
-      ]);
+      // 2. Re-sync the per-customer assignment cache from the resolved member set
+      //    (explicit roster if non-empty, else default-group of all enrolled customers).
+      const syncedCount = await syncKuratorAssignmentsForRun({
+        tenantId: ctx.tenantId,
+        courseRunId: input.courseRunId,
+        kuratorUserId: input.kuratorUserId,
+        courseId: courseRun.courseId,
+      });
 
       return {
         runId: input.courseRunId,
         kuratorUserId: input.kuratorUserId,
-        syncedCount: enrolledCustomerIds.length,
+        syncedCount,
       };
+    }),
+
+  /**
+   * Returns the explicit roster (customer IDs) for a run. Empty array means the run uses
+   * the default-group fallback. Used by the CourseRunsTab edit form to seed checkbox state.
+   */
+  listCourseRunMembers: adminProcedure
+    .input(z.object({ courseRunId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const courseRun = await prisma.courseRun.findFirst({
+        where: { id: input.courseRunId, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+      const rows = await prisma.courseRunMember.findMany({
+        where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
+        select: { customerId: true },
+      });
+      return rows.map((row) => row.customerId);
+    }),
+
+  /**
+   * Returns customers eligible to be added to a course-run roster: anyone with an active
+   * `new_sale` income on the course (optionally filtered by tariff).
+   * Used by the CourseRunsTab create/edit form's checkbox picker.
+   */
+  listEnrollableStudents: adminProcedure
+    .input(
+      z.object({
+        courseId: z.string(),
+        tariffId: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const incomes = await prisma.income.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: input.courseId,
+          type: 'new_sale',
+          lifecycleStatus: 'active',
+          ...(input.tariffId ? { tariffId: input.tariffId } : {}),
+        },
+        select: {
+          customerId: true,
+          tariffId: true,
+          customer: { select: { id: true, name: true, phone: true } },
+          tariff: { select: { id: true, name: true } },
+        },
+      });
+
+      // Distinct on customerId — Prisma's `distinct` would force us to choose ordering;
+      // do it in JS so we can keep the latest tariff seen per customer.
+      const seen = new Map<string, { id: string; name: string; phone: string | null; tariffId: string | null; tariffName: string | null }>();
+      for (const income of incomes) {
+        if (!income.customerId || !income.customer) continue;
+        if (seen.has(income.customerId)) continue;
+        seen.set(income.customerId, {
+          id: income.customer.id,
+          name: income.customer.name,
+          phone: income.customer.phone ?? null,
+          tariffId: income.tariff?.id ?? null,
+          tariffName: income.tariff?.name ?? null,
+        });
+      }
+
+      return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, 'uz'));
     }),
 
   detachKuratorFromRun: adminProcedure
