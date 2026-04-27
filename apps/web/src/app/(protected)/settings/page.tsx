@@ -244,8 +244,27 @@ function CourseRunsTab({
   const [deleteSuccess, setDeleteSuccess] = useState('');
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
 
+  // Roster picker state — explicit hand-picked mini-group of students for this run.
+  // Empty set ⇒ run uses the default-group fallback (every customer enrolled on the course).
+  const [tariffFilter, setTariffFilter] = useState('');
+  const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
+
+  // Roster picker queries — gated by the form's currently-selected courseId.
+  const { data: tariffs } = trpc.settings.listTariffsByCourse.useQuery(
+    { courseId: form.courseId },
+    { enabled: showForm && !!form.courseId },
+  );
+  const { data: enrollable } = trpc.settings.listEnrollableStudents.useQuery(
+    { courseId: form.courseId, tariffId: tariffFilter || undefined },
+    { enabled: showForm && !!form.courseId },
+  );
+  const { data: existingMembers } = trpc.settings.listCourseRunMembers.useQuery(
+    { courseRunId: editingRunId ?? '' },
+    { enabled: showForm && !!editingRunId },
+  );
 
   const isEditing = editingRunId !== null;
 
@@ -266,6 +285,8 @@ function CourseRunsTab({
   const openCreate = () => {
     setEditingRunId(null);
     resetForm();
+    setTariffFilter('');
+    setSelectedCustomerIds(new Set());
     setError('');
     setCreateSuccess('');
     setShowForm(true);
@@ -287,11 +308,21 @@ function CourseRunsTab({
       baseLessons: run.baseLessons,
       premiumExtraLessons: run.premiumExtraLessons,
     });
+    setTariffFilter('');
+    // Seed an empty set; the effect below will hydrate it once existingMembers loads.
+    setSelectedCustomerIds(new Set());
     setError('');
     setCreateSuccess('');
     setShowForm(true);
     onSelectRun(run.id);
   };
+
+  // Hydrate roster checkbox state from the server when the edit form loads.
+  useEffect(() => {
+    if (editingRunId && existingMembers) {
+      setSelectedCustomerIds(new Set(existingMembers));
+    }
+  }, [editingRunId, existingMembers]);
 
   const handleSave = async () => {
     if (!form.name) {
@@ -309,6 +340,8 @@ function CourseRunsTab({
       setError('');
       setCreateSuccess('');
 
+      const customerIds = Array.from(selectedCustomerIds);
+
       if (isEditing && editingRunId) {
         await updateMutation.mutateAsync({
           courseRunId: editingRunId,
@@ -316,12 +349,17 @@ function CourseRunsTab({
           durationWeeks: form.durationWeeks,
           baseLessons: form.baseLessons,
           premiumExtraLessons: form.premiumExtraLessons,
+          customerIds,
         });
-        await utils.settings.listCourseRuns.invalidate();
+        await Promise.all([
+          utils.settings.listCourseRuns.invalidate(),
+          utils.settings.listCourseRunMembers.invalidate({ courseRunId: editingRunId }),
+        ]);
         setCreateSuccess('Oqim yangilandi.');
         setShowForm(false);
         setEditingRunId(null);
         resetForm();
+        setSelectedCustomerIds(new Set());
       } else {
         const createdRun = await createMutation.mutateAsync({
           courseId: form.courseId,
@@ -329,12 +367,14 @@ function CourseRunsTab({
           durationWeeks: form.durationWeeks,
           baseLessons: form.baseLessons,
           premiumExtraLessons: form.premiumExtraLessons,
+          customerIds,
         });
         await utils.settings.listCourseRuns.invalidate();
         onSelectRun(createdRun.id);
         setShowForm(false);
         setCreateSuccess("Oqim yaratildi. Kuratorga biriktirish uchun Kurator bog'lash tabiga o'ting.");
         resetForm();
+        setSelectedCustomerIds(new Set());
       }
     } catch (err: any) {
       setCreateSuccess('');
@@ -456,6 +496,104 @@ function CourseRunsTab({
           <p className="text-xs text-gray-500">
             Boshlanish sanasi kursning `start date` qiymatidan avtomatik olinadi.
           </p>
+
+          {/* Roster picker — explicit hand-picked mini-group of students */}
+          {form.courseId && (
+            <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <h4 className="text-sm font-medium text-gray-900">O'quvchilar (mini-guruh)</h4>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500">Tarif:</label>
+                  <select
+                    value={tariffFilter}
+                    onChange={(e) => setTariffFilter(e.target.value)}
+                    className="px-2 py-1 border border-gray-300 rounded-md text-xs"
+                  >
+                    <option value="">Barcha tariflar</option>
+                    {tariffs?.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-3 flex-wrap text-xs text-gray-600">
+                <span>
+                  Tanlangan: <strong>{selectedCustomerIds.size}</strong>
+                  {enrollable ? ` / ${enrollable.length}` : ''}
+                </span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = new Set(selectedCustomerIds);
+                      for (const c of enrollable ?? []) next.add(c.id);
+                      setSelectedCustomerIds(next);
+                    }}
+                    className="text-blue-600 hover:underline"
+                  >
+                    Hammasini tanlash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = new Set(selectedCustomerIds);
+                      for (const c of enrollable ?? []) next.delete(c.id);
+                      setSelectedCustomerIds(next);
+                    }}
+                    className="text-gray-600 hover:underline"
+                  >
+                    Tozalash
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-72 overflow-y-auto border border-gray-100 rounded">
+                {!enrollable ? (
+                  <p className="p-3 text-xs text-gray-500">Yuklanmoqda...</p>
+                ) : enrollable.length === 0 ? (
+                  <p className="p-3 text-xs text-gray-500">
+                    Bu kursga hech kim faol yozilmagan.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-gray-100">
+                    {enrollable.map((c) => {
+                      const checked = selectedCustomerIds.has(c.id);
+                      return (
+                        <li key={c.id}>
+                          <label className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                const next = new Set(selectedCustomerIds);
+                                if (checked) next.delete(c.id);
+                                else next.add(c.id);
+                                setSelectedCustomerIds(next);
+                              }}
+                            />
+                            <span className="flex-1 text-gray-900">{c.name}</span>
+                            {c.tariffName && (
+                              <span className="text-xs text-gray-500">{c.tariffName}</span>
+                            )}
+                            {c.phone && (
+                              <span className="text-xs text-gray-400">{c.phone}</span>
+                            )}
+                          </label>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+              {selectedCustomerIds.size === 0 && (
+                <p className="text-xs text-gray-500 italic">
+                  Bo'sh qoldirsangiz, kursga yozilgan barcha o'quvchilar avtomatik kiritiladi
+                  (default guruh).
+                </p>
+              )}
+            </div>
+          )}
 
           {error && <p className="text-sm text-red-600">{error}</p>}
           {createSuccess && <p className="text-sm text-green-600">{createSuccess}</p>}
