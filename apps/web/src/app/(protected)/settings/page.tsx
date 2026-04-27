@@ -182,6 +182,7 @@ function ScheduleTemplatesTab() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchilar</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
@@ -673,6 +674,7 @@ function CourseRunsTab({
                   <td className="px-4 py-3 text-gray-600">{run.durationWeeks}</td>
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
+                  <td className="px-4 py-3 text-gray-600">{run.studentCount ?? 0}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <button
@@ -1761,5 +1763,4 @@ function AssignmentsTab() {
     </div>
   );
 }
-
 
