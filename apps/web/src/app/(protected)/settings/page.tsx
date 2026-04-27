@@ -257,7 +257,11 @@ function CourseRunsTab({
     { courseId: form.courseId },
     { enabled: showForm && !!form.courseId },
   );
-  const { data: enrollable } = trpc.settings.listEnrollableStudents.useQuery(
+  const {
+    data: enrollable,
+    isLoading: enrollableLoading,
+    error: enrollableError,
+  } = trpc.settings.listEnrollableStudents.useQuery(
     { courseId: form.courseId, tariffId: tariffFilter || undefined },
     { enabled: showForm && !!form.courseId },
   );
@@ -549,9 +553,13 @@ function CourseRunsTab({
                 </div>
               </div>
               <div className="max-h-72 overflow-y-auto border border-gray-100 rounded">
-                {!enrollable ? (
+                {enrollableError ? (
+                  <p className="p-3 text-xs text-red-600">
+                    Xatolik: {enrollableError.message}
+                  </p>
+                ) : enrollableLoading ? (
                   <p className="p-3 text-xs text-gray-500">Yuklanmoqda...</p>
-                ) : enrollable.length === 0 ? (
+                ) : !enrollable || enrollable.length === 0 ? (
                   <p className="p-3 text-xs text-gray-500">
                     Bu kursga hech kim faol yozilmagan.
                   </p>
