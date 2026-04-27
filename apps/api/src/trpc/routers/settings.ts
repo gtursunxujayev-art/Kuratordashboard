@@ -116,6 +116,15 @@ function isMissingCustomerRegionColumnError(error: unknown): boolean {
   return message.includes('customers.region');
 }
 
+function isMissingCustomerPhoneColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('customers.phone') && message.includes('does not exist');
+  }
+  return message.includes('customers.phone');
+}
+
 function isMissingCourseRunsTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1403,38 +1412,56 @@ export const settingsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const incomes = await prisma.income.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          courseId: input.courseId,
-          type: 'new_sale',
-          lifecycleStatus: 'active',
-          ...(input.tariffId ? { tariffId: input.tariffId } : {}),
-        },
-        select: {
-          customerId: true,
-          tariffId: true,
-          customer: { select: { id: true, name: true, phone: true } },
-          tariff: { select: { id: true, name: true } },
-        },
-      });
+      const where = {
+        tenantId: ctx.tenantId,
+        courseId: input.courseId,
+        type: 'new_sale' as const,
+        lifecycleStatus: 'active' as const,
+        ...(input.tariffId ? { tariffId: input.tariffId } : {}),
+      };
 
-      // Distinct on customerId — Prisma's `distinct` would force us to choose ordering;
-      // do it in JS so we can keep the latest tariff seen per customer.
-      const seen = new Map<string, { id: string; name: string; phone: string | null; tariffId: string | null; tariffName: string | null }>();
-      for (const income of incomes) {
-        if (!income.customerId || !income.customer) continue;
-        if (seen.has(income.customerId)) continue;
-        seen.set(income.customerId, {
-          id: income.customer.id,
-          name: income.customer.name,
-          phone: income.customer.phone ?? null,
-          tariffId: income.tariff?.id ?? null,
-          tariffName: income.tariff?.name ?? null,
+      const runQuery = async (includePhone: boolean) =>
+        prisma.income.findMany({
+          where,
+          select: {
+            customerId: true,
+            customer: {
+              select: includePhone
+                ? { id: true, name: true, phone: true }
+                : { id: true, name: true },
+            },
+            tariff: { select: { id: true, name: true } },
+            entryDate: true,
+          },
+          orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }],
+          distinct: ['customerId'],
         });
+
+      let incomes: Array<{
+        customerId: string;
+        customer: { id: string; name: string; phone?: string | null } | null;
+        tariff: { id: string; name: string } | null;
+      }> = [];
+
+      try {
+        incomes = await runQuery(true);
+      } catch (error) {
+        if (!isMissingCustomerPhoneColumnError(error)) {
+          throw error;
+        }
+        incomes = await runQuery(false);
       }
 
-      return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+      return incomes
+        .filter((income) => Boolean(income.customerId && income.customer))
+        .map((income) => ({
+          id: income.customer!.id,
+          name: income.customer!.name,
+          phone: income.customer?.phone ?? null,
+          tariffId: income.tariff?.id ?? null,
+          tariffName: income.tariff?.name ?? null,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
     }),
 
   detachKuratorFromRun: adminProcedure
@@ -1614,3 +1641,4 @@ export const settingsRouter = router({
       return { assignedCount: uniqueCustomerIds.length };
     }),
 });
+
