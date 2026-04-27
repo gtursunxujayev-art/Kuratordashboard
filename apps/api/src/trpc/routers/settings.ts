@@ -663,7 +663,7 @@ export const settingsRouter = router({
 
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
     try {
-      return await prisma.courseRun.findMany({
+      const runs = await prisma.courseRun.findMany({
         where: { tenantId: ctx.tenantId },
         include: {
           course: { select: { name: true, category: true } },
@@ -671,6 +671,23 @@ export const settingsRouter = router({
         },
         orderBy: { startDate: 'desc' },
       });
+
+      return Promise.all(
+        runs.map(async (run) => {
+          const studentCount = (
+            await resolveRunMemberCustomerIds({
+              tenantId: ctx.tenantId,
+              courseRunId: run.id,
+              courseId: run.courseId,
+            })
+          ).length;
+
+          return {
+            ...run,
+            studentCount,
+          };
+        }),
+      );
     } catch (error) {
       if (!isMissingCourseRunsTableError(error)) {
         throw error;
