@@ -565,11 +565,22 @@ function CourseRunsTab({
                   </p>
                 ) : (
                   <ul className="divide-y divide-gray-100">
+                    <li className="px-3 py-2 bg-gray-50 text-[11px] text-gray-500">
+                      <div className="grid grid-cols-[auto,minmax(0,1.4fr),minmax(0,2fr),minmax(0,1fr),minmax(0,1fr)] gap-3 items-center">
+                        <span />
+                        <span>Telefon</span>
+                        <span>F.I.Sh</span>
+                        <span>Jinsi</span>
+                        <span>Tarif</span>
+                      </div>
+                    </li>
                     {enrollable.map((c) => {
                       const checked = selectedCustomerIds.has(c.id);
+                      const genderLabel =
+                        c.gender === 'male' ? 'Erkak' : c.gender === 'female' ? 'Ayol' : '-';
                       return (
                         <li key={c.id}>
-                          <label className="flex items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
+                          <label className="grid grid-cols-[auto,minmax(0,1.4fr),minmax(0,2fr),minmax(0,1fr),minmax(0,1fr)] items-center gap-3 px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm">
                             <input
                               type="checkbox"
                               checked={checked}
@@ -580,13 +591,10 @@ function CourseRunsTab({
                                 setSelectedCustomerIds(next);
                               }}
                             />
-                            <span className="flex-1 text-gray-900">{c.name}</span>
-                            {c.tariffName && (
-                              <span className="text-xs text-gray-500">{c.tariffName}</span>
-                            )}
-                            {c.phone && (
-                              <span className="text-xs text-gray-400">{c.phone}</span>
-                            )}
+                            <span className="text-xs text-gray-500">{c.phone ?? '-'}</span>
+                            <span className="text-gray-900 truncate">{c.name}</span>
+                            <span className="text-xs text-gray-500">{genderLabel}</span>
+                            <span className="text-xs text-gray-500">{c.tariffName ?? '-'}</span>
                           </label>
                         </li>
                       );
@@ -1753,6 +1761,5 @@ function AssignmentsTab() {
     </div>
   );
 }
-
 
 
