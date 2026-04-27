@@ -1438,6 +1438,7 @@ export const settingsRouter = router({
               select: {
                 id: true,
                 name: true,
+                customerNumber: true,
                 ...(includePhone ? { phone: true } : {}),
                 ...(includeGender ? { gender: true } : {}),
               },
@@ -1451,7 +1452,13 @@ export const settingsRouter = router({
 
       let incomes: Array<{
         customerId: string;
-        customer: { id: string; name: string; phone?: string | null; gender?: string | null } | null;
+        customer: {
+          id: string;
+          name: string;
+          customerNumber: string;
+          phone?: string | null;
+          gender?: string | null;
+        } | null;
         tariff: { id: string; name: string } | null;
       }> = [];
 
@@ -1478,7 +1485,7 @@ export const settingsRouter = router({
         .map((income) => ({
           id: income.customer!.id,
           name: income.customer!.name,
-          phone: income.customer?.phone ?? null,
+          phone: income.customer?.phone?.trim() || income.customer?.customerNumber || null,
           gender: income.customer?.gender ?? null,
           tariffId: income.tariff?.id ?? null,
           tariffName: income.tariff?.name ?? null,
