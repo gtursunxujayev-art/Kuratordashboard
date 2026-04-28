@@ -36,6 +36,15 @@ function isMissingCourseRunMembersTableError(error: unknown): boolean {
   return message.includes('course_run_members');
 }
 
+function isPointsTypeMigrationMismatchError(error: unknown): boolean {
+  const message = String((error as any)?.message || '').toLowerCase();
+  return (
+    message.includes('22p03') &&
+    message.includes('incorrect binary data format') &&
+    message.includes('bind parameter')
+  );
+}
+
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
   return day === 0 || day === 6;
@@ -676,19 +685,30 @@ export const amaliyRouter = router({
         });
       }
 
-      return prisma.studentExerciseLog.create({
-        data: {
-          tenantId,
-          customerId: input.customerId,
-          exerciseDefinitionId: input.exerciseDefinitionId,
-          colorOptionId: colorOption.id,
-          colorHex: colorOption.colorHex,
-          points: definitionColorPoint.points,
-          completedAt: parseDateInput(input.completedAt),
-          loggedByUserId: user.userId,
-          note: input.note,
-        },
-      });
+      try {
+        return await prisma.studentExerciseLog.create({
+          data: {
+            tenantId,
+            customerId: input.customerId,
+            exerciseDefinitionId: input.exerciseDefinitionId,
+            colorOptionId: colorOption.id,
+            colorHex: colorOption.colorHex,
+            points: definitionColorPoint.points,
+            completedAt: parseDateInput(input.completedAt),
+            loggedByUserId: user.userId,
+            note: input.note,
+          },
+        });
+      } catch (error) {
+        if (isPointsTypeMigrationMismatchError(error)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              "DB migratsiya qo'llanmagan: kasr ballar uchun `points` ustuni yangilanmagan. `20260428093000_allow_fractional_amaliy_points` migratsiyasini deploy qiling.",
+          });
+        }
+        throw error;
+      }
     }),
 
   removeExerciseLog: protectedProcedure
