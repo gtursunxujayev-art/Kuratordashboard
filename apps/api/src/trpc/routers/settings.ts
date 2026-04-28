@@ -1109,7 +1109,7 @@ export const settingsRouter = router({
         colorPoints: z.array(
           z.object({
             colorOptionId: z.string(),
-            points: z.number().int().min(0).max(10000),
+            points: z.number().min(0).max(10000),
           }),
         ).min(1),
       }),
@@ -1194,7 +1194,7 @@ export const settingsRouter = router({
         colorPoints: z.array(
           z.object({
             colorOptionId: z.string(),
-            points: z.number().int().min(0).max(10000),
+            points: z.number().min(0).max(10000),
           }),
         ).optional(),
       }),
