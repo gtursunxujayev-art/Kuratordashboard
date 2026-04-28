@@ -15,6 +15,8 @@ const amaliyReportDatePresetSchema = z.enum([
   'week6',
   'all',
 ]);
+type AmaliyWeekKey = 'week1' | 'week2' | 'week3' | 'week4' | 'week5' | 'week6';
+const AMALIY_WEEK_KEYS: AmaliyWeekKey[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -226,6 +228,46 @@ function resolveAmaliyReportDateRange(params: {
     from: maxDate(from, runStart),
     to: minDate(to, runEndExclusive),
   };
+}
+
+function resolveAmaliyWeekRanges(params: {
+  runStart: Date;
+  runEndExclusive: Date;
+}): Record<AmaliyWeekKey, { from: Date; to: Date }> {
+  const { runStart, runEndExclusive } = params;
+  return {
+    week1: resolveAmaliyReportDateRange({ datePreset: 'week1', runStart, runEndExclusive }),
+    week2: resolveAmaliyReportDateRange({ datePreset: 'week2', runStart, runEndExclusive }),
+    week3: resolveAmaliyReportDateRange({ datePreset: 'week3', runStart, runEndExclusive }),
+    week4: resolveAmaliyReportDateRange({ datePreset: 'week4', runStart, runEndExclusive }),
+    week5: resolveAmaliyReportDateRange({ datePreset: 'week5', runStart, runEndExclusive }),
+    week6: resolveAmaliyReportDateRange({ datePreset: 'week6', runStart, runEndExclusive }),
+  };
+}
+
+function isDateInRange(date: Date, range: { from: Date; to: Date }): boolean {
+  const ts = date.getTime();
+  return ts >= range.from.getTime() && ts < range.to.getTime();
+}
+
+function dayLabelUz(date: Date): string {
+  const labels = ['Ya', 'Du', 'Se', 'Cho', 'Pay', 'Ju', 'Sha'];
+  return labels[date.getDay()] ?? '';
+}
+
+function toDayKey(date: Date): string {
+  return toDateLabel(startOfDayLocal(date));
+}
+
+function enumerateDateRange(range: { from: Date; to: Date }): Array<{ date: string; label: string }> {
+  const result: Array<{ date: string; label: string }> = [];
+  for (let cursor = startOfDayLocal(range.from); cursor.getTime() < range.to.getTime(); cursor = addDays(cursor, 1)) {
+    result.push({
+      date: toDateLabel(cursor),
+      label: dayLabelUz(cursor),
+    });
+  }
+  return result;
 }
 
 function intersectCustomerIds(base?: string[], extra?: string[]): string[] | undefined {
@@ -1251,25 +1293,39 @@ export const dashboardRouter = router({
           });
 
       const todayStart = startOfDayLocal(new Date());
+      const anchorRunStart = latestRunForCourse
+        ? startOfDayLocal(latestRunForCourse.startDate)
+        : (course.startDate ? startOfDayLocal(course.startDate) : todayStart);
+      const anchorRunEndExclusive = latestRunForCourse
+        ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
+        : addDays(anchorRunStart, 42);
+
       let dateRange: { from: Date; to: Date };
 
       if (input.datePreset === 'today') {
         dateRange = { from: todayStart, to: addDays(todayStart, 1) };
       } else if (latestRunForCourse) {
-        const runStart = startOfDayLocal(latestRunForCourse.startDate);
-        const runEndExclusive = addDays(startOfDayLocal(latestRunForCourse.endDate), 1);
         dateRange = resolveAmaliyReportDateRange({
           datePreset: input.datePreset,
-          runStart,
-          runEndExclusive,
+          runStart: anchorRunStart,
+          runEndExclusive: anchorRunEndExclusive,
         });
       } else {
-        const courseStart = course.startDate ? startOfDayLocal(course.startDate) : todayStart;
         dateRange =
           input.datePreset === 'all'
-            ? { from: courseStart, to: addDays(todayStart, 1) }
+            ? { from: anchorRunStart, to: addDays(todayStart, 1) }
             : { from: todayStart, to: addDays(todayStart, 1) };
       }
+
+      const weekRanges = resolveAmaliyWeekRanges({
+        runStart: anchorRunStart,
+        runEndExclusive: anchorRunEndExclusive,
+      });
+      const activeWeekRange: { from: Date; to: Date } | null =
+        AMALIY_WEEK_KEYS.includes(input.datePreset as AmaliyWeekKey)
+          ? weekRanges[input.datePreset as AmaliyWeekKey]
+          : null;
+      const activeWeekDays = activeWeekRange ? enumerateDateRange(activeWeekRange) : [];
 
       let assignedStudentIds: string[] = [];
       if (selectedRun) {
@@ -1412,18 +1468,54 @@ export const dashboardRouter = router({
       const sumPointsByCell = new Map<string, number>();
       const latestColorByCell = new Map<string, string | null>();
       const seenLogsByCell = new Set<string>();
+      const weekPointsByCell = new Map<string, Record<AmaliyWeekKey, number>>();
+      const dayPointsByCell = new Map<string, Map<string, number>>();
 
       for (const log of logs) {
         const key = `${log.customerId}:${log.exerciseDefinitionId}`;
-        sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + (log.points ?? 0));
+        const pointValue = log.points ?? 0;
+        sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + pointValue);
         seenLogsByCell.add(key);
         if (!latestColorByCell.has(key)) {
           latestColorByCell.set(key, log.colorHex ?? null);
         }
+
+        const completedDay = startOfDayLocal(log.completedAt);
+        const weekPoints = weekPointsByCell.get(key) ?? {
+          week1: 0,
+          week2: 0,
+          week3: 0,
+          week4: 0,
+          week5: 0,
+          week6: 0,
+        };
+        for (const weekKey of AMALIY_WEEK_KEYS) {
+          if (isDateInRange(completedDay, weekRanges[weekKey])) {
+            weekPoints[weekKey] += pointValue;
+          }
+        }
+        weekPointsByCell.set(key, weekPoints);
+
+        if (activeWeekRange && isDateInRange(completedDay, activeWeekRange)) {
+          const dayMap = dayPointsByCell.get(key) ?? new Map<string, number>();
+          const dayKey = toDayKey(completedDay);
+          dayMap.set(dayKey, (dayMap.get(dayKey) ?? 0) + pointValue);
+          dayPointsByCell.set(key, dayMap);
+        }
       }
 
       const rows = students.map((student) => {
-        const cells: Record<string, { points: number; colorHex: string | null; hasLogs: boolean }> = {};
+        const cells: Record<
+          string,
+          {
+            points: number;
+            totalPoints: number;
+            colorHex: string | null;
+            hasLogs: boolean;
+            weekPoints: Record<AmaliyWeekKey, number>;
+            dayPoints: Array<{ date: string; label: string; points: number }>;
+          }
+        > = {};
         let totalPoints = 0;
 
         for (const practice of practices) {
@@ -1431,7 +1523,29 @@ export const dashboardRouter = router({
           const points = sumPointsByCell.get(key) ?? 0;
           const colorHex = latestColorByCell.get(key) ?? null;
           const hasLogs = seenLogsByCell.has(key);
-          cells[practice.id] = { points, colorHex, hasLogs };
+          const weekPoints = weekPointsByCell.get(key) ?? {
+            week1: 0,
+            week2: 0,
+            week3: 0,
+            week4: 0,
+            week5: 0,
+            week6: 0,
+          };
+          const dayPointMap = dayPointsByCell.get(key) ?? new Map<string, number>();
+          const dayPoints = activeWeekDays.map((day) => ({
+            date: day.date,
+            label: day.label,
+            points: dayPointMap.get(day.date) ?? 0,
+          }));
+
+          cells[practice.id] = {
+            points,
+            totalPoints: points,
+            colorHex,
+            hasLogs,
+            weekPoints,
+            dayPoints,
+          };
           totalPoints += points;
         }
 
