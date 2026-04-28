@@ -26,6 +26,16 @@ const DATE_PRESET_LABELS: Record<DatePreset, string> = {
   all: 'Hammasi',
 };
 const WEEK_PRESETS: DatePreset[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
+const WEEK_KEYS = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'] as const;
+type WeekKey = (typeof WEEK_KEYS)[number];
+const WEEK_COLUMN_LABELS: Record<WeekKey, string> = {
+  week1: 'W1',
+  week2: 'W2',
+  week3: 'W3',
+  week4: 'W4',
+  week5: 'W5',
+  week6: 'W6',
+};
 
 function textColorForBackground(hexColor?: string | null): string {
   if (!hexColor) return '#111827';
@@ -247,35 +257,65 @@ export default function HisobotPage() {
             <table className="w-full text-sm border-collapse min-w-[980px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]">
+                  <th
+                    rowSpan={2}
+                    className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]"
+                  >
                     O&apos;quvchi
                   </th>
-                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]">
+                  <th
+                    rowSpan={2}
+                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]"
+                  >
                     Tarif
                   </th>
-                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]">
+                  <th
+                    rowSpan={2}
+                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]"
+                  >
                     Kurator
                   </th>
                   {report.practices.map((practice) => (
                     <th
                       key={practice.id}
-                      className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[96px]"
+                      colSpan={6}
+                      className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200"
                     >
                       <div className="leading-tight">
                         <p className="text-xs">{practice.name}</p>
                       </div>
                     </th>
                   ))}
-                  <th className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[86px]">
+                  <th
+                    rowSpan={2}
+                    className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[82px] w-[82px]"
+                  >
                     Jami ball
                   </th>
+                </tr>
+                <tr className="bg-gray-50 border-b border-gray-200">
+                  {report.practices.flatMap((practice) =>
+                    WEEK_KEYS.map((weekKey) => {
+                      const isSelected = datePreset === weekKey;
+                      return (
+                        <th
+                          key={`${practice.id}-${weekKey}`}
+                          className={`text-center px-1 py-1.5 text-[11px] font-semibold border-r border-gray-200 min-w-[48px] ${
+                            isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
+                          }`}
+                        >
+                          {WEEK_COLUMN_LABELS[weekKey]}
+                        </th>
+                      );
+                    }),
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {report.students.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={report.practices.length + 4}
+                      colSpan={report.practices.length * 6 + 4}
                       className="px-4 py-8 text-center text-sm kd-subtle"
                     >
                       Tanlangan filterlar bo&apos;yicha o&apos;quvchilar topilmadi.
@@ -294,34 +334,28 @@ export default function HisobotPage() {
                       <td className="px-2 py-2 text-gray-700 border-r border-gray-100 align-top text-xs leading-4">
                         {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
                       </td>
-                      {report.practices.map((practice) => {
+                      {report.practices.flatMap((practice) => {
                         const cell = student.cells[practice.id];
-                        const isColored = cell?.hasLogs && Boolean(cell?.colorHex);
-                        const backgroundColor = isColored ? cell.colorHex! : cell?.hasLogs ? '#F3F4F6' : '#FFFFFF';
-                        const color = isColored ? textColorForBackground(cell.colorHex) : '#374151';
-                        const showWeeklyBreakdown = datePreset === 'all';
-                        const showDailyBreakdown = WEEK_PRESETS.includes(datePreset);
-                        return (
-                          <td
-                            key={`${student.id}-${practice.id}`}
-                            className="px-1.5 py-1.5 text-center border-r border-gray-100"
-                            style={{ backgroundColor, color }}
-                          >
-                            <div className="font-semibold leading-4">{formatPoint(cell?.points ?? 0)}</div>
-                            {showWeeklyBreakdown && cell?.weekPoints && (
-                              <div className="mt-0.5 text-[10px] leading-3 whitespace-pre-wrap opacity-90">
-                                {`W1:${formatPoint(cell.weekPoints.week1)} W2:${formatPoint(cell.weekPoints.week2)} W3:${formatPoint(cell.weekPoints.week3)}`}
-                                <br />
-                                {`W4:${formatPoint(cell.weekPoints.week4)} W5:${formatPoint(cell.weekPoints.week5)} W6:${formatPoint(cell.weekPoints.week6)}`}
-                              </div>
-                            )}
-                            {showDailyBreakdown && cell?.dayPoints?.length > 0 && (
-                              <div className="mt-0.5 text-[10px] leading-3 whitespace-pre-wrap opacity-90">
-                                {cell.dayPoints.map((day) => `${day.label}:${formatPoint(day.points)}`).join(' ')}
-                              </div>
-                            )}
-                          </td>
-                        );
+                        return WEEK_KEYS.map((weekKey) => {
+                          const points = cell?.weekPoints?.[weekKey] ?? 0;
+                          const weekColor = cell?.weekColors?.[weekKey] ?? null;
+                          const isColored = Boolean(weekColor);
+                          const isSelected = datePreset === weekKey;
+                          const backgroundColor = isColored ? weekColor! : '#FFFFFF';
+                          const color = isColored ? textColorForBackground(weekColor) : '#374151';
+
+                          return (
+                            <td
+                              key={`${student.id}-${practice.id}-${weekKey}`}
+                              className={`px-1 py-1.5 text-center border-r border-gray-100 font-semibold ${
+                                isSelected ? 'ring-1 ring-inset ring-indigo-200' : ''
+                              }`}
+                              style={{ backgroundColor, color }}
+                            >
+                              {formatPoint(points)}
+                            </td>
+                          );
+                        });
                       })}
                       <td className="sticky right-0 z-10 bg-white px-2 py-2 text-center font-bold text-gray-900 border-l border-gray-200">
                         {formatPoint(student.totalPoints)}
