@@ -1,4 +1,4 @@
-import { router, adminProcedure, protectedProcedure } from '../trpc';
+import { router, adminProcedure, managerProcedure, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
@@ -1098,7 +1098,7 @@ export const settingsRouter = router({
       );
     }),
 
-  addExerciseDefinition: adminProcedure
+  addExerciseDefinition: managerProcedure
     .input(
       z.object({
         courseId: z.string(),
@@ -1182,7 +1182,7 @@ export const settingsRouter = router({
       return created;
     }),
 
-  updateExerciseDefinition: adminProcedure
+  updateExerciseDefinition: managerProcedure
     .input(
       z.object({
         id: z.string(),
