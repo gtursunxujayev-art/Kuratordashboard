@@ -1141,6 +1141,7 @@ function ExercisesTab({
                       <input
                         type="number"
                         min={0}
+                        step={0.5}
                         value={exerciseColorPoints[option.id] ?? 0}
                         onChange={(e) =>
                           setExerciseColorPoints((prev) => ({
