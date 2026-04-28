@@ -1469,9 +1469,14 @@ export const dashboardRouter = router({
       const latestColorByCell = new Map<string, string | null>();
       const seenLogsByCell = new Set<string>();
       const weekPointsByCell = new Map<string, Record<AmaliyWeekKey, number>>();
+      const weekColorStatsByCell = new Map<
+        string,
+        Record<AmaliyWeekKey, Map<string, { count: number; latestRank: number }>>
+      >();
       const dayPointsByCell = new Map<string, Map<string, number>>();
 
-      for (const log of logs) {
+      for (let idx = 0; idx < logs.length; idx += 1) {
+        const log = logs[idx];
         const key = `${log.customerId}:${log.exerciseDefinitionId}`;
         const pointValue = log.points ?? 0;
         sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + pointValue);
@@ -1489,12 +1494,30 @@ export const dashboardRouter = router({
           week5: 0,
           week6: 0,
         };
+        const weekColorStats = weekColorStatsByCell.get(key) ?? {
+          week1: new Map<string, { count: number; latestRank: number }>(),
+          week2: new Map<string, { count: number; latestRank: number }>(),
+          week3: new Map<string, { count: number; latestRank: number }>(),
+          week4: new Map<string, { count: number; latestRank: number }>(),
+          week5: new Map<string, { count: number; latestRank: number }>(),
+          week6: new Map<string, { count: number; latestRank: number }>(),
+        };
         for (const weekKey of AMALIY_WEEK_KEYS) {
           if (isDateInRange(completedDay, weekRanges[weekKey])) {
             weekPoints[weekKey] += pointValue;
+            if (log.colorHex) {
+              const bucket = weekColorStats[weekKey];
+              const current = bucket.get(log.colorHex);
+              if (current) {
+                current.count += 1;
+              } else {
+                bucket.set(log.colorHex, { count: 1, latestRank: idx });
+              }
+            }
           }
         }
         weekPointsByCell.set(key, weekPoints);
+        weekColorStatsByCell.set(key, weekColorStats);
 
         if (activeWeekRange && isDateInRange(completedDay, activeWeekRange)) {
           const dayMap = dayPointsByCell.get(key) ?? new Map<string, number>();
@@ -1513,6 +1536,7 @@ export const dashboardRouter = router({
             colorHex: string | null;
             hasLogs: boolean;
             weekPoints: Record<AmaliyWeekKey, number>;
+            weekColors: Record<AmaliyWeekKey, string | null>;
             dayPoints: Array<{ date: string; label: string; points: number }>;
           }
         > = {};
@@ -1531,6 +1555,38 @@ export const dashboardRouter = router({
             week5: 0,
             week6: 0,
           };
+          const weekColorStats = weekColorStatsByCell.get(key) ?? {
+            week1: new Map<string, { count: number; latestRank: number }>(),
+            week2: new Map<string, { count: number; latestRank: number }>(),
+            week3: new Map<string, { count: number; latestRank: number }>(),
+            week4: new Map<string, { count: number; latestRank: number }>(),
+            week5: new Map<string, { count: number; latestRank: number }>(),
+            week6: new Map<string, { count: number; latestRank: number }>(),
+          };
+          const weekColors: Record<AmaliyWeekKey, string | null> = {
+            week1: null,
+            week2: null,
+            week3: null,
+            week4: null,
+            week5: null,
+            week6: null,
+          };
+          for (const weekKey of AMALIY_WEEK_KEYS) {
+            let bestColor: string | null = null;
+            let bestCount = -1;
+            let bestRank = Number.POSITIVE_INFINITY;
+            for (const [colorHex, info] of weekColorStats[weekKey]) {
+              if (
+                info.count > bestCount ||
+                (info.count === bestCount && info.latestRank < bestRank)
+              ) {
+                bestColor = colorHex;
+                bestCount = info.count;
+                bestRank = info.latestRank;
+              }
+            }
+            weekColors[weekKey] = bestColor;
+          }
           const dayPointMap = dayPointsByCell.get(key) ?? new Map<string, number>();
           const dayPoints = activeWeekDays.map((day) => ({
             date: day.date,
@@ -1544,6 +1600,7 @@ export const dashboardRouter = router({
             colorHex,
             hasLogs,
             weekPoints,
+            weekColors,
             dayPoints,
           };
           totalPoints += points;
