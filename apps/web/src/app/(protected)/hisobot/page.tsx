@@ -25,6 +25,7 @@ const DATE_PRESET_LABELS: Record<DatePreset, string> = {
   week6: '6-hafta',
   all: 'Hammasi',
 };
+const WEEK_PRESETS: DatePreset[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
 
 function textColorForBackground(hexColor?: string | null): string {
   if (!hexColor) return '#111827';
@@ -43,6 +44,12 @@ function textColorForBackground(hexColor?: string | null): string {
 
   const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return luminance > 0.56 ? '#111827' : '#F9FAFB';
+}
+
+function formatPoint(value: number | null | undefined): string {
+  const safe = value ?? 0;
+  if (Number.isInteger(safe)) return String(safe);
+  return safe.toFixed(2).replace(/\.?0+$/, '');
 }
 
 export default function HisobotPage() {
@@ -240,26 +247,26 @@ export default function HisobotPage() {
             <table className="w-full text-sm border-collapse min-w-[980px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="sticky left-0 z-20 bg-gray-50 text-left px-4 py-3 font-semibold text-gray-700 border-r border-gray-200 min-w-[220px]">
+                  <th className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]">
                     O&apos;quvchi
                   </th>
-                  <th className="text-left px-3 py-3 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px]">
+                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]">
                     Tarif
                   </th>
-                  <th className="text-left px-3 py-3 font-semibold text-gray-700 border-r border-gray-200 min-w-[180px]">
+                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]">
                     Kurator
                   </th>
                   {report.practices.map((practice) => (
                     <th
                       key={practice.id}
-                      className="text-center px-2 py-3 font-semibold text-gray-700 border-r border-gray-200 min-w-[86px]"
+                      className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[96px]"
                     >
                       <div className="leading-tight">
                         <p className="text-xs">{practice.name}</p>
                       </div>
                     </th>
                   ))}
-                  <th className="sticky right-0 z-20 bg-gray-50 text-center px-3 py-3 font-semibold text-gray-700 min-w-[95px]">
+                  <th className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[86px]">
                     Jami ball
                   </th>
                 </tr>
@@ -277,14 +284,14 @@ export default function HisobotPage() {
                 ) : (
                   report.students.map((student) => (
                     <tr key={student.id} className="border-b border-gray-100">
-                      <td className="sticky left-0 z-10 bg-white px-4 py-3 border-r border-gray-100 align-top">
-                        <p className="font-medium text-gray-900">{student.name}</p>
-                        <p className="text-xs text-gray-500 mt-0.5">{student.phone ?? '-'}</p>
+                      <td className="sticky left-0 z-10 bg-white px-3 py-2 border-r border-gray-100 align-top">
+                        <p className="font-medium text-gray-900 leading-5">{student.name}</p>
+                        <p className="text-[11px] text-gray-500 leading-4">{student.phone ?? '-'}</p>
                       </td>
-                      <td className="px-3 py-3 text-gray-700 border-r border-gray-100 align-top">
+                      <td className="px-2 py-2 text-gray-700 border-r border-gray-100 align-top text-xs leading-4">
                         {student.tariffName ?? '-'}
                       </td>
-                      <td className="px-3 py-3 text-gray-700 border-r border-gray-100 align-top">
+                      <td className="px-2 py-2 text-gray-700 border-r border-gray-100 align-top text-xs leading-4">
                         {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
                       </td>
                       {report.practices.map((practice) => {
@@ -292,18 +299,32 @@ export default function HisobotPage() {
                         const isColored = cell?.hasLogs && Boolean(cell?.colorHex);
                         const backgroundColor = isColored ? cell.colorHex! : cell?.hasLogs ? '#F3F4F6' : '#FFFFFF';
                         const color = isColored ? textColorForBackground(cell.colorHex) : '#374151';
+                        const showWeeklyBreakdown = datePreset === 'all';
+                        const showDailyBreakdown = WEEK_PRESETS.includes(datePreset);
                         return (
                           <td
                             key={`${student.id}-${practice.id}`}
-                            className="px-2 py-2 text-center border-r border-gray-100 font-semibold"
+                            className="px-1.5 py-1.5 text-center border-r border-gray-100"
                             style={{ backgroundColor, color }}
                           >
-                            {cell?.points ?? 0}
+                            <div className="font-semibold leading-4">{formatPoint(cell?.points ?? 0)}</div>
+                            {showWeeklyBreakdown && cell?.weekPoints && (
+                              <div className="mt-0.5 text-[10px] leading-3 whitespace-pre-wrap opacity-90">
+                                {`W1:${formatPoint(cell.weekPoints.week1)} W2:${formatPoint(cell.weekPoints.week2)} W3:${formatPoint(cell.weekPoints.week3)}`}
+                                <br />
+                                {`W4:${formatPoint(cell.weekPoints.week4)} W5:${formatPoint(cell.weekPoints.week5)} W6:${formatPoint(cell.weekPoints.week6)}`}
+                              </div>
+                            )}
+                            {showDailyBreakdown && cell?.dayPoints?.length > 0 && (
+                              <div className="mt-0.5 text-[10px] leading-3 whitespace-pre-wrap opacity-90">
+                                {cell.dayPoints.map((day) => `${day.label}:${formatPoint(day.points)}`).join(' ')}
+                              </div>
+                            )}
                           </td>
                         );
                       })}
-                      <td className="sticky right-0 z-10 bg-white px-3 py-3 text-center font-bold text-gray-900 border-l border-gray-200">
-                        {student.totalPoints}
+                      <td className="sticky right-0 z-10 bg-white px-2 py-2 text-center font-bold text-gray-900 border-l border-gray-200">
+                        {formatPoint(student.totalPoints)}
                       </td>
                     </tr>
                   ))
