@@ -635,7 +635,7 @@ model StudentExerciseLog {
   exerciseDefinitionId String
   colorOptionId        String?
   colorHex             String?
-  points               Int?
+  points               Float?
   completedAt          DateTime // the date the exercise was done
   loggedByUserId       String
   note                 String?
@@ -682,7 +682,7 @@ model ExerciseDefinitionColorPoint {
   tenantId             String
   exerciseDefinitionId String
   colorOptionId        String
-  points               Int
+  points               Float
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
