@@ -83,7 +83,7 @@ export default function HisobotPage() {
     [courseId, filterOptions?.tariffs],
   );
 
-  const reportEnabled = isAdmin && Boolean(courseId) && Boolean(courseRunId);
+  const reportEnabled = isAdmin && Boolean(courseId);
   const {
     data: report,
     isLoading: reportLoading,
@@ -91,7 +91,7 @@ export default function HisobotPage() {
   } = trpc.dashboard.amaliyReportMatrix.useQuery(
     {
       courseId,
-      courseRunId,
+      courseRunId: courseRunId || undefined,
       tariffId: tariffId || undefined,
       kuratorUserId: kuratorUserId || undefined,
       datePreset,
@@ -162,7 +162,7 @@ export default function HisobotPage() {
               disabled={!courseId}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm disabled:opacity-50"
             >
-              <option value="">{courseId ? 'Oqimni tanlang...' : 'Avval kurs tanlang'}</option>
+              <option value="">{courseId ? 'Barcha oqimlar' : 'Avval kurs tanlang'}</option>
               {filteredRuns.map((run) => (
                 <option key={run.id} value={run.id}>
                   {run.name}
@@ -226,9 +226,9 @@ export default function HisobotPage() {
         )}
       </div>
 
-      {!courseId || !courseRunId ? (
+      {!courseId ? (
         <div className="kd-card p-6 text-center text-sm kd-subtle">
-          Hisobotni ko&apos;rish uchun kurs va oqimni tanlang.
+          Hisobotni ko&apos;rish uchun kursni tanlang.
         </div>
       ) : reportLoading ? (
         <div className="kd-card p-6 text-center text-sm kd-subtle">Hisobot yuklanmoqda...</div>
