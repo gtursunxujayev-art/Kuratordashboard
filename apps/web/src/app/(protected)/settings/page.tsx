@@ -8,30 +8,40 @@ import { useRouter } from 'next/navigation';
 type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'users' | 'assignments';
 
 export default function SettingsPage() {
-  const { isAdmin, isLoading } = useAuth();
+  const { isAdmin, isManager, isLoading } = useAuth();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>('templates');
   const [selectedExerciseCourseId, setSelectedExerciseCourseId] = useState('');
   const [selectedCourseRunIdInTab, setSelectedCourseRunIdInTab] = useState('');
 
-  if (!isLoading && !isAdmin) {
+  useEffect(() => {
+    if (!isLoading && !isAdmin) {
+      setActiveTab('exercises');
+    }
+  }, [isAdmin, isLoading]);
+
+  if (!isLoading && !isManager) {
     router.replace('/dashboard');
     return null;
   }
+
+  const visibleTabs: Array<{ key: Tab; label: string }> = isAdmin
+    ? [
+        { key: 'templates', label: 'Jadval shablonlari' },
+        { key: 'courseRuns', label: 'Kurs oqimlari' },
+        { key: 'exercises', label: 'Mashqlar' },
+        { key: 'regions', label: 'Viloyatlar' },
+        { key: 'users', label: 'Foydalanuvchilar' },
+        { key: 'assignments', label: "Kurator bog'lash" },
+      ]
+    : [{ key: 'exercises', label: 'Mashqlar' }];
 
   return (
     <div className="p-6">
       <h1 className="text-xl font-bold text-gray-900 mb-6">Sozlamalar</h1>
 
       <div className="flex gap-1 mb-6 kd-topbar rounded-lg p-1 w-fit flex-wrap">
-        {([
-          { key: 'templates', label: 'Jadval shablonlari' },
-          { key: 'courseRuns', label: 'Kurs oqimlari' },
-          { key: 'exercises', label: 'Mashqlar' },
-          { key: 'regions', label: 'Viloyatlar' },
-          { key: 'users', label: 'Foydalanuvchilar' },
-          { key: 'assignments', label: "Kurator bog'lash" },
-        ] as { key: Tab; label: string }[]).map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
@@ -1763,4 +1773,3 @@ function AssignmentsTab() {
     </div>
   );
 }
-
