@@ -5,7 +5,7 @@ import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 
-type DateMode = 'today' | 'yesterday' | 'all';
+type DateMode = 'today' | 'yesterday' | 'custom' | 'all';
 type AmaliyMode = 'students' | 'practice';
 type ColorPointOption = {
   id: string;
@@ -40,12 +40,13 @@ function keyForPracticeStudent(practiceId: string, date: string, studentId: stri
 }
 
 export default function AmaliyPage() {
-  const { user: authUser, isAdmin } = useAuth();
+  const { user: authUser, isAdmin, isManager } = useAuth();
   const toast = useToast();
 
   const [mode, setMode] = useState<AmaliyMode>('students');
   const [dateMode, setDateMode] = useState<DateMode>('today');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
+  const [customDate, setCustomDate] = useState<string>(formatDateLocal(new Date()));
 
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [selectedPracticeId, setSelectedPracticeId] = useState<string>('');
@@ -62,7 +63,11 @@ export default function AmaliyPage() {
   const [hiddenPracticeStudentKeys, setHiddenPracticeStudentKeys] = useState<Set<string>>(new Set());
   const [vanishingPracticeStudentKeys, setVanishingPracticeStudentKeys] = useState<Set<string>>(new Set());
 
-  const selectedDate = getModeDate(dateMode === 'all' ? 'today' : dateMode);
+  const selectedDate = useMemo(() => {
+    if (dateMode === 'all') return getModeDate('today');
+    if (dateMode === 'custom') return customDate;
+    return getModeDate(dateMode);
+  }, [customDate, dateMode]);
 
   const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
   const selectedCourseId = useMemo(
@@ -354,7 +359,7 @@ export default function AmaliyPage() {
 
           <div>
             <label className="block text-xs kd-subtle mb-1">Sana</label>
-            <div className="grid grid-cols-3 gap-1 rounded-md p-1" style={{ background: 'var(--kd-surface-soft)' }}>
+            <div className="grid grid-cols-4 gap-1 rounded-md p-1" style={{ background: 'var(--kd-surface-soft)' }}>
               <button
                 onClick={() => setDateMode('today')}
                 className={`px-2 py-2 rounded text-sm ${dateMode === 'today' ? 'bg-white shadow-sm' : 'kd-subtle'}`}
@@ -376,7 +381,29 @@ export default function AmaliyPage() {
               >
                 Hammasi
               </button>
+              <button
+                onClick={() => setDateMode('custom')}
+                disabled={!isManager}
+                className={`px-2 py-2 rounded text-sm ${
+                  dateMode === 'custom' ? 'bg-white shadow-sm' : 'kd-subtle'
+                } disabled:opacity-40`}
+              >
+                Sana
+              </button>
             </div>
+            {isManager && (
+              <div className="mt-2">
+                <input
+                  type="date"
+                  value={customDate}
+                  onChange={(e) => {
+                    setCustomDate(e.target.value);
+                    setDateMode('custom');
+                  }}
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                />
+              </div>
+            )}
           </div>
         </div>
 
