@@ -27,6 +27,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseRunMembersTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_run_members') && message.includes('does not exist');
+  }
+  return message.includes('course_run_members');
+}
+
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
   return day === 0 || day === 6;
@@ -57,6 +66,40 @@ function startOfDayLocal(date: Date): Date {
 function isPremiumTariffName(name: string | null | undefined): boolean {
   const value = (name || '').toLowerCase();
   return value.includes('premium') || value.includes('vip');
+}
+
+async function resolveCourseRunCustomerIds(params: {
+  tenantId: string;
+  courseRunId: string;
+  courseId: string;
+}): Promise<string[]> {
+  const { tenantId, courseRunId, courseId } = params;
+
+  try {
+    const explicitMembers = await prisma.courseRunMember.findMany({
+      where: { tenantId, courseRunId },
+      select: { customerId: true },
+    });
+    if (explicitMembers.length > 0) {
+      return explicitMembers.map((row) => row.customerId);
+    }
+  } catch (error) {
+    if (!isMissingCourseRunMembersTableError(error)) {
+      throw error;
+    }
+  }
+
+  const enrolled = await prisma.income.findMany({
+    where: {
+      tenantId,
+      courseId,
+      ...ACTIVE_ENROLLMENT_FILTER,
+    },
+    select: { customerId: true },
+    distinct: ['customerId'],
+  });
+
+  return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
 }
 
 async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: string) {
@@ -125,34 +168,27 @@ export const amaliyRouter = router({
           courseRunId: input.courseRunId,
         });
       } else if (input.courseRunId) {
-        // Admin/manager filtering by run: union assignment rows with enrolled
-        // customers when the run has a kurator attached.
-        const [assignments, run] = await Promise.all([
-          prisma.kuratorAssignment.findMany({
-            where: { tenantId, isActive: true, courseRunId: input.courseRunId },
-            select: { customerId: true },
-          }),
-          prisma.courseRun.findFirst({
+        const run = await prisma.courseRun
+          .findFirst({
             where: { tenantId, id: input.courseRunId },
-            select: { courseId: true, kuratorUserId: true },
-          }),
-        ]);
-        const ids = new Set<string>(assignments.map((row) => row.customerId));
-        if (run?.kuratorUserId) {
-          const enrolled = await prisma.income.findMany({
-            where: {
-              tenantId,
-              courseId: run.courseId,
-              ...ACTIVE_ENROLLMENT_FILTER,
-            },
-            select: { customerId: true },
-            distinct: ['customerId'],
+            select: { id: true, courseId: true },
+          })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return null;
+            }
+            throw error;
           });
-          for (const row of enrolled) {
-            if (row.customerId) ids.add(row.customerId);
-          }
+
+        if (!run) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
         }
-        customerIds = Array.from(ids);
+
+        customerIds = await resolveCourseRunCustomerIds({
+          tenantId,
+          courseRunId: run.id,
+          courseId: run.courseId,
+        });
       }
 
       try {
@@ -256,47 +292,36 @@ export const amaliyRouter = router({
         return [];
       }
 
-      const assignments = await prisma.kuratorAssignment.findMany({
-        where: {
+      let assignedCustomerIds: string[] = [];
+      if (input.courseRunId) {
+        assignedCustomerIds = await resolveCourseRunCustomerIds({
           tenantId,
-          ...(input.courseRunId
-            ? { courseRunId: input.courseRunId }
-            : { courseRun: { courseId: exercise.courseId } }),
-          isActive: true,
-          ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
-        },
-        select: { customerId: true },
-      });
-
-      // Run-level branch: include enrolled students attached via CourseRun.kuratorUserId.
-      const ownedRuns = await prisma.courseRun.findMany({
-        where: {
-          tenantId,
+          courseRunId: input.courseRunId,
           courseId: exercise.courseId,
-          ...(input.courseRunId ? { id: input.courseRunId } : {}),
-          kuratorUserId: kuratorOnly ? user.userId : { not: null },
-        },
-        select: { id: true },
-      });
-      const runDerivedIds = new Set<string>();
-      if (ownedRuns.length > 0) {
-        const enrolled = await prisma.income.findMany({
+        });
+
+        if (kuratorOnly) {
+          const kuratorScopedIds = await getCustomersScopedToKurator({
+            tenantId,
+            kuratorUserId: user.userId,
+            courseRunId: input.courseRunId,
+          });
+          const scopedSet = new Set(kuratorScopedIds);
+          assignedCustomerIds = assignedCustomerIds.filter((id) => scopedSet.has(id));
+        }
+      } else {
+        const assignments = await prisma.kuratorAssignment.findMany({
           where: {
             tenantId,
-            courseId: exercise.courseId,
-            ...ACTIVE_ENROLLMENT_FILTER,
+            courseRun: { courseId: exercise.courseId },
+            isActive: true,
+            ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
           },
           select: { customerId: true },
-          distinct: ['customerId'],
         });
-        for (const row of enrolled) {
-          if (row.customerId) runDerivedIds.add(row.customerId);
-        }
+        assignedCustomerIds = Array.from(new Set(assignments.map((row) => row.customerId)));
       }
 
-      const assignedCustomerIds = Array.from(
-        new Set([...assignments.map((row) => row.customerId), ...runDerivedIds]),
-      );
       if (assignedCustomerIds.length === 0) {
         return [];
       }
