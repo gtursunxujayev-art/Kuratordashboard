@@ -62,6 +62,26 @@ function formatPoint(value: number | null | undefined): string {
   return safe.toFixed(2).replace(/\.?0+$/, '');
 }
 
+function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Array<{ key: string; label: string }> {
+  if (!dateFrom || !dateToInclusive) return [];
+  const from = new Date(`${dateFrom}T00:00:00`);
+  const to = new Date(`${dateToInclusive}T00:00:00`);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from.getTime() > to.getTime()) return [];
+
+  const columns: Array<{ key: string; label: string }> = [];
+  const cursor = new Date(from);
+  let index = 1;
+  while (cursor.getTime() <= to.getTime()) {
+    const y = cursor.getFullYear();
+    const m = String(cursor.getMonth() + 1).padStart(2, '0');
+    const d = String(cursor.getDate()).padStart(2, '0');
+    columns.push({ key: `${y}-${m}-${d}`, label: `${index}-kun` });
+    cursor.setDate(cursor.getDate() + 1);
+    index += 1;
+  }
+  return columns;
+}
+
 export default function HisobotPage() {
   const router = useRouter();
   const { isAdmin, isLoading } = useAuth();
@@ -136,8 +156,18 @@ export default function HisobotPage() {
     kuratorsError?.message ||
     reportError?.message;
   const isTodayPreset = datePreset === 'today';
+  const isWeekPreset = WEEK_PRESETS.includes(datePreset);
+  const hasSubColumns = !isTodayPreset;
+  const dayColumns = buildDayColumns(report?.meta.dateFrom, report?.meta.dateToInclusive);
+  const subColumns =
+    isTodayPreset
+      ? [] as Array<{ key: string; label: string }>
+      : isWeekPreset
+        ? dayColumns
+        : WEEK_KEYS.map((weekKey) => ({ key: weekKey, label: DATE_PRESET_LABELS[weekKey] }));
+  const perPracticeColumnCount = isTodayPreset ? 1 : Math.max(subColumns.length, 1);
   const tableMinWidth = isTodayPreset ? 'min-w-[860px]' : 'min-w-[980px]';
-  const emptyColSpan = report ? (isTodayPreset ? report.practices.length + 4 : report.practices.length * 6 + 4) : 4;
+  const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 4 : 4;
 
   return (
     <div className="p-4 md:p-6 space-y-4">
@@ -260,13 +290,22 @@ export default function HisobotPage() {
             <table className={`w-full text-sm border-collapse ${tableMinWidth}`}>
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]">
+                  <th
+                    rowSpan={hasSubColumns ? 2 : 1}
+                    className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]"
+                  >
                     O&apos;quvchi
                   </th>
-                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]">
+                  <th
+                    rowSpan={hasSubColumns ? 2 : 1}
+                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]"
+                  >
                     Tarif
                   </th>
-                  <th className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]">
+                  <th
+                    rowSpan={hasSubColumns ? 2 : 1}
+                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]"
+                  >
                     Kurator
                   </th>
                   {isTodayPreset
@@ -283,7 +322,7 @@ export default function HisobotPage() {
                     : report.practices.map((practice) => (
                         <th
                           key={practice.id}
-                          colSpan={6}
+                          colSpan={perPracticeColumnCount}
                           className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200"
                         >
                           <div className="leading-tight">
@@ -291,23 +330,26 @@ export default function HisobotPage() {
                           </div>
                         </th>
                       ))}
-                  <th className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[82px] w-[82px]">
+                  <th
+                    rowSpan={hasSubColumns ? 2 : 1}
+                    className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[82px] w-[82px]"
+                  >
                     Jami ball
                   </th>
                 </tr>
                 {!isTodayPreset && (
                   <tr className="bg-gray-50 border-b border-gray-200">
                     {report.practices.flatMap((practice) =>
-                      WEEK_KEYS.map((weekKey) => {
-                        const isSelected = datePreset === weekKey;
+                      subColumns.map((subColumn) => {
+                        const isSelectedWeek = datePreset === subColumn.key;
                         return (
                           <th
-                            key={`${practice.id}-${weekKey}`}
+                            key={`${practice.id}-${subColumn.key}`}
                             className={`text-center px-1 py-1.5 text-[11px] font-semibold border-r border-gray-200 min-w-[48px] ${
-                              isSelected ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
+                              isSelectedWeek ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
                             }`}
                           >
-                            {WEEK_COLUMN_LABELS[weekKey]}
+                            {subColumn.label}
                           </th>
                         );
                       }),
@@ -356,20 +398,36 @@ export default function HisobotPage() {
                           })
                         : report.practices.flatMap((practice) => {
                             const cell = student.cells[practice.id];
+                            if (isWeekPreset) {
+                              const dayPointsByDate = new Map((cell?.dayPoints ?? []).map((day) => [day.date, day.points]));
+                              return subColumns.map((dayColumn) => {
+                                const points = dayPointsByDate.get(dayColumn.key) ?? 0;
+                                const hasPoints = points > 0;
+                                const backgroundColor = hasPoints && cell?.colorHex ? cell.colorHex : '#FFFFFF';
+                                const color = hasPoints && cell?.colorHex ? textColorForBackground(cell.colorHex) : '#374151';
+                                return (
+                                  <td
+                                    key={`${student.id}-${practice.id}-${dayColumn.key}`}
+                                    className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
+                                    style={{ backgroundColor, color }}
+                                  >
+                                    {formatPoint(points)}
+                                  </td>
+                                );
+                              });
+                            }
+
                             return WEEK_KEYS.map((weekKey) => {
                               const points = cell?.weekPoints?.[weekKey] ?? 0;
                               const weekColor = cell?.weekColors?.[weekKey] ?? null;
                               const isColored = Boolean(weekColor);
-                              const isSelected = datePreset === weekKey;
                               const backgroundColor = isColored ? weekColor! : '#FFFFFF';
                               const color = isColored ? textColorForBackground(weekColor) : '#374151';
 
                               return (
                                 <td
                                   key={`${student.id}-${practice.id}-${weekKey}`}
-                                  className={`px-1 py-1.5 text-center border-r border-gray-100 font-semibold ${
-                                    isSelected ? 'ring-1 ring-inset ring-indigo-200' : ''
-                                  }`}
+                                  className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
                                   style={{ backgroundColor, color }}
                                 >
                                   {formatPoint(points)}
