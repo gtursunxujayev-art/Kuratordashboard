@@ -36,7 +36,9 @@ export function Sidebar({
       style={{ backgroundColor: 'var(--kd-sidebar-bg)', borderRight: '1px solid rgba(255, 255, 255, 0.45)' }}
     >
       <div className="p-4" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.35)' }}>
-        <h1 className="text-lg font-bold kd-title">Kurator Panel</h1>
+        <h1 className="text-lg font-bold" style={{ color: '#ffffff' }}>
+          Kurator Panel
+        </h1>
         {user && (
           <p className="text-xs mt-1 truncate" style={{ color: 'rgba(255, 255, 255, 0.92)' }}>
             {user.name ?? user.username ?? user.email}
