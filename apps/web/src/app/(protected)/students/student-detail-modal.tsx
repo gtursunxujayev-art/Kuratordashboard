@@ -41,7 +41,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
     if (!student) return;
     setForm({
       name: student.name,
-      customerNumber: student.phone ?? '',
+      customerNumber: student.customerNumber ?? '',
       telegramUsername: student.telegramUsername ?? '',
       gender: (student.gender as 'male' | 'female') ?? '',
       region: student.region ?? '',
@@ -217,7 +217,7 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
             ) : (
               <div className="space-y-3">
                 <InfoRow label="Ism" value={student.name} />
-                <InfoRow label="Raqam" value={student.phone ?? '-'} />
+                <InfoRow label="Raqam" value={student.customerNumber ?? '-'} />
                 <InfoRow
                   label="Telegram"
                   value={student.telegramUsername ? `@${student.telegramUsername}` : '-'}
