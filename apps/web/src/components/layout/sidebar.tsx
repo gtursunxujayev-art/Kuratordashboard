@@ -45,7 +45,7 @@ export function Sidebar({
 
   return (
     <aside
-      className="w-64 min-h-screen flex flex-col"
+      className="w-64 h-full max-h-screen flex flex-col"
       style={{ backgroundColor: 'var(--kd-sidebar-bg)', borderRight: '1px solid rgba(255, 255, 255, 0.45)' }}
     >
       <div className="p-4" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.35)' }}>
@@ -83,7 +83,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="flex-1 py-4 px-2" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.22)' }}>
+      <nav className="flex-1 overflow-y-auto py-4 px-2" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.22)' }}>
         <div
           className="mb-1 rounded-md"
           style={
