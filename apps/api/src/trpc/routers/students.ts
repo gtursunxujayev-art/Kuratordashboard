@@ -446,7 +446,6 @@ export const studentsRouter = router({
         id: customer.id,
         customerNumber: customer.customerNumber,
         name: customer.name,
-        phone: customer.customerNumber,
         telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
@@ -584,7 +583,6 @@ export const studentsRouter = router({
 
       return {
         ...customer,
-        phone: customer.customerNumber,
         telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
@@ -602,7 +600,6 @@ export const studentsRouter = router({
         customerId: z.string(),
         name: z.string().min(1).max(160).optional(),
         customerNumber: z.string().optional(),
-        phone: z.string().optional(),
         telegramUsername: z.string().optional(),
         gender: z.enum(['male', 'female']).optional(),
         region: z.string().optional(),
@@ -636,8 +633,6 @@ export const studentsRouter = router({
         if (data.name !== undefined) syncFields.name = data.name;
         if (data.customerNumber !== undefined) {
           syncFields.customerNumber = data.customerNumber;
-        } else if (data.phone !== undefined) {
-          syncFields.customerNumber = data.phone;
         }
         if (data.telegramUsername !== undefined && support.telegramUsername) {
           syncFields.telegramUsername = data.telegramUsername;
@@ -665,6 +660,9 @@ export const studentsRouter = router({
         return prisma.customer.update({
           where: { id: customerId },
           data: { ...syncFields, ...kdFields, updatedAt: new Date() },
+          // Do not return full row here: some deployments can miss optional columns,
+          // and default RETURNING * would crash on schema-drifted databases.
+          select: { id: true },
         });
       };
 
