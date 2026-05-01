@@ -714,7 +714,7 @@ export const settingsRouter = router({
     }
   }),
 
-  createCourseRun: adminProcedure
+  createCourseRun: managerProcedure
     .input(
       z.object({
         courseId: z.string(),
@@ -841,7 +841,7 @@ export const settingsRouter = router({
       }
     }),
 
-  updateCourseRun: adminProcedure
+  updateCourseRun: managerProcedure
     .input(
       z.object({
         courseRunId: z.string(),
@@ -945,7 +945,7 @@ export const settingsRouter = router({
       }
     }),
 
-  deleteCourseRun: adminProcedure
+  deleteCourseRun: managerProcedure
     .input(z.object({ courseRunId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const existing = await prisma.courseRun
@@ -1400,7 +1400,7 @@ export const settingsRouter = router({
       return { success: true };
     }),
 
-  attachKuratorToRun: adminProcedure
+  attachKuratorToRun: managerProcedure
     .input(
       z.object({
         courseRunId: z.string(),
@@ -1462,7 +1462,7 @@ export const settingsRouter = router({
    * Returns the explicit roster (customer IDs) for a run. Empty array means the run uses
    * the default-group fallback. Used by the CourseRunsTab edit form to seed checkbox state.
    */
-  listCourseRunMembers: adminProcedure
+  listCourseRunMembers: managerProcedure
     .input(z.object({ courseRunId: z.string() }))
     .query(async ({ ctx, input }) => {
       const courseRun = await prisma.courseRun.findFirst({
@@ -1484,7 +1484,7 @@ export const settingsRouter = router({
    * `new_sale` income on the course (optionally filtered by tariff).
    * Used by the CourseRunsTab create/edit form's checkbox picker.
    */
-  listEnrollableStudents: adminProcedure
+  listEnrollableStudents: managerProcedure
     .input(
       z.object({
         courseId: z.string(),
@@ -1564,7 +1564,7 @@ export const settingsRouter = router({
         .sort((a, b) => a.name.localeCompare(b.name, 'uz'));
     }),
 
-  detachKuratorFromRun: adminProcedure
+  detachKuratorFromRun: managerProcedure
     .input(z.object({ courseRunId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const courseRun = await prisma.courseRun
@@ -1665,7 +1665,7 @@ export const settingsRouter = router({
       });
     }),
 
-  assignStudentsBulk: adminProcedure
+  assignStudentsBulk: managerProcedure
     .input(
       z.object({
         kuratorUserId: z.string(),
