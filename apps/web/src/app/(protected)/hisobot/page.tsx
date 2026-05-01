@@ -84,7 +84,7 @@ function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Ar
 
 export default function HisobotPage() {
   const router = useRouter();
-  const { isAdmin, isLoading } = useAuth();
+  const { isManager, isLoading } = useAuth();
 
   const [courseId, setCourseId] = useState('');
   const [courseRunId, setCourseRunId] = useState('');
@@ -93,22 +93,22 @@ export default function HisobotPage() {
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
 
   useEffect(() => {
-    if (!isLoading && !isAdmin) {
+    if (!isLoading && !isManager) {
       router.replace('/dashboard');
     }
-  }, [isAdmin, isLoading, router]);
+  }, [isManager, isLoading, router]);
 
   const { data: courses, error: coursesError } = trpc.dashboard.courses.useQuery(undefined, {
-    enabled: isAdmin,
+    enabled: isManager,
   });
   const { data: courseRuns, error: runsError } = trpc.dashboard.courseRuns.useQuery(undefined, {
-    enabled: isAdmin,
+    enabled: isManager,
   });
   const { data: filterOptions, error: filterOptionsError } = trpc.students.filterOptions.useQuery(undefined, {
-    enabled: isAdmin,
+    enabled: isManager,
   });
   const { data: kurators, error: kuratorsError } = trpc.kurators.list.useQuery(undefined, {
-    enabled: isAdmin,
+    enabled: isManager,
   });
 
   const filteredRuns = useMemo(
@@ -120,7 +120,7 @@ export default function HisobotPage() {
     [courseId, filterOptions?.tariffs],
   );
 
-  const reportEnabled = isAdmin && Boolean(courseId);
+  const reportEnabled = isManager && Boolean(courseId);
   const {
     data: report,
     isLoading: reportLoading,
@@ -147,7 +147,7 @@ export default function HisobotPage() {
     );
   }
 
-  if (!isAdmin) return null;
+  if (!isManager) return null;
 
   const topError =
     coursesError?.message ||
