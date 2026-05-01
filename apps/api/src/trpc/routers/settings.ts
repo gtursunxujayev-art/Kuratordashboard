@@ -237,6 +237,24 @@ function isUniqueViolation(error: unknown): boolean {
   return String((error as { code?: string })?.code || '') === 'P2002';
 }
 
+function isIncorrectBinaryBindParameterError(error: unknown): boolean {
+  const code = String((error as { code?: string })?.code || '');
+  const message = String((error as { message?: string })?.message || '').toLowerCase();
+  return (
+    message.includes('incorrect binary data format in bind parameter')
+    || message.includes('code: "22p03"')
+    || (code === 'P2010' && message.includes('22p03'))
+  );
+}
+
+function throwFractionalPointsMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Amaliy ball ustuni eski turda qolgan. `allow_fractional_amaliy_points` migratsiyasini deploy qiling.",
+  });
+}
+
 /**
  * Resolve "who belongs to this run" using the roster-then-fallback rule:
  *   - If the run has any explicit `course_run_members` rows, those are the members.
@@ -1109,7 +1127,7 @@ export const settingsRouter = router({
         colorPoints: z.array(
           z.object({
             colorOptionId: z.string(),
-            points: z.number().min(0).max(10000),
+            points: z.number().finite().min(0).max(10000),
           }),
         ).min(1),
       }),
@@ -1155,29 +1173,37 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Har bir faol rang uchun ball kiriting' });
       }
 
-      const created = await prisma.$transaction(async (tx) => {
-        const definition = await tx.exerciseDefinition.create({
-          data: {
-            tenantId: ctx.tenantId,
-            courseId: course.id,
-            name: input.name,
-            type: input.type,
-            targetCount: input.targetCount,
-            orderIndex: input.orderIndex,
-          },
-        });
+      let created;
+      try {
+        created = await prisma.$transaction(async (tx) => {
+          const definition = await tx.exerciseDefinition.create({
+            data: {
+              tenantId: ctx.tenantId,
+              courseId: course.id,
+              name: input.name,
+              type: input.type,
+              targetCount: input.targetCount,
+              orderIndex: input.orderIndex,
+            },
+          });
 
-        await tx.exerciseDefinitionColorPoint.createMany({
-          data: input.colorPoints.map((row) => ({
-            tenantId: ctx.tenantId,
-            exerciseDefinitionId: definition.id,
-            colorOptionId: row.colorOptionId,
-            points: row.points,
-          })),
-        });
+          await tx.exerciseDefinitionColorPoint.createMany({
+            data: input.colorPoints.map((row) => ({
+              tenantId: ctx.tenantId,
+              exerciseDefinitionId: definition.id,
+              colorOptionId: row.colorOptionId,
+              points: row.points,
+            })),
+          });
 
-        return definition;
-      });
+          return definition;
+        });
+      } catch (error) {
+        if (isIncorrectBinaryBindParameterError(error)) {
+          throwFractionalPointsMigrationError();
+        }
+        throw error;
+      }
 
       return created;
     }),
@@ -1194,7 +1220,7 @@ export const settingsRouter = router({
         colorPoints: z.array(
           z.object({
             colorOptionId: z.string(),
-            points: z.number().min(0).max(10000),
+            points: z.number().finite().min(0).max(10000),
           }),
         ).optional(),
       }),
@@ -1202,7 +1228,15 @@ export const settingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const existing = await prisma.exerciseDefinition.findFirst({
         where: { id: input.id, tenantId: ctx.tenantId },
-        select: { id: true },
+        select: {
+          id: true,
+          colorPoints: {
+            select: {
+              colorOptionId: true,
+              points: true,
+            },
+          },
+        },
       });
       if (!existing) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
@@ -1211,6 +1245,19 @@ export const settingsRouter = router({
       const { id, colorPoints, ...data } = input;
 
       if (!colorPoints) {
+        return prisma.exerciseDefinition.update({ where: { id }, data });
+      }
+
+      const existingPointMap = new Map(existing.colorPoints.map((row) => [row.colorOptionId, row.points]));
+      const colorPointsUnchanged =
+        existing.colorPoints.length === colorPoints.length
+        && colorPoints.every((row) => {
+          const current = existingPointMap.get(row.colorOptionId);
+          return current !== undefined && Math.abs(current - row.points) < 1e-9;
+        });
+
+      // Avoid unnecessary rewrite of mapping rows when only metadata (e.g. orderIndex) changes.
+      if (colorPointsUnchanged) {
         return prisma.exerciseDefinition.update({ where: { id }, data });
       }
 
@@ -1239,20 +1286,27 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Har bir faol rang uchun ball kiriting' });
       }
 
-      await prisma.$transaction(async (tx) => {
-        await tx.exerciseDefinition.update({ where: { id }, data });
-        await tx.exerciseDefinitionColorPoint.deleteMany({
-          where: { tenantId: ctx.tenantId, exerciseDefinitionId: id },
+      try {
+        await prisma.$transaction(async (tx) => {
+          await tx.exerciseDefinition.update({ where: { id }, data });
+          await tx.exerciseDefinitionColorPoint.deleteMany({
+            where: { tenantId: ctx.tenantId, exerciseDefinitionId: id },
+          });
+          await tx.exerciseDefinitionColorPoint.createMany({
+            data: colorPoints.map((row) => ({
+              tenantId: ctx.tenantId,
+              exerciseDefinitionId: id,
+              colorOptionId: row.colorOptionId,
+              points: row.points,
+            })),
+          });
         });
-        await tx.exerciseDefinitionColorPoint.createMany({
-          data: colorPoints.map((row) => ({
-            tenantId: ctx.tenantId,
-            exerciseDefinitionId: id,
-            colorOptionId: row.colorOptionId,
-            points: row.points,
-          })),
-        });
-      });
+      } catch (error) {
+        if (isIncorrectBinaryBindParameterError(error)) {
+          throwFractionalPointsMigrationError();
+        }
+        throw error;
+      }
 
       return prisma.exerciseDefinition.findUniqueOrThrow({ where: { id } });
     }),
