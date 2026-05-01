@@ -254,7 +254,7 @@ export default function StudentsPage() {
                     onClick={() => setSelectedStudentId(student.id)}
                   >
                     <td className="px-4 py-3 font-medium text-gray-900">{student.name}</td>
-                    <td className="px-4 py-3 text-gray-600">{student.phone ?? '-'}</td>
+                    <td className="px-4 py-3 text-gray-600">{student.customerNumber ?? '-'}</td>
                     <td className="px-4 py-3 text-gray-600">
                       {student.telegramUsername ? `@${student.telegramUsername}` : '-'}
                     </td>
