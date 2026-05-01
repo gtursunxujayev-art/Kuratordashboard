@@ -40,7 +40,7 @@ function keyForPracticeStudent(practiceId: string, date: string, studentId: stri
 }
 
 export default function AmaliyPage() {
-  const { user: authUser, isAdmin, isManager } = useAuth();
+  const { user: authUser, isManager } = useAuth();
   const toast = useToast();
 
   const [mode, setMode] = useState<AmaliyMode>('students');
@@ -374,7 +374,7 @@ export default function AmaliyPage() {
               </button>
               <button
                 onClick={() => setDateMode('all')}
-                disabled={!isAdmin}
+                disabled={!isManager}
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'all' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
