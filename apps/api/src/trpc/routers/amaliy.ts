@@ -440,10 +440,12 @@ export const amaliyRouter = router({
         user.roles.includes('Kurator') &&
         !user.roles.includes('Admin') &&
         !user.roles.includes('Manager');
-      const isAdmin = user.roles.includes('Admin');
+      const isManagerOrAdmin =
+        user.roles.includes('Admin') ||
+        user.roles.includes('Manager');
 
-      if (input.mode === 'all' && !isAdmin) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat adminlar uchun' });
+      if (input.mode === 'all' && !isManagerOrAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
       }
 
       if (isKurator) {
