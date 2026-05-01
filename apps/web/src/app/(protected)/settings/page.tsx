@@ -15,10 +15,10 @@ export default function SettingsPage() {
   const [selectedCourseRunIdInTab, setSelectedCourseRunIdInTab] = useState('');
 
   useEffect(() => {
-    if (!isLoading && !isAdmin) {
-      setActiveTab('exercises');
+    if (!isLoading && !isAdmin && isManager) {
+      setActiveTab('courseRuns');
     }
-  }, [isAdmin, isLoading]);
+  }, [isAdmin, isManager, isLoading]);
 
   if (!isLoading && !isManager) {
     router.replace('/dashboard');
@@ -34,7 +34,11 @@ export default function SettingsPage() {
         { key: 'users', label: 'Foydalanuvchilar' },
         { key: 'assignments', label: "Kurator bog'lash" },
       ]
-    : [{ key: 'exercises', label: 'Mashqlar' }];
+    : [
+        { key: 'courseRuns', label: 'Kurs oqimlari' },
+        { key: 'exercises', label: 'Mashqlar' },
+        { key: 'assignments', label: "Kurator bog'lash" },
+      ];
 
   return (
     <div className="p-6">
