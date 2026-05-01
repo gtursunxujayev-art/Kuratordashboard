@@ -577,7 +577,7 @@ export default function AmaliyPage() {
                         <div className="flex items-center justify-between gap-3 mb-3">
                           <div>
                             <p className="text-sm font-semibold kd-title">{student.name}</p>
-                            <p className="text-xs kd-subtle">{student.phone}</p>
+                            <p className="text-xs kd-subtle">{student.customerNumber}</p>
                           </div>
                         </div>
 
