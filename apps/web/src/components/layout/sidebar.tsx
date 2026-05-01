@@ -18,11 +18,8 @@ const navItems = [
 
 const managerNavItems = [
   { href: '/hisobot', label: 'Hisobot', icon: 'HS' },
-];
-
-const adminNavItems = [
   { href: '/settings', label: 'Sozlamalar', icon: 'SZ' },
-] as const;
+];
 
 export function Sidebar({
   theme,
@@ -34,7 +31,7 @@ export function Sidebar({
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
-  const { user, logout, isAdmin, isManager } = useAuth();
+  const { user, logout, isManager } = useAuth();
   const isDashboardChildActive = useMemo(
     () => dashboardChildren.some((child) => pathname === child.href || pathname.startsWith(child.href + '/')),
     [pathname],
@@ -228,34 +225,6 @@ export function Sidebar({
             );
           })}
 
-        {isAdmin &&
-          adminNavItems.map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(item.href + '/');
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                onClick={onNavigate}
-                className="flex items-center gap-3 px-4 py-3 text-sm font-semibold rounded-md transition-colors mb-1"
-                style={
-                  isActive
-                    ? {
-                        background: 'rgba(255, 255, 255, 0.20)',
-                        color: '#ffffff',
-                        border: '2px solid rgba(255, 255, 255, 0.78)',
-                      }
-                    : {
-                        color: '#ffffff',
-                        background: 'rgba(255, 255, 255, 0.08)',
-                        border: '1px solid rgba(255, 255, 255, 0.38)',
-                      }
-                }
-              >
-                <span className="text-[10px] font-semibold opacity-95">{item.icon}</span>
-                {item.label}
-              </Link>
-            );
-          })}
       </nav>
 
       <div className="p-4" style={{ borderTop: '1px solid rgba(255, 255, 255, 0.35)' }}>
