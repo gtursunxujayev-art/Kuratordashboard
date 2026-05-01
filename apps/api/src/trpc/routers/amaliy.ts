@@ -211,7 +211,6 @@ export const amaliyRouter = router({
         }).then((rows) =>
           rows.map((row) => ({
             ...row,
-            phone: row.customerNumber,
             telegramUsername: row.telegramUsername ?? null,
           })),
         );
@@ -234,7 +233,6 @@ export const amaliyRouter = router({
         }).then((rows) =>
           rows.map((row) => ({
             ...row,
-            phone: row.customerNumber,
             telegramUsername: null,
           })),
         );
@@ -387,7 +385,7 @@ export const amaliyRouter = router({
         return rows.map((row) => ({
           id: row.id,
           name: row.name,
-          phone: row.customerNumber,
+          customerNumber: row.customerNumber,
           telegramUsername: row.telegramUsername ?? null,
         }));
       } catch (error) {
@@ -419,7 +417,7 @@ export const amaliyRouter = router({
         return rows.map((row) => ({
           id: row.id,
           name: row.name,
-          phone: row.customerNumber,
+          customerNumber: row.customerNumber,
           telegramUsername: null,
         }));
       }
