@@ -606,7 +606,7 @@ function CourseRunsTab({
                                 setSelectedCustomerIds(next);
                               }}
                             />
-                            <span className="text-xs text-gray-500">{c.phone ?? '-'}</span>
+                            <span className="text-xs text-gray-500">{c.customerNumber ?? '-'}</span>
                             <span className="text-gray-900 truncate">{c.name}</span>
                             <span className="text-xs text-gray-500">{genderLabel}</span>
                             <span className="text-xs text-gray-500">{c.tariffName ?? '-'}</span>
