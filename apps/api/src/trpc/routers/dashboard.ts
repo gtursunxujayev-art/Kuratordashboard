@@ -1609,7 +1609,7 @@ export const dashboardRouter = router({
         return {
           id: student.id,
           name: student.name,
-          phone: student.customerNumber,
+          customerNumber: student.customerNumber,
           tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
           kuratorNames: Array.from(kuratorsByStudent.get(student.id) ?? []).sort((a, b) => a.localeCompare(b)),
           cells,
