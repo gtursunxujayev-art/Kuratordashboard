@@ -1,33 +1,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
 import { Sidebar } from '@/components/layout/sidebar';
 import { ToastProvider } from '@/components/ui/toast';
 
-const SECTION_TITLES: Record<string, string> = {
-  '/dashboard': 'Bosh sahifa',
-  '/ofline': 'Ofline',
-  '/online': 'Online',
-  '/intensiv': 'Intensiv',
-  '/students': "O'quvchilar",
-  '/amaliy': 'Amaliy',
-  '/hisobot': 'Hisobot',
-  '/settings': 'Sozlamalar',
-};
-
-function getSectionTitle(pathname: string): string {
-  for (const prefix of Object.keys(SECTION_TITLES)) {
-    if (pathname === prefix || pathname.startsWith(prefix + '/')) return SECTION_TITLES[prefix];
-  }
-  return 'Kurator Panel';
-}
-
 export default function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const pathname = usePathname();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
@@ -52,6 +33,19 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
     };
   }, [isDrawerOpen]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsDrawerOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   const toggleTheme = () => {
     setTheme((prev) => {
       const next = prev === 'light' ? 'dark' : 'light';
@@ -73,49 +67,30 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
 
   return (
     <ToastProvider>
-      <div className="min-h-screen md:flex">
-        {/* Mobile top bar */}
-        <header
-          className="md:hidden sticky top-0 z-30 flex items-center justify-between px-3 h-14"
-          style={{ backgroundColor: 'var(--kd-sidebar-bg)', color: '#fff' }}
+      <div className="min-h-screen relative kd-main">
+        <button
+          type="button"
+          onClick={() => setIsDrawerOpen((prev) => !prev)}
+          aria-label={isDrawerOpen ? 'Menyuni yopish' : 'Menyuni ochish'}
+          aria-expanded={isDrawerOpen}
+          className="fixed top-3 left-3 z-[70] w-10 h-10 flex items-center justify-center rounded-md text-white"
+          style={{ background: 'var(--kd-sidebar-bg)', border: '1px solid rgba(255,255,255,0.45)' }}
         >
-          <button
-            onClick={() => setIsDrawerOpen(true)}
-            aria-label="Menu"
-            className="w-10 h-10 flex items-center justify-center rounded-md"
-            style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.35)' }}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-              <line x1="4" y1="7" x2="20" y2="7" />
-              <line x1="4" y1="12" x2="20" y2="12" />
-              <line x1="4" y1="17" x2="20" y2="17" />
-            </svg>
-          </button>
-          <h1 className="text-sm font-semibold truncate mx-2">{getSectionTitle(pathname)}</h1>
-          <button
-            onClick={toggleTheme}
-            aria-label="Theme"
-            className="w-10 h-10 flex items-center justify-center rounded-md text-xs"
-            style={{ background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.35)' }}
-          >
-            {theme === 'light' ? '🌙' : '☀'}
-          </button>
-        </header>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="4" y1="7" x2="20" y2="7" />
+            <line x1="4" y1="12" x2="20" y2="12" />
+            <line x1="4" y1="17" x2="20" y2="17" />
+          </svg>
+        </button>
 
-        {/* Desktop: static sidebar */}
-        <div className="hidden md:block">
-          <Sidebar theme={theme} onToggleTheme={toggleTheme} />
-        </div>
-
-        {/* Mobile: drawer */}
         {isDrawerOpen && (
           <>
             <div
-              className="md:hidden fixed inset-0 z-40 bg-black/50"
+              className="fixed inset-0 z-40 bg-black/40"
               onClick={() => setIsDrawerOpen(false)}
               aria-hidden
             />
-            <div className="md:hidden fixed inset-y-0 left-0 z-50 w-64 shadow-xl">
+            <div className="fixed inset-y-0 left-0 z-50 w-64 shadow-xl">
               <Sidebar
                 theme={theme}
                 onToggleTheme={toggleTheme}
@@ -125,7 +100,13 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
           </>
         )}
 
-        <main className="flex-1 overflow-auto kd-main">{children}</main>
+        <div
+          className={`min-h-screen transition-[padding-left] duration-200 ease-out ${
+            isDrawerOpen ? 'md:pl-64' : 'md:pl-0'
+          }`}
+        >
+          <main className="overflow-auto kd-main pt-16">{children}</main>
+        </div>
       </div>
     </ToastProvider>
   );
