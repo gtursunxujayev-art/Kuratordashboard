@@ -1,4 +1,4 @@
-import { router, protectedProcedure, adminProcedure } from '../trpc';
+import { router, protectedProcedure, adminProcedure, managerProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
@@ -1231,7 +1231,7 @@ export const dashboardRouter = router({
       };
     }),
 
-  amaliyReportMatrix: adminProcedure
+  amaliyReportMatrix: managerProcedure
     .input(
       z.object({
         courseId: z.string(),
