@@ -116,15 +116,6 @@ function isMissingCustomerRegionColumnError(error: unknown): boolean {
   return message.includes('customers.region');
 }
 
-function isMissingCustomerPhoneColumnError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return message.includes('customers.phone') && message.includes('does not exist');
-  }
-  return message.includes('customers.phone');
-}
-
 function isMissingCustomerGenderColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1500,7 +1491,7 @@ export const settingsRouter = router({
         ...(input.tariffId ? { tariffId: input.tariffId } : {}),
       };
 
-      const runQuery = async (includePhone: boolean, includeGender: boolean) =>
+      const runQuery = async (includeGender: boolean) =>
         prisma.income.findMany({
           where,
           select: {
@@ -1510,7 +1501,6 @@ export const settingsRouter = router({
                 id: true,
                 name: true,
                 customerNumber: true,
-                ...(includePhone ? { phone: true } : {}),
                 ...(includeGender ? { gender: true } : {}),
               },
             },
@@ -1527,26 +1517,22 @@ export const settingsRouter = router({
           id: string;
           name: string;
           customerNumber: string;
-          phone?: string | null;
           gender?: string | null;
         } | null;
         tariff: { id: string; name: string } | null;
       }> = [];
 
-      let includePhone = true;
       let includeGender = true;
 
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
-          incomes = await runQuery(includePhone, includeGender);
+          incomes = await runQuery(includeGender);
           break;
         } catch (error) {
-          const missingPhone = includePhone && isMissingCustomerPhoneColumnError(error);
           const missingGender = includeGender && isMissingCustomerGenderColumnError(error);
-          if (!missingPhone && !missingGender) {
+          if (!missingGender) {
             throw error;
           }
-          if (missingPhone) includePhone = false;
           if (missingGender) includeGender = false;
         }
       }
@@ -1556,7 +1542,7 @@ export const settingsRouter = router({
         .map((income) => ({
           id: income.customer!.id,
           name: income.customer!.name,
-          phone: income.customer?.phone?.trim() || income.customer?.customerNumber || null,
+          customerNumber: income.customer?.customerNumber || null,
           gender: income.customer?.gender ?? null,
           tariffId: income.tariff?.id ?? null,
           tariffName: income.tariff?.name ?? null,
