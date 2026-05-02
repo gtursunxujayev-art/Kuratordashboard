@@ -1,0 +1,3 @@
+ALTER TABLE "customers"
+  ADD COLUMN IF NOT EXISTS "region" TEXT,
+  ADD COLUMN IF NOT EXISTS "gender" TEXT;
