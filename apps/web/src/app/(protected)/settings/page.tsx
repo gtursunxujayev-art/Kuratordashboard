@@ -743,13 +743,19 @@ function ExercisesTab({
     orderIndex: number;
     isActive: boolean;
   };
+  type ExerciseType = 'class' | 'homework' | 'extra';
+  const getExerciseTypeLabel = (type: ExerciseType) => {
+    if (type === 'class') return 'Dars mashqi';
+    if (type === 'homework') return 'Uy vazifasi';
+    return "Qo'shimcha mashqlar";
+  };
 
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
   const [editingExerciseId, setEditingExerciseId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: '',
-    type: 'class' as 'class' | 'homework',
+    type: 'class' as ExerciseType,
     targetCount: 1,
     orderIndex: 0,
   });
@@ -1107,11 +1113,12 @@ function ExercisesTab({
                   <label className="block text-xs font-medium text-gray-500 mb-1">Turi</label>
                   <select
                     value={form.type}
-                    onChange={(e) => setForm({ ...form, type: e.target.value as 'class' | 'homework' })}
+                    onChange={(e) => setForm({ ...form, type: e.target.value as ExerciseType })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
                   >
                     <option value="class">Dars mashqi</option>
                     <option value="homework">Uy vazifasi</option>
+                    <option value="extra">Qo&apos;shimcha mashqlar</option>
                   </select>
                 </div>
                 <div>
@@ -1218,9 +1225,7 @@ function ExercisesTab({
                     return (
                       <tr key={exercise.id}>
                         <td className="px-4 py-3 font-medium text-gray-900">{exercise.name}</td>
-                        <td className="px-4 py-3 text-gray-600">
-                          {exercise.type === 'class' ? 'Dars mashqi' : 'Uy vazifasi'}
-                        </td>
+                        <td className="px-4 py-3 text-gray-600">{getExerciseTypeLabel(exercise.type as ExerciseType)}</td>
                         <td className="px-4 py-3 text-gray-600">{exercise.targetCount} marta</td>
                         <td className="px-4 py-3 text-gray-600">{maxTotalPoints}</td>
                         <td className="px-4 py-3">
