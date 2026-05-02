@@ -7,9 +7,10 @@ import { useAuth } from '@/contexts/auth-context';
 interface Props {
   customerId: string;
   onClose: () => void;
+  regions: Array<{ id: string; name: string }>;
 }
 
-export function StudentDetailModal({ customerId, onClose }: Props) {
+export function StudentDetailModal({ customerId, onClose, regions }: Props) {
   const { isAdmin, isManager } = useAuth();
   const utils = trpc.useContext();
 
@@ -70,6 +71,10 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
         form.socialMediaConsent === 'unknown' ? null : form.socialMediaConsent === 'yes',
     });
   };
+
+  const hasActiveRegions = regions.length > 0;
+  const selectedRegionMissing =
+    form.region.trim().length > 0 && !regions.some((region) => region.name === form.region);
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
@@ -136,11 +141,30 @@ export function StudentDetailModal({ customerId, onClose }: Props) {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Viloyat</label>
-                  <input
-                    value={form.region}
-                    onChange={(e) => setForm({ ...form, region: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
+                  {hasActiveRegions ? (
+                    <select
+                      value={form.region}
+                      onChange={(e) => setForm({ ...form, region: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Tanlanmagan</option>
+                      {selectedRegionMissing && (
+                        <option value={form.region}>{form.region} (ro'yxatda yo'q)</option>
+                      )}
+                      {regions.map((region) => (
+                        <option key={region.id} value={region.name}>
+                          {region.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={form.region}
+                      onChange={(e) => setForm({ ...form, region: e.target.value })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Viloyat kiriting"
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Ikkinchi telefon raqam</label>
