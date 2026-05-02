@@ -1112,7 +1112,7 @@ export const settingsRouter = router({
       z.object({
         courseId: z.string(),
         name: z.string().min(1).max(200),
-        type: z.enum(['class', 'homework']),
+        type: z.enum(['class', 'homework', 'extra']),
         targetCount: z.number().int().min(1).max(100),
         orderIndex: z.number().int().min(0).default(0),
         colorPoints: z.array(
@@ -1204,7 +1204,7 @@ export const settingsRouter = router({
       z.object({
         id: z.string(),
         name: z.string().min(1).max(200).optional(),
-        type: z.enum(['class', 'homework']).optional(),
+        type: z.enum(['class', 'homework', 'extra']).optional(),
         targetCount: z.number().int().min(1).max(100).optional(),
         orderIndex: z.number().int().min(0).optional(),
         isActive: z.boolean().optional(),
