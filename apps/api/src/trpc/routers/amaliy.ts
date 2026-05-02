@@ -72,6 +72,53 @@ function startOfDayLocal(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
+function addDaysLocal(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function toDateKeyLocal(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function isEligibleExerciseDate(type: string, date: Date): boolean {
+  const day = date.getDay();
+  if (type === 'homework') {
+    return day >= 1 && day <= 5;
+  }
+  if (type === 'class') {
+    return day === 0 || day === 6;
+  }
+  if (type === 'extra') {
+    return true;
+  }
+  return true;
+}
+
+function buildExerciseSlotDates(params: {
+  startDate: Date;
+  endDate: Date;
+  type: string;
+  targetCount: number;
+}) {
+  const start = startOfDayLocal(params.startDate);
+  const end = startOfDayLocal(params.endDate);
+  const allEligible: Date[] = [];
+  for (let cursor = new Date(start); cursor.getTime() <= end.getTime(); cursor = addDaysLocal(cursor, 1)) {
+    if (isEligibleExerciseDate(params.type, cursor)) {
+      allEligible.push(new Date(cursor));
+    }
+  }
+  return {
+    slotDates: allEligible.slice(0, Math.max(0, params.targetCount)),
+    hasInsufficientEligibleDates: allEligible.length < params.targetCount,
+  };
+}
+
 function isPremiumTariffName(name: string | null | undefined): boolean {
   const value = (name || '').toLowerCase();
   return value.includes('premium') || value.includes('vip');
@@ -255,6 +302,16 @@ export const amaliyRouter = router({
         user.roles.includes('Kurator') &&
         !user.roles.includes('Admin') &&
         !user.roles.includes('Manager');
+      const isManagerOrAdmin =
+        user.roles.includes('Admin') ||
+        user.roles.includes('Manager');
+
+      if (input.includeCompleted && !isManagerOrAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      }
+      if (input.includeCompleted && !input.courseRunId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Hammasi uchun oqim tanlang' });
+      }
 
       const exercise = await prisma.exerciseDefinition.findFirst({
         where: {
@@ -265,6 +322,8 @@ export const amaliyRouter = router({
         select: {
           id: true,
           courseId: true,
+          type: true,
+          targetCount: true,
         },
       });
 
@@ -273,6 +332,7 @@ export const amaliyRouter = router({
       }
 
       let selectedRunCourseId: string | null = null;
+      let selectedRunDateRange: { startDate: Date; endDate: Date } | null = null;
       if (input.courseRunId) {
         const selectedRun = await prisma.courseRun
           .findFirst({
@@ -280,7 +340,7 @@ export const amaliyRouter = router({
               id: input.courseRunId,
               tenantId,
             },
-            select: { id: true, courseId: true },
+            select: { id: true, courseId: true, startDate: true, endDate: true },
           })
           .catch((error) => {
             if (isMissingCourseRunsTableError(error)) {
@@ -294,6 +354,10 @@ export const amaliyRouter = router({
         }
 
         selectedRunCourseId = selectedRun.courseId;
+        selectedRunDateRange = {
+          startDate: selectedRun.startDate,
+          endDate: selectedRun.endDate,
+        };
       }
 
       if (selectedRunCourseId && selectedRunCourseId !== exercise.courseId) {
@@ -366,6 +430,57 @@ export const amaliyRouter = router({
       }
 
       const search = input.search?.trim().toLowerCase();
+      const slotInfo = input.includeCompleted && selectedRunDateRange
+        ? buildExerciseSlotDates({
+            startDate: selectedRunDateRange.startDate,
+            endDate: selectedRunDateRange.endDate,
+            type: exercise.type,
+            targetCount: exercise.targetCount,
+          })
+        : { slotDates: [] as Date[], hasInsufficientEligibleDates: false };
+      const slotDateObjects = slotInfo.slotDates;
+      const slotDateKeys = slotDateObjects.map((date) => toDateKeyLocal(date));
+
+      const slotLogsByCustomerDate = new Map<string, {
+        colorOptionId: string | null;
+        colorHex: string | null;
+        points: number | null;
+      }>();
+
+      if (input.includeCompleted && selectedRunDateRange && scopedCustomerIds.length > 0) {
+        const runStart = startOfDayLocal(selectedRunDateRange.startDate);
+        const runEndExclusive = addDaysLocal(startOfDayLocal(selectedRunDateRange.endDate), 1);
+        const slotLogs = await prisma.studentExerciseLog.findMany({
+          where: {
+            tenantId,
+            exerciseDefinitionId: exercise.id,
+            customerId: { in: scopedCustomerIds },
+            completedAt: { gte: runStart, lt: runEndExclusive },
+          },
+          select: {
+            customerId: true,
+            completedAt: true,
+            colorOptionId: true,
+            colorHex: true,
+            points: true,
+            createdAt: true,
+          },
+          orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+        });
+
+        const slotDateKeySet = new Set(slotDateKeys);
+        for (const log of slotLogs) {
+          const dateKey = toDateKeyLocal(log.completedAt);
+          if (!slotDateKeySet.has(dateKey)) continue;
+          const key = `${log.customerId}:${dateKey}`;
+          if (slotLogsByCustomerDate.has(key)) continue;
+          slotLogsByCustomerDate.set(key, {
+            colorOptionId: log.colorOptionId,
+            colorHex: log.colorHex,
+            points: log.points ?? null,
+          });
+        }
+      }
 
       try {
         const rows = await prisma.customer.findMany({
@@ -398,6 +513,19 @@ export const amaliyRouter = router({
           telegramUsername: row.telegramUsername ?? null,
           completedForDate: completedSet.has(row.id),
           completedLogId: completedByCustomer.get(row.id)?.completedLogId ?? null,
+          slots: input.includeCompleted
+            ? slotDateKeys.map((dateKey) => {
+                const slot = slotLogsByCustomerDate.get(`${row.id}:${dateKey}`);
+                return {
+                  date: dateKey,
+                  selectedColorOptionId: slot?.colorOptionId ?? null,
+                  selectedColorHex: slot?.colorHex ?? null,
+                  selectedPoints: slot?.points ?? null,
+                  isSaved: Boolean(slot?.colorOptionId),
+                };
+              })
+            : [],
+          hasInsufficientEligibleDates: slotInfo.hasInsufficientEligibleDates,
         }));
       } catch (error) {
         if (!isMissingCustomerTelegramColumnError(error)) {
@@ -432,6 +560,19 @@ export const amaliyRouter = router({
           telegramUsername: null,
           completedForDate: completedSet.has(row.id),
           completedLogId: completedByCustomer.get(row.id)?.completedLogId ?? null,
+          slots: input.includeCompleted
+            ? slotDateKeys.map((dateKey) => {
+                const slot = slotLogsByCustomerDate.get(`${row.id}:${dateKey}`);
+                return {
+                  date: dateKey,
+                  selectedColorOptionId: slot?.colorOptionId ?? null,
+                  selectedColorHex: slot?.colorHex ?? null,
+                  selectedPoints: slot?.points ?? null,
+                  isSaved: Boolean(slot?.colorOptionId),
+                };
+              })
+            : [],
+          hasInsufficientEligibleDates: slotInfo.hasInsufficientEligibleDates,
         }));
       }
     }),
@@ -457,6 +598,9 @@ export const amaliyRouter = router({
 
       if (input.mode === 'all' && !isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      }
+      if (input.mode === 'all' && !input.courseRunId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Hammasi uchun oqim tanlang' });
       }
 
       if (isKurator) {
@@ -522,7 +666,9 @@ export const amaliyRouter = router({
       });
 
       const definitionIds = definitions.map((d) => d.id);
-      const [todayLogs, totalLogs, attendanceTotals, attendanceAttended] = await Promise.all([
+      const runStart = startOfDayLocal(courseRun.startDate);
+      const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      const [todayLogs, totalLogs, attendanceTotals, attendanceAttended, runLogs] = await Promise.all([
         definitionIds.length > 0
           ? prisma.studentExerciseLog.findMany({
               where: {
@@ -564,6 +710,25 @@ export const amaliyRouter = router({
           },
           _count: { id: true },
         }),
+        input.mode === 'all' && definitionIds.length > 0
+          ? prisma.studentExerciseLog.findMany({
+              where: {
+                tenantId,
+                customerId: input.customerId,
+                exerciseDefinitionId: { in: definitionIds },
+                completedAt: { gte: runStart, lt: runEndExclusive },
+              },
+              select: {
+                exerciseDefinitionId: true,
+                completedAt: true,
+                colorOptionId: true,
+                colorHex: true,
+                points: true,
+                createdAt: true,
+              },
+              orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+            })
+          : Promise.resolve([]),
       ]);
 
       const doneTodayByDef = new Map<string, number>();
@@ -581,6 +746,23 @@ export const amaliyRouter = router({
       const attendanceAttendedByType = new Map<string, number>(
         attendanceAttended.map((row) => [row.lessonType, row._count.id]),
       );
+      const slotLogsByExerciseDate = new Map<string, {
+        colorOptionId: string | null;
+        colorHex: string | null;
+        points: number | null;
+      }>();
+      if (input.mode === 'all') {
+        for (const log of runLogs) {
+          const dateKey = toDateKeyLocal(log.completedAt);
+          const key = `${log.exerciseDefinitionId}:${dateKey}`;
+          if (slotLogsByExerciseDate.has(key)) continue;
+          slotLogsByExerciseDate.set(key, {
+            colorOptionId: log.colorOptionId,
+            colorHex: log.colorHex,
+            points: log.points ?? null,
+          });
+        }
+      }
 
       return {
         mode: input.mode,
@@ -589,6 +771,31 @@ export const amaliyRouter = router({
         courseRunId: courseRun.id,
         dateInfo: { date: input.date, dayOfWeek: date.getDay() },
         exercises: definitions.map((def) => ({
+          ...(input.mode === 'all'
+            ? (() => {
+                const slotInfo = buildExerciseSlotDates({
+                  startDate: courseRun.startDate,
+                  endDate: courseRun.endDate,
+                  type: def.type,
+                  targetCount: def.targetCount,
+                });
+                const slots = slotInfo.slotDates.map((slotDate) => {
+                  const dateKey = toDateKeyLocal(slotDate);
+                  const slot = slotLogsByExerciseDate.get(`${def.id}:${dateKey}`);
+                  return {
+                    date: dateKey,
+                    selectedColorOptionId: slot?.colorOptionId ?? null,
+                    selectedColorHex: slot?.colorHex ?? null,
+                    selectedPoints: slot?.points ?? null,
+                    isSaved: Boolean(slot?.colorOptionId),
+                  };
+                });
+                return {
+                  slots,
+                  hasInsufficientEligibleDates: slotInfo.hasInsufficientEligibleDates,
+                };
+              })()
+            : { slots: [], hasInsufficientEligibleDates: false }),
           id: def.id,
           name: def.name,
           type: def.type,
@@ -743,6 +950,219 @@ export const amaliyRouter = router({
               note: input.note,
             },
           });
+        });
+      } catch (error) {
+        if (isPointsTypeMigrationMismatchError(error)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              "DB migratsiya qo'llanmagan: kasr ballar uchun `points` ustuni yangilanmagan. `20260428093000_allow_fractional_amaliy_points` migratsiyasini deploy qiling.",
+          });
+        }
+        throw error;
+      }
+    }),
+
+  saveExerciseSlots: protectedProcedure
+    .input(
+      z.object({
+        customerId: z.string(),
+        exerciseDefinitionId: z.string(),
+        courseRunId: z.string(),
+        slots: z.array(
+          z.object({
+            date: z.string(),
+            colorOptionId: z.string().nullable(),
+          }),
+        ),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const isManagerOrAdmin =
+        user.roles.includes('Admin') ||
+        user.roles.includes('Manager');
+      if (!isManagerOrAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      }
+
+      const [definition, courseRun] = await Promise.all([
+        prisma.exerciseDefinition.findFirst({
+          where: { id: input.exerciseDefinitionId, tenantId, isActive: true },
+          select: { id: true, courseId: true, type: true, targetCount: true },
+        }),
+        prisma.courseRun.findFirst({
+          where: { id: input.courseRunId, tenantId },
+          select: { id: true, courseId: true, startDate: true, endDate: true },
+        }).catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            return null;
+          }
+          throw error;
+        }),
+      ]);
+
+      if (!definition) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+      if (definition.courseId !== courseRun.courseId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Mashq va oqim mos emas' });
+      }
+      const runCustomerIds = await resolveCourseRunCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
+      });
+      if (!runCustomerIds.includes(input.customerId)) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi oqimda topilmadi" });
+      }
+
+      const slotInfo = buildExerciseSlotDates({
+        startDate: courseRun.startDate,
+        endDate: courseRun.endDate,
+        type: definition.type,
+        targetCount: definition.targetCount,
+      });
+      const allowedDateKeys = new Set(slotInfo.slotDates.map((date) => toDateKeyLocal(date)));
+
+      const uniqueIncoming = new Map<string, string | null>();
+      for (const row of input.slots) {
+        const parsed = parseDateInput(row.date);
+        const dateKey = toDateKeyLocal(parsed);
+        if (!allowedDateKeys.has(dateKey)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ruxsat etilmagan sana yuborildi' });
+        }
+        uniqueIncoming.set(dateKey, row.colorOptionId);
+      }
+
+      const selectedEntries = Array.from(uniqueIncoming.entries())
+        .filter(([, colorOptionId]) => Boolean(colorOptionId))
+        .map(([date, colorOptionId]) => ({ date, colorOptionId: colorOptionId as string }));
+
+      if (selectedEntries.length > definition.targetCount) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Bu mashq uchun maksimal ${definition.targetCount} marta saqlash mumkin`,
+        });
+      }
+
+      const colorOptionIds = Array.from(new Set(selectedEntries.map((row) => row.colorOptionId)));
+      const colorOptions = colorOptionIds.length > 0
+        ? await prisma.exerciseColorOption.findMany({
+            where: {
+              tenantId,
+              id: { in: colorOptionIds },
+              isActive: true,
+            },
+            select: { id: true, colorHex: true },
+          })
+        : [];
+      const colorOptionMap = new Map(colorOptions.map((row) => [row.id, row]));
+      if (colorOptionMap.size !== colorOptionIds.length) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ranglar ro\'yxati noto\'g\'ri' });
+      }
+
+      const definitionColorPoints = colorOptionIds.length > 0
+        ? await prisma.exerciseDefinitionColorPoint.findMany({
+            where: {
+              tenantId,
+              exerciseDefinitionId: definition.id,
+              colorOptionId: { in: colorOptionIds },
+            },
+            select: { colorOptionId: true, points: true },
+          })
+        : [];
+      const definitionColorPointMap = new Map(definitionColorPoints.map((row) => [row.colorOptionId, row.points]));
+      if (definitionColorPointMap.size !== colorOptionIds.length) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ushbu mashq uchun ba\'zi ranglar sozlanmagan' });
+      }
+
+      const runStart = startOfDayLocal(courseRun.startDate);
+      const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      const selectedDateKeySet = new Set(selectedEntries.map((row) => row.date));
+
+      try {
+        return await prisma.$transaction(async (tx) => {
+          const existingLogs = await tx.studentExerciseLog.findMany({
+            where: {
+              tenantId,
+              customerId: input.customerId,
+              exerciseDefinitionId: definition.id,
+              completedAt: { gte: runStart, lt: runEndExclusive },
+            },
+            select: { id: true, completedAt: true, createdAt: true },
+            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+          });
+
+          const logsByDate = new Map<string, Array<{ id: string }>>();
+          for (const log of existingLogs) {
+            const dateKey = toDateKeyLocal(log.completedAt);
+            const arr = logsByDate.get(dateKey) ?? [];
+            arr.push({ id: log.id });
+            logsByDate.set(dateKey, arr);
+          }
+
+          const deleteIds: string[] = [];
+          for (const [dateKey, logs] of logsByDate.entries()) {
+            if (!selectedDateKeySet.has(dateKey)) {
+              deleteIds.push(...logs.map((log) => log.id));
+              continue;
+            }
+            if (logs.length > 1) {
+              deleteIds.push(...logs.slice(1).map((log) => log.id));
+            }
+          }
+
+          for (const row of selectedEntries) {
+            const dayStart = startOfDayLocal(parseDateInput(row.date));
+            const existing = logsByDate.get(row.date)?.[0];
+            const colorOption = colorOptionMap.get(row.colorOptionId)!;
+            const points = definitionColorPointMap.get(row.colorOptionId)!;
+
+            if (existing) {
+              await tx.studentExerciseLog.update({
+                where: { id: existing.id },
+                data: {
+                  colorOptionId: row.colorOptionId,
+                  colorHex: colorOption.colorHex,
+                  points,
+                  completedAt: dayStart,
+                  loggedByUserId: user.userId,
+                },
+              });
+            } else {
+              await tx.studentExerciseLog.create({
+                data: {
+                  tenantId,
+                  customerId: input.customerId,
+                  exerciseDefinitionId: definition.id,
+                  colorOptionId: row.colorOptionId,
+                  colorHex: colorOption.colorHex,
+                  points,
+                  completedAt: dayStart,
+                  loggedByUserId: user.userId,
+                },
+              });
+            }
+          }
+
+          if (deleteIds.length > 0) {
+            await tx.studentExerciseLog.deleteMany({
+              where: {
+                tenantId,
+                id: { in: deleteIds },
+              },
+            });
+          }
+
+          return {
+            success: true,
+            savedCount: selectedEntries.length,
+            deletedCount: deleteIds.length,
+          };
         });
       } catch (error) {
         if (isPointsTypeMigrationMismatchError(error)) {
