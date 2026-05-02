@@ -13,6 +13,13 @@ type ColorPointOption = {
   colorHex: string;
   points: number;
 };
+type SlotItem = {
+  date: string;
+  selectedColorOptionId: string | null;
+  selectedColorHex: string | null;
+  selectedPoints: number | null;
+  isSaved: boolean;
+};
 
 const DAY_NAMES = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
 
@@ -39,6 +46,22 @@ function keyForPracticeStudent(practiceId: string, date: string, studentId: stri
   return `${practiceId}:${date}:${studentId}`;
 }
 
+function keyForExerciseSlot(exerciseId: string, date: string): string {
+  return `${exerciseId}:${date}`;
+}
+
+function keyForPracticeStudentSlot(studentId: string, date: string): string {
+  return `${studentId}:${date}`;
+}
+
+function formatShortDate(date: string): string {
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return date;
+  const day = String(parsed.getDate()).padStart(2, '0');
+  const month = String(parsed.getMonth() + 1).padStart(2, '0');
+  return `${day}.${month}`;
+}
+
 export default function AmaliyPage() {
   const { isManager } = useAuth();
   const toast = useToast();
@@ -55,10 +78,13 @@ export default function AmaliyPage() {
 
   const [selectedColorByExercise, setSelectedColorByExercise] = useState<Record<string, string>>({});
   const [selectedColorByPracticeStudent, setSelectedColorByPracticeStudent] = useState<Record<string, string>>({});
+  const [selectedColorByExerciseSlot, setSelectedColorByExerciseSlot] = useState<Record<string, string>>({});
+  const [selectedColorByPracticeStudentSlot, setSelectedColorByPracticeStudentSlot] = useState<Record<string, string>>({});
 
   const [busyStudentExerciseKey, setBusyStudentExerciseKey] = useState<string | null>(null);
   const [busyPracticeStudentKey, setBusyPracticeStudentKey] = useState<string | null>(null);
   const [busyAttendance, setBusyAttendance] = useState<'base' | 'premium_extra' | null>(null);
+  const [busySlotSaveKey, setBusySlotSaveKey] = useState<string | null>(null);
 
   const [hiddenStudentExerciseKeys, setHiddenStudentExerciseKeys] = useState<Set<string>>(new Set());
   const [vanishingStudentExerciseKeys, setVanishingStudentExerciseKeys] = useState<Set<string>>(new Set());
@@ -87,7 +113,7 @@ export default function AmaliyPage() {
       mode: dateMode === 'all' ? 'all' : 'day',
       courseRunId: selectedCourseRunId || undefined,
     },
-    { enabled: Boolean(selectedStudentId) },
+    { enabled: Boolean(selectedStudentId) && (dateMode !== 'all' || Boolean(selectedCourseRunId)) },
   );
 
   const { data: recentLogs, refetch: refetchRecentLogs } = trpc.amaliy.listRecentLogs.useQuery(
@@ -111,7 +137,7 @@ export default function AmaliyPage() {
       courseRunId: selectedCourseRunId || undefined,
       includeCompleted: dateMode === 'all',
     },
-    { enabled: Boolean(selectedPracticeId) },
+    { enabled: Boolean(selectedPracticeId) && (dateMode !== 'all' || Boolean(selectedCourseRunId)) },
   );
 
   const logMutation = trpc.amaliy.logExercise.useMutation({
@@ -119,6 +145,12 @@ export default function AmaliyPage() {
       toast.show(error.message || 'Xatolik yuz berdi', 'error');
       setBusyStudentExerciseKey(null);
       setBusyPracticeStudentKey(null);
+    },
+  });
+  const saveSlotsMutation = trpc.amaliy.saveExerciseSlots.useMutation({
+    onError: (error) => {
+      toast.show(error.message || 'Xatolik yuz berdi', 'error');
+      setBusySlotSaveKey(null);
     },
   });
 
@@ -198,7 +230,7 @@ export default function AmaliyPage() {
         completedAt: selectedDate,
       });
 
-      toast.show('Bajarildi', 'success');
+      toast.show('Saqlandi', 'success');
       if (dateMode === 'all') {
         void refetchStudentExercises();
       } else {
@@ -252,7 +284,7 @@ export default function AmaliyPage() {
         completedAt: selectedDate,
       });
 
-      toast.show('Bajarildi', 'success');
+      toast.show('Saqlandi', 'success');
       if (dateMode === 'all') {
         void refetchPracticeStudents();
       } else {
@@ -270,6 +302,69 @@ export default function AmaliyPage() {
       }
     } finally {
       setBusyPracticeStudentKey(null);
+    }
+  };
+
+  const saveStudentExerciseSlots = async (exercise: (NonNullable<typeof exerciseData>['exercises'])[number]) => {
+    if (!selectedStudentId || !selectedCourseRunId) return;
+    const slotKey = `student:${selectedStudentId}:${exercise.id}`;
+    setBusySlotSaveKey(slotKey);
+    try {
+      const payload = (exercise.slots ?? []).map((slot: SlotItem) => {
+        const key = keyForExerciseSlot(exercise.id, slot.date);
+        const next = selectedColorByExerciseSlot[key];
+        const selectedColorOptionId =
+          next !== undefined
+            ? (next || null)
+            : (slot.selectedColorOptionId ?? null);
+        return {
+          date: slot.date,
+          colorOptionId: selectedColorOptionId,
+        };
+      });
+
+      await saveSlotsMutation.mutateAsync({
+        customerId: selectedStudentId,
+        exerciseDefinitionId: exercise.id,
+        courseRunId: selectedCourseRunId,
+        slots: payload,
+      });
+      toast.show('Saqlandi', 'success');
+      void refetchStudentExercises();
+      void refetchRecentLogs();
+    } finally {
+      setBusySlotSaveKey(null);
+    }
+  };
+
+  const savePracticeStudentSlots = async (studentId: string, slots: SlotItem[]) => {
+    if (!selectedPracticeId || !selectedCourseRunId) return;
+    const slotKey = `practice:${selectedPracticeId}:${studentId}`;
+    setBusySlotSaveKey(slotKey);
+    try {
+      const payload = slots.map((slot) => {
+        const key = keyForPracticeStudentSlot(studentId, slot.date);
+        const next = selectedColorByPracticeStudentSlot[key];
+        const selectedColorOptionId =
+          next !== undefined
+            ? (next || null)
+            : (slot.selectedColorOptionId ?? null);
+        return {
+          date: slot.date,
+          colorOptionId: selectedColorOptionId,
+        };
+      });
+
+      await saveSlotsMutation.mutateAsync({
+        customerId: studentId,
+        exerciseDefinitionId: selectedPracticeId,
+        courseRunId: selectedCourseRunId,
+        slots: payload,
+      });
+      toast.show('Saqlandi', 'success');
+      void refetchPracticeStudents();
+    } finally {
+      setBusySlotSaveKey(null);
     }
   };
 
@@ -427,7 +522,9 @@ export default function AmaliyPage() {
 
       {mode === 'students' ? (
         <div className="space-y-3">
-          {!selectedStudentId ? (
+          {dateMode === 'all' && !selectedCourseRunId ? (
+            <div className="kd-card p-6 text-center kd-subtle text-sm">Hammasi uchun avval oqimni tanlang</div>
+          ) : !selectedStudentId ? (
             <div className="kd-card p-6 text-center kd-subtle text-sm">O'quvchini tanlang</div>
           ) : (
             <>
@@ -517,27 +614,70 @@ export default function AmaliyPage() {
                           </div>
                         </div>
 
-                        <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
-                          <ColorPointsSelect
-                            options={exerciseOptions}
-                            value={selectedColorId}
-                            selectedColorHex={selectedColor?.colorHex}
-                            disabled={exerciseOptions.length === 0}
-                            onChange={(nextId) =>
-                              setSelectedColorByExercise((prev) => ({ ...prev, [exercise.id]: nextId }))
-                            }
-                          />
-                          <button
-                            onClick={() => void completeStudentExercise(exercise.id)}
-                            disabled={
-                              busyStudentExerciseKey === rowKey ||
-                              exerciseOptions.length === 0
-                            }
-                            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            {busyStudentExerciseKey === rowKey ? '...' : 'Bajarildi'}
-                          </button>
-                        </div>
+                        {dateMode === 'all' ? (
+                          <div className="mt-3 space-y-3">
+                            {exercise.hasInsufficientEligibleDates && (
+                              <p className="text-xs text-amber-700">
+                                Oqim sanalarida mashq turi bo&apos;yicha kunlar yetarli emas.
+                              </p>
+                            )}
+                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                              {(exercise.slots ?? []).map((slot: SlotItem) => {
+                                const slotKey = keyForExerciseSlot(exercise.id, slot.date);
+                                const slotSelectedColorId =
+                                  selectedColorByExerciseSlot[slotKey] !== undefined
+                                    ? selectedColorByExerciseSlot[slotKey]
+                                    : (slot.selectedColorOptionId ?? '');
+                                const slotSelectedColor = exerciseOptions.find((option) => option.id === slotSelectedColorId);
+                                return (
+                                  <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
+                                    <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                    <ColorPointsSelect
+                                      options={exerciseOptions}
+                                      value={slotSelectedColorId}
+                                      selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
+                                      allowEmpty
+                                      emptyLabel="Tanlanmagan"
+                                      disabled={exerciseOptions.length === 0}
+                                      onChange={(nextId) =>
+                                        setSelectedColorByExerciseSlot((prev) => ({ ...prev, [slotKey]: nextId }))
+                                      }
+                                    />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <button
+                              onClick={() => void saveStudentExerciseSlots(exercise)}
+                              disabled={busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` || exerciseOptions.length === 0}
+                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
+                            <ColorPointsSelect
+                              options={exerciseOptions}
+                              value={selectedColorId}
+                              selectedColorHex={selectedColor?.colorHex}
+                              disabled={exerciseOptions.length === 0}
+                              onChange={(nextId) =>
+                                setSelectedColorByExercise((prev) => ({ ...prev, [exercise.id]: nextId }))
+                              }
+                            />
+                            <button
+                              onClick={() => void completeStudentExercise(exercise.id)}
+                              disabled={
+                                busyStudentExerciseKey === rowKey ||
+                                exerciseOptions.length === 0
+                              }
+                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                            >
+                              {busyStudentExerciseKey === rowKey ? '...' : 'Saqlash'}
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })
@@ -548,7 +688,9 @@ export default function AmaliyPage() {
         </div>
       ) : (
         <div className="space-y-3">
-          {!selectedCourseRunId ? (
+          {dateMode === 'all' && !selectedCourseRunId ? (
+            <div className="kd-card p-6 text-center kd-subtle text-sm">Hammasi uchun avval oqimni tanlang</div>
+          ) : !selectedCourseRunId ? (
             <div className="kd-card p-6 text-center kd-subtle text-sm">Avval oqimni tanlang</div>
           ) : !selectedPracticeId ? (
             <div className="kd-card p-6 text-center kd-subtle text-sm">Amaliy mashqni tanlang</div>
@@ -560,6 +702,11 @@ export default function AmaliyPage() {
                 <p className="text-xs kd-subtle mt-1">
                   {dateMode === 'all' ? "O'quvchilar" : "Qolgan o'quvchilar"}: {visiblePracticeStudents.length}
                 </p>
+                {dateMode === 'all' && (practiceStudents ?? [])[0]?.hasInsufficientEligibleDates && (
+                  <p className="text-xs text-amber-700 mt-2">
+                    Oqim sanalarida mashq turi bo&apos;yicha kunlar yetarli emas.
+                  </p>
+                )}
               </div>
 
               {visiblePracticeStudents.length === 0 ? (
@@ -606,26 +753,62 @@ export default function AmaliyPage() {
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
-                          <ColorPointsSelect
-                            options={practiceOptions}
-                            value={selectedColorId}
-                            selectedColorHex={selectedColor?.colorHex}
-                            disabled={practiceOptions.length === 0}
-                            onChange={(nextId) =>
-                              setSelectedColorByPracticeStudent((prev) => ({ ...prev, [student.id]: nextId }))
-                            }
-                          />
-                          <button
-                            onClick={() => void completePracticeStudent(student.id)}
-                            disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
-                            className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            {busyPracticeStudentKey === rowKey
-                              ? '...'
-                              : dateMode === 'all' && student.completedForDate
-                                ? 'Yangilash'
-                                : 'Bajarildi'}
-                          </button>
+                          {dateMode === 'all' ? (
+                            <div className="col-span-full space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                {(student.slots ?? []).map((slot: SlotItem) => {
+                                  const slotKey = keyForPracticeStudentSlot(student.id, slot.date);
+                                  const slotSelectedColorId =
+                                    selectedColorByPracticeStudentSlot[slotKey] !== undefined
+                                      ? selectedColorByPracticeStudentSlot[slotKey]
+                                      : (slot.selectedColorOptionId ?? '');
+                                  const slotSelectedColor = practiceOptions.find((option) => option.id === slotSelectedColorId);
+                                  return (
+                                    <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
+                                      <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                      <ColorPointsSelect
+                                        options={practiceOptions}
+                                        value={slotSelectedColorId}
+                                        selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
+                                        allowEmpty
+                                        emptyLabel="Tanlanmagan"
+                                        disabled={practiceOptions.length === 0}
+                                        onChange={(nextId) =>
+                                          setSelectedColorByPracticeStudentSlot((prev) => ({ ...prev, [slotKey]: nextId }))
+                                        }
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <button
+                                onClick={() => void savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])}
+                                disabled={busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` || practiceOptions.length === 0}
+                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                              >
+                                {busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <ColorPointsSelect
+                                options={practiceOptions}
+                                value={selectedColorId}
+                                selectedColorHex={selectedColor?.colorHex}
+                                disabled={practiceOptions.length === 0}
+                                onChange={(nextId) =>
+                                  setSelectedColorByPracticeStudent((prev) => ({ ...prev, [student.id]: nextId }))
+                                }
+                              />
+                              <button
+                                onClick={() => void completePracticeStudent(student.id)}
+                                disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
+                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                              >
+                                {busyPracticeStudentKey === rowKey ? '...' : 'Saqlash'}
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     );
@@ -645,6 +828,8 @@ function ColorPointsSelect({
   value,
   selectedColorHex,
   disabled,
+  allowEmpty,
+  emptyLabel,
   onChange,
 }: {
   options: Array<{
@@ -656,6 +841,8 @@ function ColorPointsSelect({
   value: string;
   selectedColorHex?: string;
   disabled?: boolean;
+  allowEmpty?: boolean;
+  emptyLabel?: string;
   onChange: (nextId: string) => void;
 }) {
   return (
@@ -674,11 +861,14 @@ function ColorPointsSelect({
         {options.length === 0 ? (
           <option value="">Ranglar yo'q</option>
         ) : (
-          options.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label} ({option.points} ball)
-            </option>
-          ))
+          <>
+            {allowEmpty && <option value="">{emptyLabel || 'Tanlanmagan'}</option>}
+            {options.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.label} ({option.points} ball)
+              </option>
+            ))}
+          </>
         )}
       </select>
     </div>
