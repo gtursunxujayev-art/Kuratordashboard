@@ -621,39 +621,43 @@ export default function AmaliyPage() {
                                 Oqim sanalarida mashq turi bo&apos;yicha kunlar yetarli emas.
                               </p>
                             )}
-                            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-                              {(exercise.slots ?? []).map((slot: SlotItem) => {
-                                const slotKey = keyForExerciseSlot(exercise.id, slot.date);
-                                const slotSelectedColorId =
-                                  selectedColorByExerciseSlot[slotKey] !== undefined
-                                    ? selectedColorByExerciseSlot[slotKey]
-                                    : (slot.selectedColorOptionId ?? '');
-                                const slotSelectedColor = exerciseOptions.find((option) => option.id === slotSelectedColorId);
-                                return (
-                                  <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
-                                    <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                    <ColorPointsSelect
-                                      options={exerciseOptions}
-                                      value={slotSelectedColorId}
-                                      selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
-                                      allowEmpty
-                                      emptyLabel="Tanlanmagan"
-                                      disabled={exerciseOptions.length === 0}
-                                      onChange={(nextId) =>
-                                        setSelectedColorByExerciseSlot((prev) => ({ ...prev, [slotKey]: nextId }))
-                                      }
-                                    />
-                                  </div>
-                                );
-                              })}
+                            <div className="overflow-x-auto">
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
+                                {(exercise.slots ?? []).map((slot: SlotItem) => {
+                                  const slotKey = keyForExerciseSlot(exercise.id, slot.date);
+                                  const slotSelectedColorId =
+                                    selectedColorByExerciseSlot[slotKey] !== undefined
+                                      ? selectedColorByExerciseSlot[slotKey]
+                                      : (slot.selectedColorOptionId ?? '');
+                                  const slotSelectedColor = exerciseOptions.find((option) => option.id === slotSelectedColorId);
+                                  return (
+                                    <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
+                                      <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                      <ColorPointsSelect
+                                        options={exerciseOptions}
+                                        value={slotSelectedColorId}
+                                        selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
+                                        allowEmpty
+                                        emptyLabel="Tanlanmagan"
+                                        disabled={exerciseOptions.length === 0}
+                                        onChange={(nextId) =>
+                                          setSelectedColorByExerciseSlot((prev) => ({ ...prev, [slotKey]: nextId }))
+                                        }
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
-                            <button
-                              onClick={() => void saveStudentExerciseSlots(exercise)}
-                              disabled={busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` || exerciseOptions.length === 0}
-                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                            >
-                              {busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
-                            </button>
+                            <div className="flex justify-end">
+                              <button
+                                onClick={() => void saveStudentExerciseSlots(exercise)}
+                                disabled={busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` || exerciseOptions.length === 0}
+                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                              >
+                                {busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
+                              </button>
+                            </div>
                           </div>
                         ) : (
                           <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
@@ -755,39 +759,43 @@ export default function AmaliyPage() {
                         <div className="grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
                           {dateMode === 'all' ? (
                             <div className="col-span-full space-y-3">
-                              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-                                {(student.slots ?? []).map((slot: SlotItem) => {
-                                  const slotKey = keyForPracticeStudentSlot(student.id, slot.date);
-                                  const slotSelectedColorId =
-                                    selectedColorByPracticeStudentSlot[slotKey] !== undefined
-                                      ? selectedColorByPracticeStudentSlot[slotKey]
-                                      : (slot.selectedColorOptionId ?? '');
-                                  const slotSelectedColor = practiceOptions.find((option) => option.id === slotSelectedColorId);
-                                  return (
-                                    <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
-                                      <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                      <ColorPointsSelect
-                                        options={practiceOptions}
-                                        value={slotSelectedColorId}
-                                        selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
-                                        allowEmpty
-                                        emptyLabel="Tanlanmagan"
-                                        disabled={practiceOptions.length === 0}
-                                        onChange={(nextId) =>
-                                          setSelectedColorByPracticeStudentSlot((prev) => ({ ...prev, [slotKey]: nextId }))
-                                        }
-                                      />
-                                    </div>
-                                  );
-                                })}
+                              <div className="overflow-x-auto">
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
+                                  {(student.slots ?? []).map((slot: SlotItem) => {
+                                    const slotKey = keyForPracticeStudentSlot(student.id, slot.date);
+                                    const slotSelectedColorId =
+                                      selectedColorByPracticeStudentSlot[slotKey] !== undefined
+                                        ? selectedColorByPracticeStudentSlot[slotKey]
+                                        : (slot.selectedColorOptionId ?? '');
+                                    const slotSelectedColor = practiceOptions.find((option) => option.id === slotSelectedColorId);
+                                    return (
+                                      <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
+                                        <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                        <ColorPointsSelect
+                                          options={practiceOptions}
+                                          value={slotSelectedColorId}
+                                          selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
+                                          allowEmpty
+                                          emptyLabel="Tanlanmagan"
+                                          disabled={practiceOptions.length === 0}
+                                          onChange={(nextId) =>
+                                            setSelectedColorByPracticeStudentSlot((prev) => ({ ...prev, [slotKey]: nextId }))
+                                          }
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
-                              <button
-                                onClick={() => void savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])}
-                                disabled={busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` || practiceOptions.length === 0}
-                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                              >
-                                {busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
-                              </button>
+                              <div className="flex justify-end">
+                                <button
+                                  onClick={() => void savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])}
+                                  disabled={busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` || practiceOptions.length === 0}
+                                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                                >
+                                  {busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
+                                </button>
+                              </div>
                             </div>
                           ) : (
                             <>
