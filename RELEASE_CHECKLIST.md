@@ -9,7 +9,9 @@
 2. Deploy backend first:
 - Apply DB migration (`packages/db/prisma/migrations/20260405190000_kd_final_spec`).
 - Apply DB migration (`packages/db/prisma/migrations/20260424213000_student_profile_enrichment`) before API deploy.
+- Apply DB migration (`packages/db/prisma/migrations/20260502143000_ensure_customer_region_gender_columns`) before API/Web deploy when student profile fields rely on `customers.gender/region`.
 - Deploy API and confirm `/health` and `/ready` both return 200.
+- Restart API service after DB migrations that add optional customer columns so cached column-support state is refreshed.
 - Smoke test `auth.loginWithPassword` and `auth.me`.
 
 3. Deploy frontend second:
