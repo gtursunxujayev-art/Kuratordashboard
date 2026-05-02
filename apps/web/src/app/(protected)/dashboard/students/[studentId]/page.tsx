@@ -111,7 +111,11 @@ export default function DashboardStudentDetailPage() {
                     <div key={row.id} className="kd-card p-2 text-sm">
                       <p className="kd-title">{row.exerciseDefinition.name}</p>
                       <p className="text-xs kd-subtle">
-                        {row.exerciseDefinition.type === 'class' ? 'Dars' : 'Uy vazifasi'} |{' '}
+                        {row.exerciseDefinition.type === 'class'
+                          ? 'Dars'
+                          : row.exerciseDefinition.type === 'homework'
+                            ? 'Uy vazifasi'
+                            : "Qo'shimcha"} |{' '}
                         {new Date(row.completedAt).toLocaleDateString('uz-UZ')}
                       </p>
                     </div>
