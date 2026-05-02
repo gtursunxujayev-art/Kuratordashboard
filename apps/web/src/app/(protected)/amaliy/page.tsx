@@ -40,13 +40,15 @@ function keyForPracticeStudent(practiceId: string, date: string, studentId: stri
 }
 
 export default function AmaliyPage() {
-  const { user: authUser, isManager } = useAuth();
+  const { isManager } = useAuth();
   const toast = useToast();
+  const canUseHammasi = isManager;
 
   const [mode, setMode] = useState<AmaliyMode>('students');
   const [dateMode, setDateMode] = useState<DateMode>('today');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [customDate, setCustomDate] = useState<string>(formatDateLocal(new Date()));
+  const [hammasiDate, setHammasiDate] = useState<string>(formatDateLocal(new Date()));
 
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
   const [selectedPracticeId, setSelectedPracticeId] = useState<string>('');
@@ -64,10 +66,10 @@ export default function AmaliyPage() {
   const [vanishingPracticeStudentKeys, setVanishingPracticeStudentKeys] = useState<Set<string>>(new Set());
 
   const selectedDate = useMemo(() => {
-    if (dateMode === 'all') return getModeDate('today');
+    if (dateMode === 'all') return hammasiDate || getModeDate('today');
     if (dateMode === 'custom') return customDate;
     return getModeDate(dateMode);
-  }, [customDate, dateMode]);
+  }, [customDate, dateMode, hammasiDate]);
 
   const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
   const selectedCourseId = useMemo(
@@ -107,8 +109,9 @@ export default function AmaliyPage() {
       exerciseDefinitionId: selectedPracticeId,
       date: selectedDate,
       courseRunId: selectedCourseRunId || undefined,
+      includeCompleted: dateMode === 'all',
     },
-    { enabled: Boolean(selectedPracticeId) && dateMode !== 'all' },
+    { enabled: Boolean(selectedPracticeId) },
   );
 
   const logMutation = trpc.amaliy.logExercise.useMutation({
@@ -164,7 +167,7 @@ export default function AmaliyPage() {
   }, [selectedDate]);
 
   const completeStudentExercise = async (exerciseId: string) => {
-    if (!selectedStudentId || dateMode === 'all') return;
+    if (!selectedStudentId) return;
     const exercise = (exerciseData?.exercises ?? []).find((item) => item.id === exerciseId);
     const exerciseOptions: ColorPointOption[] = (exercise?.colorPoints ?? []).map((row) => ({
       id: row.colorOptionId,
@@ -196,25 +199,29 @@ export default function AmaliyPage() {
       });
 
       toast.show('Bajarildi', 'success');
-      setVanishingStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
-
-      setTimeout(() => {
-        setVanishingStudentExerciseKeys((prev) => {
-          const next = new Set(prev);
-          next.delete(actionKey);
-          return next;
-        });
-        setHiddenStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
+      if (dateMode === 'all') {
         void refetchStudentExercises();
-        void refetchRecentLogs();
-      }, 480);
+      } else {
+        setVanishingStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
+
+        setTimeout(() => {
+          setVanishingStudentExerciseKeys((prev) => {
+            const next = new Set(prev);
+            next.delete(actionKey);
+            return next;
+          });
+          setHiddenStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
+          void refetchStudentExercises();
+          void refetchRecentLogs();
+        }, 480);
+      }
     } finally {
       setBusyStudentExerciseKey(null);
     }
   };
 
   const completePracticeStudent = async (studentId: string) => {
-    if (!selectedPracticeId || dateMode === 'all') return;
+    if (!selectedPracticeId) return;
     const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row) => ({
       id: row.colorOptionId,
       label: row.colorOption.label,
@@ -246,17 +253,21 @@ export default function AmaliyPage() {
       });
 
       toast.show('Bajarildi', 'success');
-      setVanishingPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
-
-      setTimeout(() => {
-        setVanishingPracticeStudentKeys((prev) => {
-          const next = new Set(prev);
-          next.delete(actionKey);
-          return next;
-        });
-        setHiddenPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
+      if (dateMode === 'all') {
         void refetchPracticeStudents();
-      }, 480);
+      } else {
+        setVanishingPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
+
+        setTimeout(() => {
+          setVanishingPracticeStudentKeys((prev) => {
+            const next = new Set(prev);
+            next.delete(actionKey);
+            return next;
+          });
+          setHiddenPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
+          void refetchPracticeStudents();
+        }, 480);
+      }
     } finally {
       setBusyPracticeStudentKey(null);
     }
@@ -374,7 +385,7 @@ export default function AmaliyPage() {
               </button>
               <button
                 onClick={() => setDateMode('all')}
-                disabled={!isManager}
+                disabled={!canUseHammasi}
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'all' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
@@ -383,7 +394,7 @@ export default function AmaliyPage() {
               </button>
               <button
                 onClick={() => setDateMode('custom')}
-                disabled={!isManager}
+                disabled={!canUseHammasi}
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'custom' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
@@ -391,14 +402,18 @@ export default function AmaliyPage() {
                 Sana
               </button>
             </div>
-            {isManager && (
+            {canUseHammasi && (
               <div className="mt-2">
                 <input
                   type="date"
-                  value={customDate}
+                  value={dateMode === 'all' ? hammasiDate : customDate}
                   onChange={(e) => {
-                    setCustomDate(e.target.value);
-                    setDateMode('custom');
+                    if (dateMode === 'all') {
+                      setHammasiDate(e.target.value);
+                    } else {
+                      setCustomDate(e.target.value);
+                      setDateMode('custom');
+                    }
                   }}
                   className="w-full px-3 py-2 border rounded-lg text-sm"
                 />
@@ -407,10 +422,7 @@ export default function AmaliyPage() {
           </div>
         </div>
 
-        <p className="text-xs kd-subtle">
-          {dayLabel}
-          {dateMode === 'all' ? ' · Faqat ko\'rish rejimi' : ''}
-        </p>
+        <p className="text-xs kd-subtle">{dayLabel}</p>
       </div>
 
       {mode === 'students' ? (
@@ -422,7 +434,11 @@ export default function AmaliyPage() {
               <div className="kd-card p-4">
                 <p className="text-lg font-semibold kd-title">{selectedStudent?.name ?? "O'quvchi"}</p>
                 <p className="text-xs kd-subtle mt-1">
-                  {exerciseData?.isClassDay ? 'Dars kuni' : 'Uy vazifasi kuni'}
+                  {dateMode === 'all'
+                    ? "Butun kurs mashqlari"
+                    : exerciseData?.isClassDay
+                      ? 'Dars kuni'
+                      : 'Uy vazifasi kuni'}
                 </p>
               </div>
 
@@ -496,7 +512,7 @@ export default function AmaliyPage() {
                           <div>
                             <p className="text-sm font-semibold kd-title">{exercise.name}</p>
                             <p className="text-xs kd-subtle mt-1">
-                              Bugun: {exercise.doneToday} · Jami: {exercise.doneTotal}/{exercise.targetCount}
+                              Tanlangan sana: {exercise.doneToday} · Jami: {exercise.doneTotal}/{exercise.targetCount}
                             </p>
                           </div>
                         </div>
@@ -506,7 +522,7 @@ export default function AmaliyPage() {
                             options={exerciseOptions}
                             value={selectedColorId}
                             selectedColorHex={selectedColor?.colorHex}
-                            disabled={dateMode === 'all' || exerciseOptions.length === 0}
+                            disabled={exerciseOptions.length === 0}
                             onChange={(nextId) =>
                               setSelectedColorByExercise((prev) => ({ ...prev, [exercise.id]: nextId }))
                             }
@@ -514,7 +530,6 @@ export default function AmaliyPage() {
                           <button
                             onClick={() => void completeStudentExercise(exercise.id)}
                             disabled={
-                              dateMode === 'all' ||
                               busyStudentExerciseKey === rowKey ||
                               exerciseOptions.length === 0
                             }
@@ -537,23 +552,21 @@ export default function AmaliyPage() {
             <div className="kd-card p-6 text-center kd-subtle text-sm">Avval oqimni tanlang</div>
           ) : !selectedPracticeId ? (
             <div className="kd-card p-6 text-center kd-subtle text-sm">Amaliy mashqni tanlang</div>
-          ) : dateMode === 'all' ? (
-            <div className="kd-card p-6 text-center kd-subtle text-sm">
-              By Amaliy rejimida Hammasi faqat ko'rish uchun emas. Bugun yoki Kecha tanlang.
-            </div>
           ) : (
             <>
               <div className="kd-card p-4">
                 <p className="text-sm kd-subtle">Tanlangan mashq</p>
                 <p className="text-lg font-semibold kd-title">{currentPractice?.name ?? 'Mashq'}</p>
                 <p className="text-xs kd-subtle mt-1">
-                  Qolgan o'quvchilar: {visiblePracticeStudents.length}
+                  {dateMode === 'all' ? "O'quvchilar" : "Qolgan o'quvchilar"}: {visiblePracticeStudents.length}
                 </p>
               </div>
 
               {visiblePracticeStudents.length === 0 ? (
                 <div className="kd-card p-6 text-center kd-subtle text-sm">
-                  Tanlangan sana uchun barcha o'quvchilar bajarilgan.
+                  {dateMode === 'all'
+                    ? "Bu mashq uchun o'quvchilar topilmadi."
+                    : "Tanlangan sana uchun barcha o'quvchilar bajarilgan."}
                 </div>
               ) : (
                 <div className="space-y-2">
@@ -579,6 +592,17 @@ export default function AmaliyPage() {
                             <p className="text-sm font-semibold kd-title">{student.name}</p>
                             <p className="text-xs kd-subtle">{student.customerNumber}</p>
                           </div>
+                          {dateMode === 'all' && (
+                            <span
+                              className={`text-xs px-2 py-0.5 rounded-full ${
+                                student.completedForDate
+                                  ? 'bg-green-100 text-green-700'
+                                  : 'bg-gray-100 text-gray-600'
+                              }`}
+                            >
+                              {student.completedForDate ? 'Bajarilgan' : 'Bajarilmagan'}
+                            </span>
+                          )}
                         </div>
 
                         <div className="grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
@@ -596,7 +620,11 @@ export default function AmaliyPage() {
                             disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
                             className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                           >
-                            {busyPracticeStudentKey === rowKey ? '...' : 'Bajarildi'}
+                            {busyPracticeStudentKey === rowKey
+                              ? '...'
+                              : dateMode === 'all' && student.completedForDate
+                                ? 'Yangilash'
+                                : 'Bajarildi'}
                           </button>
                         </div>
                       </div>
