@@ -72,31 +72,46 @@ function isMissingCustomerColumnError(
 async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
   try {
     const rows = await prisma.$queryRaw<Array<{ column_name: string }>>`
-      SELECT column_name
+      SELECT lower(column_name) AS column_name
       FROM information_schema.columns
       WHERE table_schema = 'public'
         AND table_name = 'customers'
-        AND column_name IN (
-          'telegramUsername',
+        AND lower(column_name) IN (
+          'telegramusername',
           'gender',
           'region',
-          'secondaryPhone',
+          'secondaryphone',
           'specialty',
           'address',
-          'instagramUsername',
-          'socialMediaConsent'
+          'instagramusername',
+          'socialmediaconsent'
         )
     `;
-    const existing = new Set(rows.map((row) => row.column_name));
+    // Optimistic fallback: if metadata is filtered (permissions/drift), keep fields enabled
+    // and let runtime missing-column handling disable only truly missing columns.
+    if (rows.length === 0) {
+      return {
+        telegramUsername: true,
+        gender: true,
+        region: true,
+        secondaryPhone: true,
+        specialty: true,
+        address: true,
+        instagramUsername: true,
+        socialMediaConsent: true,
+      };
+    }
+
+    const existing = new Set(rows.map((row) => row.column_name.toLowerCase()));
     return {
-      telegramUsername: existing.has('telegramUsername'),
+      telegramUsername: existing.has('telegramusername'),
       gender: existing.has('gender'),
       region: existing.has('region'),
-      secondaryPhone: existing.has('secondaryPhone'),
+      secondaryPhone: existing.has('secondaryphone'),
       specialty: existing.has('specialty'),
       address: existing.has('address'),
-      instagramUsername: existing.has('instagramUsername'),
-      socialMediaConsent: existing.has('socialMediaConsent'),
+      instagramUsername: existing.has('instagramusername'),
+      socialMediaConsent: existing.has('socialmediaconsent'),
     };
   } catch {
     // If metadata query is blocked, keep legacy behavior and let runtime queries decide.
