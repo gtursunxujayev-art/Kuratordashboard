@@ -325,7 +325,11 @@ export default function StudentsPage() {
       )}
 
       {selectedStudentId && (
-        <StudentDetailModal customerId={selectedStudentId} onClose={() => setSelectedStudentId(null)} />
+        <StudentDetailModal
+          customerId={selectedStudentId}
+          onClose={() => setSelectedStudentId(null)}
+          regions={filterOptions?.regions ?? []}
+        />
       )}
     </div>
   );
