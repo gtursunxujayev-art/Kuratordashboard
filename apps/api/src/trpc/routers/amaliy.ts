@@ -245,6 +245,7 @@ export const amaliyRouter = router({
         exerciseDefinitionId: z.string(),
         date: z.string(),
         courseRunId: z.string().optional(),
+        includeCompleted: z.boolean().optional().default(false),
         search: z.string().optional(),
       }),
     )
@@ -345,14 +346,22 @@ export const amaliyRouter = router({
           customerId: { in: assignedCustomerIds },
           completedAt: { gte: dayStart, lt: dayEnd },
         },
-        select: { customerId: true },
-        distinct: ['customerId'],
+        select: { id: true, customerId: true },
+        orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
       });
 
-      const completedSet = new Set(completedRows.map((row) => row.customerId));
-      const pendingCustomerIds = assignedCustomerIds.filter((customerId) => !completedSet.has(customerId));
+      const completedByCustomer = new Map<string, { completedLogId: string }>();
+      for (const row of completedRows) {
+        if (!completedByCustomer.has(row.customerId)) {
+          completedByCustomer.set(row.customerId, { completedLogId: row.id });
+        }
+      }
+      const completedSet = new Set(completedByCustomer.keys());
+      const scopedCustomerIds = input.includeCompleted
+        ? assignedCustomerIds
+        : assignedCustomerIds.filter((customerId) => !completedSet.has(customerId));
 
-      if (pendingCustomerIds.length === 0) {
+      if (scopedCustomerIds.length === 0) {
         return [];
       }
 
@@ -362,7 +371,7 @@ export const amaliyRouter = router({
         const rows = await prisma.customer.findMany({
           where: {
             tenantId,
-            id: { in: pendingCustomerIds },
+            id: { in: scopedCustomerIds },
             ...(search
               ? {
                   OR: [
@@ -387,6 +396,8 @@ export const amaliyRouter = router({
           name: row.name,
           customerNumber: row.customerNumber,
           telegramUsername: row.telegramUsername ?? null,
+          completedForDate: completedSet.has(row.id),
+          completedLogId: completedByCustomer.get(row.id)?.completedLogId ?? null,
         }));
       } catch (error) {
         if (!isMissingCustomerTelegramColumnError(error)) {
@@ -396,7 +407,7 @@ export const amaliyRouter = router({
         const rows = await prisma.customer.findMany({
           where: {
             tenantId,
-            id: { in: pendingCustomerIds },
+            id: { in: scopedCustomerIds },
             ...(search
               ? {
                   OR: [
@@ -419,6 +430,8 @@ export const amaliyRouter = router({
           name: row.name,
           customerNumber: row.customerNumber,
           telegramUsername: null,
+          completedForDate: completedSet.has(row.id),
+          completedLogId: completedByCustomer.get(row.id)?.completedLogId ?? null,
         }));
       }
     }),
@@ -510,7 +523,7 @@ export const amaliyRouter = router({
 
       const definitionIds = definitions.map((d) => d.id);
       const [todayLogs, totalLogs, attendanceTotals, attendanceAttended] = await Promise.all([
-        input.mode === 'day' && definitionIds.length > 0
+        definitionIds.length > 0
           ? prisma.studentExerciseLog.findMany({
               where: {
                 tenantId,
@@ -580,7 +593,7 @@ export const amaliyRouter = router({
           name: def.name,
           type: def.type,
           targetCount: def.targetCount,
-          doneToday: input.mode === 'day' ? (doneTodayByDef.get(def.id) ?? 0) : 0,
+          doneToday: doneTodayByDef.get(def.id) ?? 0,
           doneTotal: doneTotalByDef.get(def.id) ?? 0,
           colorPoints: def.colorPoints
             .sort((left, right) => left.colorOption.orderIndex - right.colorOption.orderIndex)
@@ -670,34 +683,66 @@ export const amaliyRouter = router({
         }
       }
 
-      const completedCount = await prisma.studentExerciseLog.count({
-        where: {
-          tenantId,
-          customerId: input.customerId,
-          exerciseDefinitionId: definition.id,
-        },
-      });
-
-      if (completedCount >= definition.targetCount) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: `Bu mashq uchun maksimal ${definition.targetCount} marta bajarish mumkin`,
-        });
-      }
+      const completedAt = parseDateInput(input.completedAt);
+      const dayStart = startOfDayLocal(completedAt);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
 
       try {
-        return await prisma.studentExerciseLog.create({
-          data: {
-            tenantId,
-            customerId: input.customerId,
-            exerciseDefinitionId: input.exerciseDefinitionId,
-            colorOptionId: colorOption.id,
-            colorHex: colorOption.colorHex,
-            points: definitionColorPoint.points,
-            completedAt: parseDateInput(input.completedAt),
-            loggedByUserId: user.userId,
-            note: input.note,
-          },
+        return await prisma.$transaction(async (tx) => {
+          const existingLogForDay = await tx.studentExerciseLog.findFirst({
+            where: {
+              tenantId,
+              customerId: input.customerId,
+              exerciseDefinitionId: definition.id,
+              completedAt: { gte: dayStart, lt: dayEnd },
+            },
+            select: { id: true },
+            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+          });
+
+          if (existingLogForDay) {
+            return tx.studentExerciseLog.update({
+              where: { id: existingLogForDay.id },
+              data: {
+                colorOptionId: colorOption.id,
+                colorHex: colorOption.colorHex,
+                points: definitionColorPoint.points,
+                completedAt: dayStart,
+                loggedByUserId: user.userId,
+                note: input.note,
+              },
+            });
+          }
+
+          const completedCount = await tx.studentExerciseLog.count({
+            where: {
+              tenantId,
+              customerId: input.customerId,
+              exerciseDefinitionId: definition.id,
+            },
+          });
+
+          if (completedCount >= definition.targetCount) {
+            throw new TRPCError({
+              code: 'BAD_REQUEST',
+              message: `Bu mashq uchun maksimal ${definition.targetCount} marta bajarish mumkin`,
+            });
+          }
+
+          return tx.studentExerciseLog.create({
+            data: {
+              tenantId,
+              customerId: input.customerId,
+              exerciseDefinitionId: input.exerciseDefinitionId,
+              colorOptionId: colorOption.id,
+              colorHex: colorOption.colorHex,
+              points: definitionColorPoint.points,
+              completedAt: dayStart,
+              loggedByUserId: user.userId,
+              note: input.note,
+            },
+          });
         });
       } catch (error) {
         if (isPointsTypeMigrationMismatchError(error)) {
