@@ -1603,7 +1603,11 @@ export const dashboardRouter = router({
             weekColors,
             dayPoints,
           };
-          totalPoints += points;
+          // "extra" (Qo'shimcha mashqlar) is displayed in report cells
+          // but excluded from the aggregated Jami ball.
+          if (practice.type !== 'extra') {
+            totalPoints += points;
+          }
         }
 
         return {
