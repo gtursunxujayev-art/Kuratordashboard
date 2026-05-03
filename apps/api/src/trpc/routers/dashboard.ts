@@ -259,6 +259,17 @@ function toDayKey(date: Date): string {
   return toDateLabel(startOfDayLocal(date));
 }
 
+function isAmaliyPracticeEligibleOnDate(type: string, date: Date): boolean {
+  const day = startOfDayLocal(date).getDay();
+  if (type === 'class') {
+    return day === 0 || day === 6;
+  }
+  if (type === 'homework' || type === 'extra') {
+    return day >= 1 && day <= 5;
+  }
+  return true;
+}
+
 function enumerateDateRange(range: { from: Date; to: Date }): Array<{ date: string; label: string }> {
   const result: Array<{ date: string; label: string }> = [];
   for (let cursor = startOfDayLocal(range.from); cursor.getTime() < range.to.getTime(); cursor = addDays(cursor, 1)) {
@@ -1469,14 +1480,26 @@ export const dashboardRouter = router({
       const latestColorByCell = new Map<string, string | null>();
       const seenLogsByCell = new Set<string>();
       const weekPointsByCell = new Map<string, Record<AmaliyWeekKey, number>>();
+      const weekHasLogsByCell = new Map<string, Record<AmaliyWeekKey, boolean>>();
       const weekColorStatsByCell = new Map<
         string,
         Record<AmaliyWeekKey, Map<string, { count: number; latestRank: number }>>
       >();
       const dayPointsByCell = new Map<string, Map<string, number>>();
+      const dayHasLogsByCell = new Map<string, Map<string, boolean>>();
+      const dayColorByCell = new Map<string, Map<string, string | null>>();
+      const practiceTypeById = new Map(practices.map((practice) => [practice.id, practice.type]));
 
       for (let idx = 0; idx < logs.length; idx += 1) {
         const log = logs[idx];
+        const practiceType = practiceTypeById.get(log.exerciseDefinitionId);
+        if (!practiceType) continue;
+
+        const completedDay = startOfDayLocal(log.completedAt);
+        if (!isAmaliyPracticeEligibleOnDate(practiceType, completedDay)) {
+          continue;
+        }
+
         const key = `${log.customerId}:${log.exerciseDefinitionId}`;
         const pointValue = log.points ?? 0;
         sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + pointValue);
@@ -1485,7 +1508,6 @@ export const dashboardRouter = router({
           latestColorByCell.set(key, log.colorHex ?? null);
         }
 
-        const completedDay = startOfDayLocal(log.completedAt);
         const weekPoints = weekPointsByCell.get(key) ?? {
           week1: 0,
           week2: 0,
@@ -1493,6 +1515,14 @@ export const dashboardRouter = router({
           week4: 0,
           week5: 0,
           week6: 0,
+        };
+        const weekHasLogs = weekHasLogsByCell.get(key) ?? {
+          week1: false,
+          week2: false,
+          week3: false,
+          week4: false,
+          week5: false,
+          week6: false,
         };
         const weekColorStats = weekColorStatsByCell.get(key) ?? {
           week1: new Map<string, { count: number; latestRank: number }>(),
@@ -1505,6 +1535,7 @@ export const dashboardRouter = router({
         for (const weekKey of AMALIY_WEEK_KEYS) {
           if (isDateInRange(completedDay, weekRanges[weekKey])) {
             weekPoints[weekKey] += pointValue;
+            weekHasLogs[weekKey] = true;
             if (log.colorHex) {
               const bucket = weekColorStats[weekKey];
               const current = bucket.get(log.colorHex);
@@ -1517,14 +1548,52 @@ export const dashboardRouter = router({
           }
         }
         weekPointsByCell.set(key, weekPoints);
+        weekHasLogsByCell.set(key, weekHasLogs);
         weekColorStatsByCell.set(key, weekColorStats);
 
         if (activeWeekRange && isDateInRange(completedDay, activeWeekRange)) {
           const dayMap = dayPointsByCell.get(key) ?? new Map<string, number>();
+          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
+          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
           const dayKey = toDayKey(completedDay);
           dayMap.set(dayKey, (dayMap.get(dayKey) ?? 0) + pointValue);
+          dayHasLogs.set(dayKey, true);
+          if (!dayColors.has(dayKey)) {
+            dayColors.set(dayKey, log.colorHex ?? null);
+          }
           dayPointsByCell.set(key, dayMap);
+          dayHasLogsByCell.set(key, dayHasLogs);
+          dayColorByCell.set(key, dayColors);
         }
+      }
+
+      const weekApplicabilityByPracticeId = new Map<string, Record<AmaliyWeekKey, boolean>>();
+      const dayApplicabilityByPracticeId = new Map<string, Map<string, boolean>>();
+      for (const practice of practices) {
+        const weekApplicability: Record<AmaliyWeekKey, boolean> = {
+          week1: false,
+          week2: false,
+          week3: false,
+          week4: false,
+          week5: false,
+          week6: false,
+        };
+        for (const weekKey of AMALIY_WEEK_KEYS) {
+          const weekDays = enumerateDateRange(weekRanges[weekKey]);
+          weekApplicability[weekKey] = weekDays.some((day) =>
+            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+          );
+        }
+        weekApplicabilityByPracticeId.set(practice.id, weekApplicability);
+
+        const dayApplicability = new Map<string, boolean>();
+        for (const day of activeWeekDays) {
+          dayApplicability.set(
+            day.date,
+            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+          );
+        }
+        dayApplicabilityByPracticeId.set(practice.id, dayApplicability);
       }
 
       const rows = students.map((student) => {
@@ -1538,6 +1607,18 @@ export const dashboardRouter = router({
             weekPoints: Record<AmaliyWeekKey, number>;
             weekColors: Record<AmaliyWeekKey, string | null>;
             dayPoints: Array<{ date: string; label: string; points: number }>;
+            dayStats: Array<{
+              date: string;
+              label: string;
+              points: number;
+              hasLog: boolean;
+              colorHex: string | null;
+              isApplicable: boolean;
+            }>;
+            weekStats: Record<
+              AmaliyWeekKey,
+              { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
+            >;
           }
         > = {};
         let totalPoints = 0;
@@ -1555,6 +1636,14 @@ export const dashboardRouter = router({
             week5: 0,
             week6: 0,
           };
+          const weekHasLogs = weekHasLogsByCell.get(key) ?? {
+            week1: false,
+            week2: false,
+            week3: false,
+            week4: false,
+            week5: false,
+            week6: false,
+          };
           const weekColorStats = weekColorStatsByCell.get(key) ?? {
             week1: new Map<string, { count: number; latestRank: number }>(),
             week2: new Map<string, { count: number; latestRank: number }>(),
@@ -1571,6 +1660,17 @@ export const dashboardRouter = router({
             week5: null,
             week6: null,
           };
+          const weekStats: Record<
+            AmaliyWeekKey,
+            { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
+          > = {
+            week1: { points: weekPoints.week1, hasLog: weekHasLogs.week1, colorHex: null, isApplicable: false },
+            week2: { points: weekPoints.week2, hasLog: weekHasLogs.week2, colorHex: null, isApplicable: false },
+            week3: { points: weekPoints.week3, hasLog: weekHasLogs.week3, colorHex: null, isApplicable: false },
+            week4: { points: weekPoints.week4, hasLog: weekHasLogs.week4, colorHex: null, isApplicable: false },
+            week5: { points: weekPoints.week5, hasLog: weekHasLogs.week5, colorHex: null, isApplicable: false },
+            week6: { points: weekPoints.week6, hasLog: weekHasLogs.week6, colorHex: null, isApplicable: false },
+          };
           for (const weekKey of AMALIY_WEEK_KEYS) {
             let bestColor: string | null = null;
             let bestCount = -1;
@@ -1586,12 +1686,25 @@ export const dashboardRouter = router({
               }
             }
             weekColors[weekKey] = bestColor;
+            weekStats[weekKey].colorHex = bestColor;
+            weekStats[weekKey].isApplicable =
+              weekApplicabilityByPracticeId.get(practice.id)?.[weekKey] ?? false;
           }
           const dayPointMap = dayPointsByCell.get(key) ?? new Map<string, number>();
-          const dayPoints = activeWeekDays.map((day) => ({
+          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
+          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
+          const dayStats = activeWeekDays.map((day) => ({
             date: day.date,
             label: day.label,
             points: dayPointMap.get(day.date) ?? 0,
+            hasLog: dayHasLogs.get(day.date) ?? false,
+            colorHex: dayColors.get(day.date) ?? null,
+            isApplicable: dayApplicabilityByPracticeId.get(practice.id)?.get(day.date) ?? false,
+          }));
+          const dayPoints = dayStats.map((day) => ({
+            date: day.date,
+            label: day.label,
+            points: day.points,
           }));
 
           cells[practice.id] = {
@@ -1602,6 +1715,8 @@ export const dashboardRouter = router({
             weekPoints,
             weekColors,
             dayPoints,
+            dayStats,
+            weekStats,
           };
           // "extra" (Qo'shimcha mashqlar) is displayed in report cells
           // but excluded from the aggregated Jami ball.
