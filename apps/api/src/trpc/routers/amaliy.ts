@@ -94,7 +94,7 @@ function isEligibleExerciseDate(type: string, date: Date): boolean {
     return day === 0 || day === 6;
   }
   if (type === 'extra') {
-    return true;
+    return day >= 1 && day <= 5;
   }
   return true;
 }
@@ -399,6 +399,9 @@ export const amaliyRouter = router({
       }
 
       const date = parseDateInput(input.date);
+      if (!input.includeCompleted && !isEligibleExerciseDate(exercise.type, date)) {
+        return [];
+      }
       const dayStart = startOfDayLocal(date);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
@@ -638,12 +641,14 @@ export const amaliyRouter = router({
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
 
-      const whereDefinitions = {
+      const whereDefinitions: Record<string, unknown> = {
         tenantId,
         courseId: courseRun.courseId,
         isActive: true,
-        ...(input.mode === 'day' ? { type: classDay ? 'class' : 'homework' } : {}),
       };
+      if (input.mode === 'day') {
+        whereDefinitions.type = classDay ? 'class' : { in: ['homework', 'extra'] };
+      }
 
       const definitions = await prisma.exerciseDefinition.findMany({
         where: whereDefinitions,
@@ -848,7 +853,7 @@ export const amaliyRouter = router({
 
       const definition = await prisma.exerciseDefinition.findFirst({
         where: { id: input.exerciseDefinitionId, tenantId },
-        select: { id: true, targetCount: true },
+        select: { id: true, type: true, targetCount: true },
       });
       if (!definition) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
@@ -894,6 +899,12 @@ export const amaliyRouter = router({
       const dayStart = startOfDayLocal(completedAt);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
+      if (!isEligibleExerciseDate(definition.type, dayStart)) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Tanlangan sana ushbu mashq turi uchun mos emas",
+        });
+      }
 
       try {
         return await prisma.$transaction(async (tx) => {
