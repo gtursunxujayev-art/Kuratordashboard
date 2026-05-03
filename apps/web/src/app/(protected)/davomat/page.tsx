@@ -37,6 +37,12 @@ function statusLabel(status: AttendanceStatus): string {
   return 'Tanlanmagan';
 }
 
+function statusTextColor(status: AttendanceStatus): string {
+  if (status === 'keldi') return '#15803d';
+  if (status === 'kelmadi') return '#b91c1c';
+  return '#111827';
+}
+
 function slotKey(customerId: string, lessonType: 'base' | 'premium_extra', date: string): string {
   return `${customerId}:${lessonType}:${date}`;
 }
@@ -269,20 +275,15 @@ export default function DavomatPage() {
                               return (
                                 <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                   <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                  <select
+                                  <AttendanceStatusSelect
                                     value={selectedStatus}
-                                    onChange={(event) =>
+                                    onChange={(nextStatus) =>
                                       setSelectedAllBase((prev) => ({
                                         ...prev,
-                                        [key]: event.target.value as AttendanceStatus,
+                                        [key]: nextStatus,
                                       }))
                                     }
-                                    className="w-full px-2 py-2 border rounded-lg text-sm"
-                                  >
-                                    <option value="tanlanmagan">Tanlanmagan</option>
-                                    <option value="keldi">Keldi</option>
-                                    <option value="kelmadi">Kelmadi</option>
-                                  </select>
+                                  />
                                 </div>
                               );
                             })}
@@ -301,20 +302,15 @@ export default function DavomatPage() {
                                 return (
                                   <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                     <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                    <select
+                                    <AttendanceStatusSelect
                                       value={selectedStatus}
-                                      onChange={(event) =>
+                                      onChange={(nextStatus) =>
                                         setSelectedAllPremium((prev) => ({
                                           ...prev,
-                                          [key]: event.target.value as AttendanceStatus,
+                                          [key]: nextStatus,
                                         }))
                                       }
-                                      className="w-full px-2 py-2 border rounded-lg text-sm"
-                                    >
-                                      <option value="tanlanmagan">Tanlanmagan</option>
-                                      <option value="keldi">Keldi</option>
-                                      <option value="kelmadi">Kelmadi</option>
-                                    </select>
+                                    />
                                   </div>
                                 );
                               })}
@@ -335,38 +331,30 @@ export default function DavomatPage() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-1 md:grid-cols-[1fr,1fr,180px] gap-2">
-                      <select
+                      <AttendanceStatusSelect
                         value={selectedDayBase[student.id] ?? student.dayStatuses.base}
                         disabled={!isLessonDay || busySaveKey === busyKey}
-                        onChange={(event) =>
+                        labelPrefix="Asosiy"
+                        onChange={(nextStatus) =>
                           setSelectedDayBase((prev) => ({
                             ...prev,
-                            [student.id]: event.target.value as AttendanceStatus,
+                            [student.id]: nextStatus,
                           }))
                         }
-                        className="w-full px-3 py-2 border rounded-lg text-sm disabled:opacity-50"
-                      >
-                        <option value="tanlanmagan">Asosiy: Tanlanmagan</option>
-                        <option value="keldi">Asosiy: Keldi</option>
-                        <option value="kelmadi">Asosiy: Kelmadi</option>
-                      </select>
+                      />
 
                       {student.isPremiumEligible ? (
-                        <select
+                        <AttendanceStatusSelect
                           value={selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan'}
                           disabled={!isLessonDay || busySaveKey === busyKey}
-                          onChange={(event) =>
+                          labelPrefix="Premium"
+                          onChange={(nextStatus) =>
                             setSelectedDayPremium((prev) => ({
                               ...prev,
-                              [student.id]: event.target.value as AttendanceStatus,
+                              [student.id]: nextStatus,
                             }))
                           }
-                          className="w-full px-3 py-2 border rounded-lg text-sm disabled:opacity-50"
-                        >
-                          <option value="tanlanmagan">Premium: Tanlanmagan</option>
-                          <option value="keldi">Premium: Keldi</option>
-                          <option value="kelmadi">Premium: Kelmadi</option>
-                        </select>
+                        />
                       ) : (
                         <div className="w-full px-3 py-2 border rounded-lg text-sm kd-subtle">
                           Premium: mos emas
@@ -398,5 +386,38 @@ export default function DavomatPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function AttendanceStatusSelect({
+  value,
+  disabled,
+  labelPrefix,
+  onChange,
+}: {
+  value: AttendanceStatus;
+  disabled?: boolean;
+  labelPrefix?: string;
+  onChange: (nextStatus: AttendanceStatus) => void;
+}) {
+  const prefix = labelPrefix ? `${labelPrefix}: ` : '';
+  return (
+    <select
+      value={value}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value as AttendanceStatus)}
+      className="w-full px-3 py-2 border rounded-lg text-sm disabled:opacity-50"
+      style={{ color: statusTextColor(value), fontWeight: value === 'tanlanmagan' ? 500 : 600 }}
+    >
+      <option value="tanlanmagan" style={{ color: '#111827' }}>
+        {prefix}Tanlanmagan
+      </option>
+      <option value="keldi" style={{ color: '#15803d' }}>
+        {prefix}Keldi
+      </option>
+      <option value="kelmadi" style={{ color: '#b91c1c' }}>
+        {prefix}Kelmadi
+      </option>
+    </select>
   );
 }
