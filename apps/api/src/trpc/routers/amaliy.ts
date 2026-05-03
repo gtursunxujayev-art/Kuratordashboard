@@ -45,6 +45,17 @@ function isPointsTypeMigrationMismatchError(error: unknown): boolean {
   );
 }
 
+function isTransactionClosedError(error: unknown): boolean {
+  const code = String((error as any)?.code || '').toUpperCase();
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code === 'P2028') return true;
+  return (
+    message.includes('transaction not found') ||
+    message.includes('transaction already closed') ||
+    (message.includes('transaction api error') && message.includes('transaction id'))
+  );
+}
+
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
   return day === 0 || day === 6;
@@ -961,6 +972,9 @@ export const amaliyRouter = router({
               note: input.note,
             },
           });
+        }, {
+          maxWait: 5000,
+          timeout: 10000,
         });
       } catch (error) {
         if (isPointsTypeMigrationMismatchError(error)) {
@@ -968,6 +982,12 @@ export const amaliyRouter = router({
             code: 'PRECONDITION_FAILED',
             message:
               "DB migratsiya qo'llanmagan: kasr ballar uchun `points` ustuni yangilanmagan. `20260428093000_allow_fractional_amaliy_points` migratsiyasini deploy qiling.",
+          });
+        }
+        if (isTransactionClosedError(error)) {
+          throw new TRPCError({
+            code: 'TIMEOUT',
+            message: "Saqlash vaqtida ulanish uzildi, qayta urinib ko'ring",
           });
         }
         throw error;
@@ -1093,94 +1113,57 @@ export const amaliyRouter = router({
 
       const runStart = startOfDayLocal(courseRun.startDate);
       const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
-      const selectedDateKeySet = new Set(selectedEntries.map((row) => row.date));
+      const createRows = selectedEntries.map((row) => {
+        const dayStart = startOfDayLocal(parseDateInput(row.date));
+        const colorOption = colorOptionMap.get(row.colorOptionId)!;
+        const points = definitionColorPointMap.get(row.colorOptionId)!;
+        return {
+          tenantId,
+          customerId: input.customerId,
+          exerciseDefinitionId: definition.id,
+          colorOptionId: row.colorOptionId,
+          colorHex: colorOption.colorHex,
+          points,
+          completedAt: dayStart,
+          loggedByUserId: user.userId,
+        };
+      });
 
       try {
-        return await prisma.$transaction(async (tx) => {
-          const existingLogs = await tx.studentExerciseLog.findMany({
+        const operations = [
+          prisma.studentExerciseLog.deleteMany({
             where: {
               tenantId,
               customerId: input.customerId,
               exerciseDefinitionId: definition.id,
               completedAt: { gte: runStart, lt: runEndExclusive },
             },
-            select: { id: true, completedAt: true, createdAt: true },
-            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
-          });
+          }),
+          ...(createRows.length > 0
+            ? [prisma.studentExerciseLog.createMany({ data: createRows })]
+            : []),
+        ];
 
-          const logsByDate = new Map<string, Array<{ id: string }>>();
-          for (const log of existingLogs) {
-            const dateKey = toDateKeyLocal(log.completedAt);
-            const arr = logsByDate.get(dateKey) ?? [];
-            arr.push({ id: log.id });
-            logsByDate.set(dateKey, arr);
-          }
-
-          const deleteIds: string[] = [];
-          for (const [dateKey, logs] of logsByDate.entries()) {
-            if (!selectedDateKeySet.has(dateKey)) {
-              deleteIds.push(...logs.map((log) => log.id));
-              continue;
-            }
-            if (logs.length > 1) {
-              deleteIds.push(...logs.slice(1).map((log) => log.id));
-            }
-          }
-
-          for (const row of selectedEntries) {
-            const dayStart = startOfDayLocal(parseDateInput(row.date));
-            const existing = logsByDate.get(row.date)?.[0];
-            const colorOption = colorOptionMap.get(row.colorOptionId)!;
-            const points = definitionColorPointMap.get(row.colorOptionId)!;
-
-            if (existing) {
-              await tx.studentExerciseLog.update({
-                where: { id: existing.id },
-                data: {
-                  colorOptionId: row.colorOptionId,
-                  colorHex: colorOption.colorHex,
-                  points,
-                  completedAt: dayStart,
-                  loggedByUserId: user.userId,
-                },
-              });
-            } else {
-              await tx.studentExerciseLog.create({
-                data: {
-                  tenantId,
-                  customerId: input.customerId,
-                  exerciseDefinitionId: definition.id,
-                  colorOptionId: row.colorOptionId,
-                  colorHex: colorOption.colorHex,
-                  points,
-                  completedAt: dayStart,
-                  loggedByUserId: user.userId,
-                },
-              });
-            }
-          }
-
-          if (deleteIds.length > 0) {
-            await tx.studentExerciseLog.deleteMany({
-              where: {
-                tenantId,
-                id: { in: deleteIds },
-              },
-            });
-          }
-
-          return {
-            success: true,
-            savedCount: selectedEntries.length,
-            deletedCount: deleteIds.length,
-          };
-        });
+        const result = await prisma.$transaction(operations);
+        const deletedCount = result[0]?.count ?? 0;
+        const savedCount = result.length > 1 ? (result[1] as { count: number }).count : 0;
+        return {
+          success: true,
+          savedCount,
+          deletedCount,
+        };
       } catch (error) {
         if (isPointsTypeMigrationMismatchError(error)) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message:
               "DB migratsiya qo'llanmagan: kasr ballar uchun `points` ustuni yangilanmagan. `20260428093000_allow_fractional_amaliy_points` migratsiyasini deploy qiling.",
+          });
+        }
+        if (isTransactionClosedError(error)) {
+          throw new TRPCError({
+            code: 'TIMEOUT',
+            message: "Saqlash vaqtida ulanish uzildi, qayta urinib ko'ring",
           });
         }
         throw error;
