@@ -68,18 +68,33 @@ function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Ar
   const to = new Date(`${dateToInclusive}T00:00:00`);
   if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from.getTime() > to.getTime()) return [];
 
+  const dayLabels = ['Yak', 'Du', 'Se', 'Chor', 'Pay', 'Ju', 'Shan'] as const;
   const columns: Array<{ key: string; label: string }> = [];
   const cursor = new Date(from);
-  let index = 1;
   while (cursor.getTime() <= to.getTime()) {
     const y = cursor.getFullYear();
     const m = String(cursor.getMonth() + 1).padStart(2, '0');
     const d = String(cursor.getDate()).padStart(2, '0');
-    columns.push({ key: `${y}-${m}-${d}`, label: `${index}-kun` });
+    columns.push({ key: `${y}-${m}-${d}`, label: dayLabels[cursor.getDay()] });
     cursor.setDate(cursor.getDate() + 1);
-    index += 1;
   }
   return columns;
+}
+
+function dayTypeForDateKey(dateKey: string): 'weekday' | 'weekend' | 'unknown' {
+  const date = new Date(`${dateKey}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  const day = date.getDay();
+  return day === 0 || day === 6 ? 'weekend' : 'weekday';
+}
+
+function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean {
+  const date = new Date(`${dayKey}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return true;
+  const day = date.getDay();
+  if (practiceType === 'class') return day === 0 || day === 6;
+  if (practiceType === 'homework' || practiceType === 'extra') return day >= 1 && day <= 5;
+  return true;
 }
 
 export default function HisobotPage() {
@@ -158,7 +173,25 @@ export default function HisobotPage() {
   const isTodayPreset = datePreset === 'today';
   const isWeekPreset = WEEK_PRESETS.includes(datePreset);
   const hasSubColumns = !isTodayPreset;
-  const dayColumns = buildDayColumns(report?.meta.dateFrom, report?.meta.dateToInclusive);
+  const dayColumnsRaw = buildDayColumns(report?.meta.dateFrom, report?.meta.dateToInclusive);
+  const runDayMode = useMemo<'weekday' | 'weekend' | 'mixed'>(() => {
+    const practiceTypes = new Set((report?.practices ?? []).map((practice) => practice.type));
+    if (practiceTypes.size === 0) return 'mixed';
+    const allWeekday = Array.from(practiceTypes).every((type) => type === 'homework' || type === 'extra');
+    if (allWeekday) return 'weekday';
+    const allWeekend = Array.from(practiceTypes).every((type) => type === 'class');
+    if (allWeekend) return 'weekend';
+    return 'mixed';
+  }, [report?.practices]);
+  const dayColumns = useMemo(() => {
+    if (runDayMode === 'weekday') {
+      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekday');
+    }
+    if (runDayMode === 'weekend') {
+      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekend');
+    }
+    return dayColumnsRaw;
+  }, [dayColumnsRaw, runDayMode]);
   const subColumns =
     isTodayPreset
       ? [] as Array<{ key: string; label: string }>
@@ -380,9 +413,11 @@ export default function HisobotPage() {
                       {isTodayPreset
                         ? report.practices.map((practice) => {
                             const cell = student.cells[practice.id];
+                            const isApplicable = isPracticeEligibleOnDate(practice.type, report.meta.dateFrom);
+                            const hasLog = cell?.hasLogs ?? false;
                             const points = cell?.points ?? 0;
-                            const colorHex = cell?.colorHex ?? null;
-                            const isColored = Boolean(colorHex);
+                            const colorHex = hasLog ? (cell?.colorHex ?? null) : null;
+                            const isColored = Boolean(colorHex) && hasLog && isApplicable;
                             const backgroundColor = isColored ? colorHex! : '#FFFFFF';
                             const color = isColored ? textColorForBackground(colorHex) : '#374151';
 
@@ -392,35 +427,42 @@ export default function HisobotPage() {
                                 className="px-2 py-2 text-center border-r border-gray-100 font-semibold"
                                 style={{ backgroundColor, color }}
                               >
-                                {formatPoint(points)}
+                                {!isApplicable || !hasLog ? '-' : formatPoint(points)}
                               </td>
                             );
                           })
                         : report.practices.flatMap((practice) => {
                             const cell = student.cells[practice.id];
                             if (isWeekPreset) {
-                              const dayPointsByDate = new Map((cell?.dayPoints ?? []).map((day) => [day.date, day.points]));
+                              const dayStatsByDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
                               return subColumns.map((dayColumn) => {
-                                const points = dayPointsByDate.get(dayColumn.key) ?? 0;
-                                const hasPoints = points > 0;
-                                const backgroundColor = hasPoints && cell?.colorHex ? cell.colorHex : '#FFFFFF';
-                                const color = hasPoints && cell?.colorHex ? textColorForBackground(cell.colorHex) : '#374151';
+                                const stat = dayStatsByDate.get(dayColumn.key);
+                                const isApplicable = stat?.isApplicable ?? isPracticeEligibleOnDate(practice.type, dayColumn.key);
+                                const hasLog = stat?.hasLog ?? false;
+                                const points = stat?.points ?? 0;
+                                const dayColor = hasLog ? (stat?.colorHex ?? null) : null;
+                                const isColored = Boolean(dayColor) && hasLog && isApplicable;
+                                const backgroundColor = isColored ? dayColor! : '#FFFFFF';
+                                const color = isColored ? textColorForBackground(dayColor) : '#374151';
                                 return (
                                   <td
                                     key={`${student.id}-${practice.id}-${dayColumn.key}`}
                                     className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
                                     style={{ backgroundColor, color }}
                                   >
-                                    {formatPoint(points)}
+                                    {!isApplicable || !hasLog ? '-' : formatPoint(points)}
                                   </td>
                                 );
                               });
                             }
 
                             return WEEK_KEYS.map((weekKey) => {
-                              const points = cell?.weekPoints?.[weekKey] ?? 0;
-                              const weekColor = cell?.weekColors?.[weekKey] ?? null;
-                              const isColored = Boolean(weekColor);
+                              const weekStat = cell?.weekStats?.[weekKey];
+                              const points = weekStat?.points ?? cell?.weekPoints?.[weekKey] ?? 0;
+                              const hasLog = weekStat?.hasLog ?? false;
+                              const isApplicable = weekStat?.isApplicable ?? true;
+                              const weekColor = hasLog ? (weekStat?.colorHex ?? cell?.weekColors?.[weekKey] ?? null) : null;
+                              const isColored = Boolean(weekColor) && hasLog && isApplicable;
                               const backgroundColor = isColored ? weekColor! : '#FFFFFF';
                               const color = isColored ? textColorForBackground(weekColor) : '#374151';
 
@@ -430,7 +472,7 @@ export default function HisobotPage() {
                                   className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
                                   style={{ backgroundColor, color }}
                                 >
-                                  {formatPoint(points)}
+                                  {!isApplicable || !hasLog ? '-' : formatPoint(points)}
                                 </td>
                               );
                             });
