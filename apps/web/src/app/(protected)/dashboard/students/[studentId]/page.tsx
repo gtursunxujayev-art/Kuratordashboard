@@ -42,7 +42,7 @@ export default function DashboardStudentDetailPage() {
             <SummaryCard title="Samaradorlik" value={`${data.performance.performancePercent}%`} />
             <SummaryCard
               title="Vazifalar"
-              value={`${data.performance.completedTasks}/${data.performance.completedTasks + data.performance.pendingTasks}`}
+              value={`${data.homeworkSummary.completed}/${data.homeworkSummary.total}`}
             />
             <SummaryCard title="Davomat" value={`${data.performance.attendedLessons}/${data.performance.totalLessons}`} />
             <SummaryCard title="Mashqlar" value={String(data.performance.exerciseLogs)} />
