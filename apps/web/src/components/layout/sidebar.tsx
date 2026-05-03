@@ -17,6 +17,7 @@ const navItems = [
 ] as const;
 
 const managerNavItems = [
+  { href: '/davomat', label: 'Davomat', icon: 'DV' },
   { href: '/hisobot', label: 'Hisobot', icon: 'HS' },
   { href: '/settings', label: 'Sozlamalar', icon: 'SZ' },
 ];
