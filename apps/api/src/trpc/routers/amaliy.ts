@@ -135,6 +135,27 @@ function isPremiumTariffName(name: string | null | undefined): boolean {
   return value.includes('premium') || value.includes('vip');
 }
 
+type AttendanceStatus = 'tanlanmagan' | 'keldi' | 'kelmadi';
+
+function buildAttendanceSlotDates(params: {
+  startDate: Date;
+  endDate: Date;
+  targetCount: number;
+}) {
+  const start = startOfDayLocal(params.startDate);
+  const end = startOfDayLocal(params.endDate);
+  const classDays: Date[] = [];
+  for (let cursor = new Date(start); cursor.getTime() <= end.getTime(); cursor = addDaysLocal(cursor, 1)) {
+    if (isClassDay(cursor)) {
+      classDays.push(new Date(cursor));
+    }
+  }
+  return {
+    slotDates: classDays.slice(0, Math.max(0, params.targetCount)),
+    hasInsufficientDates: classDays.length < params.targetCount,
+  };
+}
+
 async function resolveCourseRunCustomerIds(params: {
   tenantId: string;
   courseRunId: string;
@@ -588,6 +609,474 @@ export const amaliyRouter = router({
             : [],
           hasInsufficientEligibleDates: slotInfo.hasInsufficientEligibleDates,
         }));
+      }
+    }),
+
+  listAttendanceStudents: protectedProcedure
+    .input(
+      z.object({
+        courseRunId: z.string(),
+        date: z.string(),
+        mode: z.enum(['day', 'all']).default('day'),
+        search: z.string().optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const isManagerOrAdmin =
+        user.roles.includes('Admin') ||
+        user.roles.includes('Manager');
+      if (!isManagerOrAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      }
+
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: { tenantId, id: input.courseRunId },
+          select: {
+            id: true,
+            name: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            baseLessons: true,
+            premiumExtraLessons: true,
+          },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            return null;
+          }
+          throw error;
+        });
+
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const selectedDate = startOfDayLocal(parseDateInput(input.date));
+      const selectedDateEnd = addDaysLocal(selectedDate, 1);
+      const isLessonDay = isClassDay(selectedDate);
+
+      const runCustomerIds = await resolveCourseRunCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
+      });
+      if (runCustomerIds.length === 0) {
+        return {
+          mode: input.mode,
+          isLessonDay,
+          courseRunId: courseRun.id,
+          dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
+          slotDates: {
+            base: [] as string[],
+            premiumExtra: [] as string[],
+            hasInsufficientBase: false,
+            hasInsufficientPremium: false,
+          },
+          students: [] as Array<{
+            id: string;
+            name: string;
+            customerNumber: string;
+            telegramUsername: string | null;
+            tariffName: string | null;
+            isPremiumEligible: boolean;
+            dayStatuses: { base: AttendanceStatus; premiumExtra: AttendanceStatus | null };
+            baseSlots: Array<{ date: string; status: AttendanceStatus }>;
+            premiumExtraSlots: Array<{ date: string; status: AttendanceStatus }>;
+          }>,
+        };
+      }
+
+      const latestIncomes = await prisma.income.findMany({
+        where: {
+          tenantId,
+          courseId: courseRun.courseId,
+          customerId: { in: runCustomerIds },
+          ...ACTIVE_ENROLLMENT_FILTER,
+        },
+        select: {
+          customerId: true,
+          entryDate: true,
+          tariff: { select: { name: true } },
+        },
+        orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }],
+      });
+
+      const tariffNameByCustomer = new Map<string, string | null>();
+      for (const income of latestIncomes) {
+        if (!tariffNameByCustomer.has(income.customerId)) {
+          tariffNameByCustomer.set(income.customerId, income.tariff?.name ?? null);
+        }
+      }
+
+      const premiumEligibilityByCustomer = new Map<string, boolean>();
+      for (const customerId of runCustomerIds) {
+        premiumEligibilityByCustomer.set(
+          customerId,
+          isPremiumTariffName(tariffNameByCustomer.get(customerId)),
+        );
+      }
+
+      const search = input.search?.trim();
+      const customerWhere: Record<string, unknown> = {
+        tenantId,
+        id: { in: runCustomerIds },
+      };
+      if (search) {
+        customerWhere.OR = [
+          { name: { contains: search, mode: 'insensitive' } },
+          { customerNumber: { contains: search, mode: 'insensitive' } },
+          { telegramUsername: { contains: search, mode: 'insensitive' } },
+        ];
+      }
+
+      let students: Array<{
+        id: string;
+        name: string;
+        customerNumber: string;
+        telegramUsername: string | null;
+      }> = [];
+
+      try {
+        students = await prisma.customer.findMany({
+          where: customerWhere as any,
+          select: {
+            id: true,
+            name: true,
+            customerNumber: true,
+            telegramUsername: true,
+          },
+          orderBy: { name: 'asc' },
+        });
+      } catch (error) {
+        if (!isMissingCustomerTelegramColumnError(error)) {
+          throw error;
+        }
+        const fallbackWhere: Record<string, unknown> = {
+          tenantId,
+          id: { in: runCustomerIds },
+        };
+        if (search) {
+          fallbackWhere.OR = [
+            { name: { contains: search, mode: 'insensitive' } },
+            { customerNumber: { contains: search, mode: 'insensitive' } },
+          ];
+        }
+        const fallbackRows = await prisma.customer.findMany({
+          where: fallbackWhere as any,
+          select: {
+            id: true,
+            name: true,
+            customerNumber: true,
+          },
+          orderBy: { name: 'asc' },
+        });
+        students = fallbackRows.map((row) => ({
+          ...row,
+          telegramUsername: null,
+        }));
+      }
+
+      const customerIds = students.map((student) => student.id);
+      const [dayAttendanceRows, runAttendanceRows] = await Promise.all([
+        customerIds.length > 0
+          ? prisma.classAttendance.findMany({
+              where: {
+                tenantId,
+                courseRunId: courseRun.id,
+                customerId: { in: customerIds },
+                lessonDate: { gte: selectedDate, lt: selectedDateEnd },
+              },
+              select: {
+                customerId: true,
+                lessonType: true,
+                attended: true,
+                updatedAt: true,
+              },
+              orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+            })
+          : Promise.resolve([]),
+        input.mode === 'all' && customerIds.length > 0
+          ? prisma.classAttendance.findMany({
+              where: {
+                tenantId,
+                courseRunId: courseRun.id,
+                customerId: { in: customerIds },
+                lessonDate: {
+                  gte: startOfDayLocal(courseRun.startDate),
+                  lt: addDaysLocal(startOfDayLocal(courseRun.endDate), 1),
+                },
+              },
+              select: {
+                customerId: true,
+                lessonType: true,
+                lessonDate: true,
+                attended: true,
+                updatedAt: true,
+              },
+              orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const dayAttendanceByKey = new Map<string, AttendanceStatus>();
+      for (const row of dayAttendanceRows) {
+        const key = `${row.customerId}:${row.lessonType}`;
+        if (dayAttendanceByKey.has(key)) continue;
+        dayAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
+      }
+
+      const baseSlotsInfo = buildAttendanceSlotDates({
+        startDate: courseRun.startDate,
+        endDate: courseRun.endDate,
+        targetCount: courseRun.baseLessons,
+      });
+      const premiumSlotsInfo = buildAttendanceSlotDates({
+        startDate: courseRun.startDate,
+        endDate: courseRun.endDate,
+        targetCount: courseRun.premiumExtraLessons,
+      });
+      const baseSlotDates = baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
+      const premiumSlotDates = premiumSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
+      const baseSlotDateSet = new Set(baseSlotDates);
+      const premiumSlotDateSet = new Set(premiumSlotDates);
+
+      const runAttendanceByKey = new Map<string, AttendanceStatus>();
+      if (input.mode === 'all') {
+        for (const row of runAttendanceRows) {
+          const dateKey = toDateKeyLocal(row.lessonDate);
+          const isAllowed =
+            row.lessonType === 'base'
+              ? baseSlotDateSet.has(dateKey)
+              : premiumSlotDateSet.has(dateKey);
+          if (!isAllowed) continue;
+          const key = `${row.customerId}:${row.lessonType}:${dateKey}`;
+          if (runAttendanceByKey.has(key)) continue;
+          runAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
+        }
+      }
+
+      return {
+        mode: input.mode,
+        isLessonDay,
+        courseRunId: courseRun.id,
+        courseRunName: courseRun.name,
+        dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
+        slotDates: {
+          base: baseSlotDates,
+          premiumExtra: premiumSlotDates,
+          hasInsufficientBase: baseSlotsInfo.hasInsufficientDates,
+          hasInsufficientPremium: premiumSlotsInfo.hasInsufficientDates,
+        },
+        students: students.map((student) => {
+          const isPremiumEligible = premiumEligibilityByCustomer.get(student.id) ?? false;
+          const dayBase = dayAttendanceByKey.get(`${student.id}:base`) ?? 'tanlanmagan';
+          const dayPremium = isPremiumEligible
+            ? (dayAttendanceByKey.get(`${student.id}:premium_extra`) ?? 'tanlanmagan')
+            : null;
+
+          const baseSlots = input.mode === 'all'
+            ? baseSlotDates.map((dateKey) => ({
+                date: dateKey,
+                status: runAttendanceByKey.get(`${student.id}:base:${dateKey}`) ?? 'tanlanmagan',
+              }))
+            : [];
+
+          const premiumExtraSlots = input.mode === 'all' && isPremiumEligible
+            ? premiumSlotDates.map((dateKey) => ({
+                date: dateKey,
+                status: runAttendanceByKey.get(`${student.id}:premium_extra:${dateKey}`) ?? 'tanlanmagan',
+              }))
+            : [];
+
+          return {
+            id: student.id,
+            name: student.name,
+            customerNumber: student.customerNumber,
+            telegramUsername: student.telegramUsername ?? null,
+            tariffName: tariffNameByCustomer.get(student.id) ?? null,
+            isPremiumEligible,
+            dayStatuses: { base: dayBase, premiumExtra: dayPremium },
+            baseSlots,
+            premiumExtraSlots,
+          };
+        }),
+      };
+    }),
+
+  saveAttendanceSlots: protectedProcedure
+    .input(
+      z.object({
+        customerId: z.string(),
+        courseRunId: z.string(),
+        baseSlots: z.array(
+          z.object({
+            date: z.string(),
+            status: z.enum(['tanlanmagan', 'keldi', 'kelmadi']),
+          }),
+        ),
+        premiumExtraSlots: z
+          .array(
+            z.object({
+              date: z.string(),
+              status: z.enum(['tanlanmagan', 'keldi', 'kelmadi']),
+            }),
+          )
+          .default([]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      const isManagerOrAdmin =
+        user.roles.includes('Admin') ||
+        user.roles.includes('Manager');
+      if (!isManagerOrAdmin) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      }
+
+      const courseRun = await prisma.courseRun
+        .findFirst({
+          where: { tenantId, id: input.courseRunId },
+          select: {
+            id: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            baseLessons: true,
+            premiumExtraLessons: true,
+          },
+        })
+        .catch((error) => {
+          if (isMissingCourseRunsTableError(error)) {
+            return null;
+          }
+          throw error;
+        });
+
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const runCustomerIds = await resolveCourseRunCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
+      });
+      if (!runCustomerIds.includes(input.customerId)) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi oqimda topilmadi" });
+      }
+
+      const baseSlotsInfo = buildAttendanceSlotDates({
+        startDate: courseRun.startDate,
+        endDate: courseRun.endDate,
+        targetCount: courseRun.baseLessons,
+      });
+      const premiumSlotsInfo = buildAttendanceSlotDates({
+        startDate: courseRun.startDate,
+        endDate: courseRun.endDate,
+        targetCount: courseRun.premiumExtraLessons,
+      });
+
+      const allowedBaseDateKeys = new Set(baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date)));
+      const allowedPremiumDateKeys = new Set(premiumSlotsInfo.slotDates.map((date) => toDateKeyLocal(date)));
+
+      const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId);
+      if (!premiumEligible && input.premiumExtraSlots.some((slot) => slot.status !== 'tanlanmagan')) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Bu o\'quvchi Premium/VIP qo\'shimcha darslarga mos emas',
+        });
+      }
+
+      const normalizeSlots = (
+        slots: Array<{ date: string; status: AttendanceStatus }>,
+        allowedDateKeys: Set<string>,
+        label: string,
+      ) => {
+        const unique = new Map<string, AttendanceStatus>();
+        for (const slot of slots) {
+          const dateKey = toDateKeyLocal(parseDateInput(slot.date));
+          if (!allowedDateKeys.has(dateKey)) {
+            throw new TRPCError({ code: 'BAD_REQUEST', message: `${label}: ruxsat etilmagan sana yuborildi` });
+          }
+          unique.set(dateKey, slot.status);
+        }
+        return unique;
+      };
+
+      const normalizedBaseSlots = normalizeSlots(input.baseSlots, allowedBaseDateKeys, 'Asosiy');
+      const normalizedPremiumSlots = normalizeSlots(input.premiumExtraSlots, allowedPremiumDateKeys, 'Premium');
+
+      const baseCreateRows = Array.from(normalizedBaseSlots.entries())
+        .filter(([, status]) => status !== 'tanlanmagan')
+        .map(([dateKey, status]) => ({
+          tenantId,
+          customerId: input.customerId,
+          courseRunId: courseRun.id,
+          lessonDate: startOfDayLocal(parseDateInput(dateKey)),
+          lessonType: 'base',
+          attended: status === 'keldi',
+          markedByUserId: user.userId,
+        }));
+
+      const premiumCreateRows = premiumEligible
+        ? Array.from(normalizedPremiumSlots.entries())
+            .filter(([, status]) => status !== 'tanlanmagan')
+            .map(([dateKey, status]) => ({
+              tenantId,
+              customerId: input.customerId,
+              courseRunId: courseRun.id,
+              lessonDate: startOfDayLocal(parseDateInput(dateKey)),
+              lessonType: 'premium_extra',
+              attended: status === 'keldi',
+              markedByUserId: user.userId,
+            }))
+        : [];
+
+      const runStart = startOfDayLocal(courseRun.startDate);
+      const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      const txOperations = [
+        prisma.classAttendance.deleteMany({
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            lessonType: 'base',
+            lessonDate: { gte: runStart, lt: runEndExclusive },
+          },
+        }),
+        prisma.classAttendance.deleteMany({
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            lessonType: 'premium_extra',
+            lessonDate: { gte: runStart, lt: runEndExclusive },
+          },
+        }),
+        ...(baseCreateRows.length > 0 ? [prisma.classAttendance.createMany({ data: baseCreateRows })] : []),
+        ...(premiumCreateRows.length > 0 ? [prisma.classAttendance.createMany({ data: premiumCreateRows })] : []),
+      ];
+
+      try {
+        const txResult = await prisma.$transaction(txOperations);
+        const deletedCount =
+          (txResult[0] as { count: number })?.count +
+          (txResult[1] as { count: number })?.count;
+        const savedCount = txResult
+          .slice(2)
+          .reduce((sum, row) => sum + ((row as { count: number })?.count ?? 0), 0);
+        return { success: true, savedCount, deletedCount };
+      } catch (error) {
+        if (isTransactionClosedError(error)) {
+          throw new TRPCError({
+            code: 'TIMEOUT',
+            message: "Saqlash vaqtida ulanish uzildi, qayta urinib ko'ring",
+          });
+        }
+        throw error;
       }
     }),
 
