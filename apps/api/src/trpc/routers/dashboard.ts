@@ -1124,6 +1124,40 @@ export const dashboardRouter = router({
         }
       }
 
+      const homeworkDefinitionsWhere: Record<string, unknown> = {
+        tenantId,
+        isActive: true,
+        type: 'homework',
+      };
+      if (effectiveExerciseCourseId) {
+        homeworkDefinitionsWhere.courseId = effectiveExerciseCourseId;
+      } else {
+        const incomeCourseIds = Array.from(new Set(customer.incomes.map((income) => income.courseId).filter(Boolean)));
+        if (incomeCourseIds.length > 0) {
+          homeworkDefinitionsWhere.courseId = { in: incomeCourseIds };
+        }
+      }
+
+      const [homeworkDefinitions, completedHomeworkCount] = await Promise.all([
+        prisma.exerciseDefinition.findMany({
+          where: homeworkDefinitionsWhere as any,
+          select: { targetCount: true },
+        }),
+        prisma.studentExerciseLog.count({
+          where: {
+            tenantId,
+            customerId: input.customerId,
+            ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+            exerciseDefinition: {
+              type: 'homework',
+              ...(effectiveExerciseCourseId ? { courseId: effectiveExerciseCourseId } : {}),
+            },
+          } as any,
+        }),
+      ]);
+      const homeworkTotalCount = homeworkDefinitions.reduce((sum, row) => sum + row.targetCount, 0);
+      const homeworkPendingCount = Math.max(0, homeworkTotalCount - completedHomeworkCount);
+
       return {
         customer,
         performance:
@@ -1136,6 +1170,11 @@ export const dashboardRouter = router({
             exerciseLogs: 0,
             performancePercent: 0,
           } satisfies StudentPerformance),
+        homeworkSummary: {
+          completed: completedHomeworkCount,
+          pending: homeworkPendingCount,
+          total: homeworkTotalCount,
+        },
         recentTasks,
         recentAttendance,
         recentExercises,
