@@ -198,10 +198,28 @@ function throwMissingRegionsMigrationError(): never {
   });
 }
 
-function computeEndDate(startDate: Date, durationWeeks: number): Date {
-  // Saturday start + ((weeks * 7) - 6) gives the last Sunday.
+function normalizeCourseCategory(value: string): 'online' | 'intensiv' | 'offline' {
+  const normalized = value.trim().toLowerCase();
+  if (normalized.includes('intens')) return 'intensiv';
+  if (normalized.includes('online') || normalized.includes('onlayn')) return 'online';
+  return 'offline';
+}
+
+function requiredStartDayByCategory(category: string): 1 | 6 {
+  return normalizeCourseCategory(category) === 'online' ? 1 : 6;
+}
+
+function requiredStartDayLabel(day: 1 | 6): string {
+  return day === 1 ? 'dushanba' : 'shanba';
+}
+
+function computeEndDate(startDate: Date, durationWeeks: number, courseCategory: string): Date {
+  // Online starts on Monday and spans full weeks ending Sunday.
+  // Offline/Intensiv keeps Saturday-start logic ending Sunday.
+  const requiredDay = requiredStartDayByCategory(courseCategory);
+  const dayOffset = requiredDay === 1 ? (durationWeeks * 7 - 1) : (durationWeeks * 7 - 6);
   const end = new Date(startDate);
-  end.setDate(end.getDate() + (durationWeeks * 7 - 6));
+  end.setDate(end.getDate() + dayOffset);
   return end;
 }
 
@@ -760,10 +778,11 @@ export const settingsRouter = router({
       if (Number.isNaN(start.getTime())) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: "Kursning boshlanish sanasi noto'g'ri" });
       }
-      if (start.getDay() !== 6) {
+      const requiredStartDay = requiredStartDayByCategory(course.category);
+      if (start.getDay() !== requiredStartDay) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message: "Kursning boshlanish sanasi shanba kuni bo'lishi kerak",
+          message: `Kursning boshlanish sanasi ${requiredStartDayLabel(requiredStartDay)} kuni bo'lishi kerak`,
         });
       }
 
@@ -782,7 +801,7 @@ export const settingsRouter = router({
       const durationWeeks = input.durationWeeks ?? template?.durationWeeks ?? 6;
       const baseLessons = input.baseLessons ?? template?.baseLessons ?? 12;
       const premiumExtraLessons = input.premiumExtraLessons ?? template?.premiumExtraLessons ?? 2;
-      const endDate = computeEndDate(start, durationWeeks);
+      const endDate = computeEndDate(start, durationWeeks, course.category);
 
       const rosterIds = Array.from(new Set(input.customerIds ?? []));
       if (rosterIds.length > 0) {
@@ -850,6 +869,13 @@ export const settingsRouter = router({
       const existing = await prisma.courseRun
         .findFirst({
           where: { id: input.courseRunId, tenantId: ctx.tenantId },
+          include: {
+            course: {
+              select: {
+                category: true,
+              },
+            },
+          },
         })
         .catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -864,7 +890,7 @@ export const settingsRouter = router({
       const nextDurationWeeks = input.durationWeeks ?? existing.durationWeeks;
       const durationChanged = input.durationWeeks !== undefined && input.durationWeeks !== existing.durationWeeks;
       const nextEndDate = durationChanged
-        ? computeEndDate(existing.startDate, nextDurationWeeks)
+        ? computeEndDate(existing.startDate, nextDurationWeeks, existing.course.category)
         : existing.endDate;
 
       const rosterIds = input.customerIds === undefined ? null : Array.from(new Set(input.customerIds));
