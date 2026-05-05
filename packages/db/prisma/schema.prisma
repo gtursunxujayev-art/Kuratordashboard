@@ -556,14 +556,17 @@ model IncomeAdjustmentRequest {
 // KD-SPECIFIC TABLES
 // ============================================
 
-// Represents one running of an offline course (e.g., starts Saturday April 5, 6 weeks)
+// Represents one running of a course.
+// Start day rule is category-dependent in app logic:
+// - online: Monday start
+// - offline/intensiv: Saturday start
 model CourseRun {
   id          String   @id @default(uuid())
   tenantId    String
   courseId    String
   name        String   // display name e.g. "Aprel 2026 oqimi"
-  startDate   DateTime // must be a Saturday
-  endDate     DateTime // auto: startDate + ((durationWeeks * 7) - 6) days (last Sunday)
+  startDate   DateTime // validated by app according to course category
+  endDate     DateTime // computed in app by category-specific weekly rule
   durationWeeks Int    @default(6)
   baseLessons Int      @default(12) // 12 Saturday+Sunday lessons
   premiumExtraLessons Int @default(2) // additional lessons for Premium/VIP students
