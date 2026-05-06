@@ -1625,6 +1625,43 @@ export const settingsRouter = router({
     });
   }),
 
+  listCoursesWithStatus: adminProcedure.query(async ({ ctx }) => {
+    return prisma.course.findMany({
+      where: { tenantId: ctx.tenantId },
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        startDate: true,
+        isActive: true,
+      },
+      orderBy: [{ isActive: 'desc' }, { name: 'asc' }],
+    });
+  }),
+
+  setCourseActive: adminProcedure
+    .input(
+      z.object({
+        courseId: z.string(),
+        isActive: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const course = await prisma.course.findFirst({
+        where: { id: input.courseId, tenantId: ctx.tenantId },
+        select: { id: true },
+      });
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      return prisma.course.update({
+        where: { id: input.courseId },
+        data: { isActive: input.isActive },
+        select: { id: true, isActive: true },
+      });
+    }),
+
   listTariffsByCourse: protectedProcedure
     .input(z.object({ courseId: z.string() }))
     .query(async ({ ctx, input }) => {
