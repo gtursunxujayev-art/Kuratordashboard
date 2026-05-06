@@ -199,14 +199,14 @@ export default function HisobotPage() {
         ? dayColumns
         : WEEK_KEYS.map((weekKey) => ({ key: weekKey, label: DATE_PRESET_LABELS[weekKey] }));
   const perPracticeColumnCount = isTodayPreset ? 1 : Math.max(subColumns.length, 1);
-  const tableMinWidth = isTodayPreset ? 'min-w-[860px]' : 'min-w-[980px]';
+  const tableMinWidth = isTodayPreset ? 'min-w-[640px] md:min-w-[860px]' : 'min-w-[760px] md:min-w-[980px]';
   const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 4 : 4;
 
   return (
     <div className="p-4 md:p-6 space-y-4">
       <div className="kd-card p-4 md:p-5 space-y-3">
-        <h1 className="text-xl font-bold kd-title">Hisobot</h1>
-        <p className="text-sm kd-subtle">
+        <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
+        <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
         </p>
 
@@ -293,7 +293,7 @@ export default function HisobotPage() {
             <button
               key={preset}
               onClick={() => setDatePreset(preset)}
-              className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`px-2.5 md:px-3 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors ${
                 datePreset === preset ? 'kd-chip-active' : 'kd-chip'
               }`}
             >
@@ -320,24 +320,24 @@ export default function HisobotPage() {
       ) : (
         <div className="kd-card p-0 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className={`w-full text-sm border-collapse ${tableMinWidth}`}>
+            <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky left-0 z-20 bg-gray-50 text-left px-3 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[200px]"
+                    className="sticky left-0 z-20 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[148px] md:min-w-[200px]"
                   >
                     O&apos;quvchi
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[92px] w-[92px]"
+                    className="text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]"
                   >
                     Tarif
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="text-left px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[118px] w-[118px]"
+                    className="text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[68px] w-[68px] md:min-w-[118px] md:w-[118px]"
                   >
                     Kurator
                   </th>
@@ -345,10 +345,10 @@ export default function HisobotPage() {
                     ? report.practices.map((practice) => (
                         <th
                           key={practice.id}
-                          className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[96px]"
+                          className="text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[46px] md:min-w-[96px]"
                         >
                           <div className="leading-tight">
-                            <p className="text-xs">{practice.name}</p>
+                            <p className="text-[10px] md:text-xs">{practice.name}</p>
                           </div>
                         </th>
                       ))
@@ -356,16 +356,16 @@ export default function HisobotPage() {
                         <th
                           key={practice.id}
                           colSpan={perPracticeColumnCount}
-                          className="text-center px-2 py-2.5 font-semibold text-gray-700 border-r border-gray-200"
+                          className="text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200"
                         >
                           <div className="leading-tight">
-                            <p className="text-xs">{practice.name}</p>
+                            <p className="text-[10px] md:text-xs">{practice.name}</p>
                           </div>
                         </th>
                       ))}
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky right-0 z-20 bg-gray-50 text-center px-2 py-2.5 font-semibold text-gray-700 min-w-[82px] w-[82px]"
+                    className="sticky right-0 z-20 bg-gray-50 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]"
                   >
                     Jami ball
                   </th>
@@ -378,7 +378,7 @@ export default function HisobotPage() {
                         return (
                           <th
                             key={`${practice.id}-${subColumn.key}`}
-                            className={`text-center px-1 py-1.5 text-[11px] font-semibold border-r border-gray-200 min-w-[48px] ${
+                            className={`text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold border-r border-gray-200 min-w-[36px] md:min-w-[48px] ${
                               isSelectedWeek ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
                             }`}
                           >
@@ -400,14 +400,14 @@ export default function HisobotPage() {
                 ) : (
                   report.students.map((student) => (
                     <tr key={student.id} className="border-b border-gray-100">
-                      <td className="sticky left-0 z-10 bg-white px-3 py-2 border-r border-gray-100 align-top">
-                        <p className="font-medium text-gray-900 leading-5">{student.name}</p>
-                        <p className="text-[11px] text-gray-500 leading-4">{student.customerNumber ?? '-'}</p>
+                      <td className="sticky left-0 z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-top">
+                        <p className="font-medium text-gray-900 leading-4 md:leading-5 text-sm md:text-base">{student.name}</p>
+                        <p className="text-[10px] md:text-[11px] text-gray-500 leading-3.5 md:leading-4">{student.customerNumber ?? '-'}</p>
                       </td>
-                      <td className="px-2 py-2 text-gray-700 border-r border-gray-100 align-top text-xs leading-4">
+                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-top text-[11px] md:text-xs leading-4">
                         {student.tariffName ?? '-'}
                       </td>
-                      <td className="px-2 py-2 text-gray-700 border-r border-gray-100 align-top text-xs leading-4">
+                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-top text-[11px] md:text-xs leading-4">
                         {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
                       </td>
                       {isTodayPreset
@@ -424,7 +424,7 @@ export default function HisobotPage() {
                             return (
                               <td
                                 key={`${student.id}-${practice.id}-today`}
-                                className="px-2 py-2 text-center border-r border-gray-100 font-semibold"
+                                className="px-0.5 md:px-2 py-1.5 md:py-2 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
                                 style={{ backgroundColor, color }}
                               >
                                 {!isApplicable || !hasLog ? '-' : formatPoint(points)}
@@ -447,7 +447,7 @@ export default function HisobotPage() {
                                 return (
                                   <td
                                     key={`${student.id}-${practice.id}-${dayColumn.key}`}
-                                    className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
+                                    className="px-0.5 md:px-1 py-1 md:py-1.5 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
                                     style={{ backgroundColor, color }}
                                   >
                                     {!isApplicable || !hasLog ? '-' : formatPoint(points)}
@@ -469,7 +469,7 @@ export default function HisobotPage() {
                               return (
                                 <td
                                   key={`${student.id}-${practice.id}-${weekKey}`}
-                                  className="px-1 py-1.5 text-center border-r border-gray-100 font-semibold"
+                                  className="px-0.5 md:px-1 py-1 md:py-1.5 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
                                   style={{ backgroundColor, color }}
                                 >
                                   {!isApplicable || !hasLog ? '-' : formatPoint(points)}
@@ -477,7 +477,7 @@ export default function HisobotPage() {
                               );
                             });
                           })}
-                      <td className="sticky right-0 z-10 bg-white px-2 py-2 text-center font-bold text-gray-900 border-l border-gray-200">
+                      <td className="sticky right-0 z-10 bg-white px-1.5 md:px-2 py-1.5 md:py-2 text-center font-bold text-gray-900 border-l border-gray-200 text-sm md:text-base">
                         {formatPoint(student.totalPoints)}
                       </td>
                     </tr>
