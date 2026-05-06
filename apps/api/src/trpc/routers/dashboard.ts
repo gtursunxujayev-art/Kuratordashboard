@@ -1795,8 +1795,8 @@ export const dashboardRouter = router({
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
     try {
       return await prisma.courseRun.findMany({
-        where: { tenantId: ctx.tenantId },
-        include: { course: { select: { name: true, category: true } } },
+        where: { tenantId: ctx.tenantId, course: { isActive: true } },
+        include: { course: { select: { name: true, category: true, isActive: true } } },
         orderBy: { startDate: 'desc' },
       });
     } catch (error) {
