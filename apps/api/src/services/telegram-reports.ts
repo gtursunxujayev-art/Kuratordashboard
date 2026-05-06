@@ -26,6 +26,12 @@ export type KuratorSummaryRow = {
   performancePercent: number;
 };
 
+export type KuratorSummaryByType = {
+  online: KuratorSummaryRow[];
+  offline: KuratorSummaryRow[];
+  all: KuratorSummaryRow[];
+};
+
 export type CourseMatrixSection = {
   courseType: 'online' | 'offline';
   courseName: string;
@@ -43,6 +49,7 @@ export type TenantReport = {
   period: PeriodRange;
   generatedAt: Date;
   kurators: KuratorSummaryRow[];
+  kuratorsByType: KuratorSummaryByType;
   courseSections: CourseMatrixSection[];
 };
 
@@ -167,7 +174,7 @@ async function sendTelegramDocument(chatId: string, filename: string, pdfBuffer:
   }
 }
 
-async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promise<KuratorSummaryRow[]> {
+async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange): Promise<KuratorSummaryByType> {
   const [kurators, assignments, missedRows, activityRows] = await Promise.all([
     prisma.user.findMany({
       where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
@@ -175,31 +182,58 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
       orderBy: [{ name: 'asc' }, { username: 'asc' }],
     }),
     prisma.kuratorAssignment.findMany({
-      where: { tenantId, isActive: true },
-      select: { kuratorUserId: true, customerId: true },
+      where: {
+        tenantId,
+        isActive: true,
+        courseRun: { course: { isActive: true, startDate: { lte: period.to } } },
+      },
+      select: {
+        kuratorUserId: true,
+        customerId: true,
+        courseRun: { select: { course: { select: { category: true } } } },
+      },
     }),
     prisma.classAttendance.findMany({
       where: {
         tenantId,
         attended: false,
         lessonDate: { gte: period.from, lt: period.to },
+        courseRun: { course: { isActive: true, startDate: { lte: period.to } } },
       },
-      select: { customerId: true },
-      distinct: ['customerId'],
+      select: {
+        customerId: true,
+        courseRun: { select: { course: { select: { category: true } } } },
+      },
     }),
     prisma.studentExerciseLog.findMany({
       where: {
         tenantId,
         completedAt: { gte: period.from, lt: period.to },
+        exerciseDefinition: { course: { isActive: true, startDate: { lte: period.to } } },
       },
-      select: { customerId: true },
-      distinct: ['customerId'],
+      select: {
+        customerId: true,
+        exerciseDefinition: { select: { course: { select: { category: true } } } },
+      },
     }),
   ]);
 
-  const customerToKurators = new Map<string, Set<string>>();
-  const studentsByKurator = new Map<string, Set<string>>();
+  const customerToKuratorsByType = {
+    online: new Map<string, Set<string>>(),
+    offline: new Map<string, Set<string>>(),
+  };
+  const studentsByKuratorByType = {
+    online: new Map<string, Set<string>>(),
+    offline: new Map<string, Set<string>>(),
+  };
+
   for (const row of assignments) {
+    const courseType = normalizeCourseType(row.courseRun.course.category);
+    if (!courseType) continue;
+
+    const customerToKurators = customerToKuratorsByType[courseType];
+    const studentsByKurator = studentsByKuratorByType[courseType];
+
     const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
     kuratorSet.add(row.kuratorUserId);
     customerToKurators.set(row.customerId, kuratorSet);
@@ -209,16 +243,32 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
     studentsByKurator.set(row.kuratorUserId, studentSet);
   }
 
-  const missedByKurator = new Map<string, number>();
+  const missedByKuratorByType = {
+    online: new Map<string, number>(),
+    offline: new Map<string, number>(),
+  };
   for (const row of missedRows) {
+    const courseType = normalizeCourseType(row.courseRun.course.category);
+    if (!courseType) continue;
+
+    const customerToKurators = customerToKuratorsByType[courseType];
+    const missedByKurator = missedByKuratorByType[courseType];
     const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
     for (const kuratorId of kuratorSet) {
       missedByKurator.set(kuratorId, (missedByKurator.get(kuratorId) ?? 0) + 1);
     }
   }
 
-  const activeStudentsByKurator = new Map<string, Set<string>>();
+  const activeStudentsByKuratorByType = {
+    online: new Map<string, Set<string>>(),
+    offline: new Map<string, Set<string>>(),
+  };
   for (const row of activityRows) {
+    const courseType = normalizeCourseType(row.exerciseDefinition.course.category);
+    if (!courseType) continue;
+
+    const customerToKurators = customerToKuratorsByType[courseType];
+    const activeStudentsByKurator = activeStudentsByKuratorByType[courseType];
     const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
     for (const kuratorId of kuratorSet) {
       const activeSet = activeStudentsByKurator.get(kuratorId) ?? new Set<string>();
@@ -227,20 +277,56 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
     }
   }
 
-  return kurators.map((kurator) => {
-    const studentCount = studentsByKurator.get(kurator.id)?.size ?? 0;
-    const completed = activeStudentsByKurator.get(kurator.id)?.size ?? 0;
-    const pending = Math.max(0, studentCount - completed);
+  const buildRows = (courseType: 'online' | 'offline'): KuratorSummaryRow[] => {
+    const studentsByKurator = studentsByKuratorByType[courseType];
+    const activeStudentsByKurator = activeStudentsByKuratorByType[courseType];
+    const missedByKurator = missedByKuratorByType[courseType];
+
+    return kurators
+      .map((kurator) => {
+        const studentCount = studentsByKurator.get(kurator.id)?.size ?? 0;
+        const completed = activeStudentsByKurator.get(kurator.id)?.size ?? 0;
+        const pending = Math.max(0, studentCount - completed);
+        const total = completed + pending;
+        return {
+          name: kurator.name ?? kurator.username ?? 'Kurator',
+          studentCount,
+          completedTasks: completed,
+          pendingTasks: pending,
+          missedStudents: missedByKurator.get(kurator.id) ?? 0,
+          performancePercent: total > 0 ? Math.round((completed / total) * 100) : 0,
+        };
+      })
+      .filter((row) => row.studentCount > 0 || row.completedTasks > 0 || row.pendingTasks > 0 || row.missedStudents > 0);
+  };
+
+  const online = buildRows('online');
+  const offline = buildRows('offline');
+  const allMap = new Map<string, KuratorSummaryRow>();
+  for (const row of [...online, ...offline]) {
+    const current = allMap.get(row.name);
+    if (!current) {
+      allMap.set(row.name, { ...row });
+      continue;
+    }
+    const completed = current.completedTasks + row.completedTasks;
+    const pending = current.pendingTasks + row.pendingTasks;
     const total = completed + pending;
-    return {
-      name: kurator.name ?? kurator.username ?? 'Kurator',
-      studentCount,
+    allMap.set(row.name, {
+      name: row.name,
+      studentCount: current.studentCount + row.studentCount,
       completedTasks: completed,
       pendingTasks: pending,
-      missedStudents: missedByKurator.get(kurator.id) ?? 0,
+      missedStudents: current.missedStudents + row.missedStudents,
       performancePercent: total > 0 ? Math.round((completed / total) * 100) : 0,
-    };
-  });
+    });
+  }
+
+  return {
+    online,
+    offline,
+    all: Array.from(allMap.values()),
+  };
 }
 
 async function buildCourseSections(tenantId: string, period: PeriodRange): Promise<CourseMatrixSection[]> {
@@ -348,10 +434,12 @@ async function buildTenantReport(tenantId: string, period: PeriodRange): Promise
     throw new Error('Tenant not found');
   }
 
-  const [kurators, courseSections] = await Promise.all([
-    buildKuratorSummary(tenant.id, period),
+  const [kuratorsByType, courseSections] = await Promise.all([
+    buildKuratorSummaryByType(tenant.id, period),
     buildCourseSections(tenant.id, period),
   ]);
+
+  const kurators = kuratorsByType.all;
 
   return {
     tenantId: tenant.id,
@@ -359,6 +447,7 @@ async function buildTenantReport(tenantId: string, period: PeriodRange): Promise
     period,
     generatedAt: new Date(),
     kurators,
+    kuratorsByType,
     courseSections,
   };
 }
