@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
@@ -13,6 +13,7 @@ type ColorPointOption = {
   colorHex: string;
   points: number;
 };
+type CourseType = 'online' | 'offline';
 type SlotItem = {
   date: string;
   selectedColorOptionId: string | null;
@@ -62,12 +63,22 @@ function formatShortDate(date: string): string {
   return `${day}.${month}`;
 }
 
+function normalizeCourseCategory(raw?: string | null): CourseType | null {
+  const value = (raw ?? '').toLowerCase();
+  if (value.includes('online') || value.includes('onlayn')) return 'online';
+  if (value.includes('offline') || value.includes('ofline') || value.includes('oflayn')) return 'offline';
+  return null;
+}
+
 export default function AmaliyPage() {
   const { isManager } = useAuth();
   const toast = useToast();
   const canUseHammasi = isManager;
 
   const [mode, setMode] = useState<AmaliyMode>('students');
+  const [selectedCourseType, setSelectedCourseType] = useState<CourseType>('offline');
+  const [hasInitializedCourseType, setHasInitializedCourseType] = useState(false);
+  const [selectedCourseId, setSelectedCourseId] = useState('');
   const [dateMode, setDateMode] = useState<DateMode>('today');
   const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [customDate, setCustomDate] = useState<string>(formatDateLocal(new Date()));
@@ -97,11 +108,111 @@ export default function AmaliyPage() {
     return getModeDate(dateMode);
   }, [customDate, dateMode, hammasiDate]);
 
+  const { data: courses } = trpc.dashboard.courses.useQuery();
   const { data: courseRuns } = trpc.dashboard.courseRuns.useQuery();
-  const selectedCourseId = useMemo(
-    () => (courseRuns ?? []).find((run) => run.id === selectedCourseRunId)?.courseId ?? '',
-    [courseRuns, selectedCourseRunId],
+
+  const filteredCourses = useMemo(
+    () => (courses ?? []).filter((course) => normalizeCourseCategory(course.category) === selectedCourseType),
+    [courses, selectedCourseType],
   );
+
+  const activeCourseIds = useMemo(() => new Set((courses ?? []).map((course) => course.id)), [courses]);
+  const allowedCourseIds = useMemo(() => new Set(filteredCourses.map((course) => course.id)), [filteredCourses]);
+
+  const runsForSelectedType = useMemo(
+    () =>
+      (courseRuns ?? []).filter(
+        (run) =>
+          activeCourseIds.has(run.courseId) &&
+          normalizeCourseCategory(run.course?.category) === selectedCourseType,
+      ),
+    [activeCourseIds, courseRuns, selectedCourseType],
+  );
+
+  const filteredCourseRuns = useMemo(
+    () => runsForSelectedType.filter((run) => run.courseId === selectedCourseId),
+    [runsForSelectedType, selectedCourseId],
+  );
+
+  const preferredType = useMemo<CourseType>(() => {
+    const now = new Date();
+    const today = formatDateLocal(now);
+    const eligibleRuns = (courseRuns ?? []).filter((run) => {
+      const normalized = normalizeCourseCategory(run.course?.category);
+      if (!normalized) return false;
+      if (!activeCourseIds.has(run.courseId)) return false;
+      return true;
+    });
+    const activeStarted = eligibleRuns
+      .filter((run) => {
+        const start = formatDateLocal(new Date(run.startDate));
+        const end = formatDateLocal(new Date(run.endDate));
+        return start <= today && today <= end;
+      })
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    const next = activeStarted[0] ?? eligibleRuns[0];
+    return normalizeCourseCategory(next?.course?.category) ?? 'offline';
+  }, [activeCourseIds, courseRuns]);
+
+  const preferredCourseIdForType = useMemo(() => {
+    const now = new Date();
+    const today = formatDateLocal(now);
+    const activeStarted = runsForSelectedType
+      .filter((run) => {
+        const start = formatDateLocal(new Date(run.startDate));
+        const end = formatDateLocal(new Date(run.endDate));
+        return start <= today && today <= end;
+      })
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    return activeStarted[0]?.courseId ?? filteredCourses[0]?.id ?? '';
+  }, [filteredCourses, runsForSelectedType]);
+
+  const preferredRunIdForCourse = useMemo(() => {
+    const now = new Date();
+    const today = formatDateLocal(now);
+    const activeStarted = filteredCourseRuns
+      .filter((run) => {
+        const start = formatDateLocal(new Date(run.startDate));
+        const end = formatDateLocal(new Date(run.endDate));
+        return start <= today && today <= end;
+      })
+      .sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    const newest = [...filteredCourseRuns].sort((a, b) => new Date(b.startDate).getTime() - new Date(a.startDate).getTime());
+    return activeStarted[0]?.id ?? newest[0]?.id ?? '';
+  }, [filteredCourseRuns]);
+
+  useEffect(() => {
+    if (hasInitializedCourseType) return;
+    if (!courses || !courseRuns) return;
+    setSelectedCourseType(preferredType);
+    setHasInitializedCourseType(true);
+  }, [courseRuns, courses, hasInitializedCourseType, preferredType]);
+
+  useEffect(() => {
+    if (!filteredCourses.length) {
+      if (selectedCourseId || selectedCourseRunId || selectedStudentId || selectedPracticeId) {
+        setSelectedCourseId('');
+        setSelectedCourseRunId('');
+        setSelectedStudentId('');
+        setSelectedPracticeId('');
+      }
+      return;
+    }
+    if (selectedCourseId && filteredCourses.some((course) => course.id === selectedCourseId)) return;
+    setSelectedCourseId(preferredCourseIdForType);
+    setSelectedCourseRunId('');
+    setSelectedStudentId('');
+    setSelectedPracticeId('');
+  }, [filteredCourses, preferredCourseIdForType, selectedCourseId]);
+
+  useEffect(() => {
+    if (!selectedCourseId) return;
+    if (selectedCourseRunId && filteredCourseRuns.some((run) => run.id === selectedCourseRunId)) return;
+    setSelectedCourseRunId(preferredRunIdForCourse);
+    setSelectedPracticeId('');
+    setSelectedStudentId('');
+  }, [filteredCourseRuns, preferredRunIdForCourse, selectedCourseId, selectedCourseRunId]);
+
   const { data: students } = trpc.amaliy.studentList.useQuery({
     courseRunId: selectedCourseRunId || undefined,
   });
@@ -387,7 +498,7 @@ export default function AmaliyPage() {
       <h1 className="text-xl font-bold kd-title">Amaliy</h1>
 
       <div className="kd-card p-4 space-y-3">
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setMode('students')}
             className={`px-3 py-2 rounded-md text-sm font-medium ${
@@ -404,6 +515,44 @@ export default function AmaliyPage() {
           >
             By Amaliy
           </button>
+          <button
+            onClick={() => setSelectedCourseType('online')}
+            className={`px-3 py-2 rounded-md text-sm font-medium ${
+              selectedCourseType === 'online' ? 'kd-chip-active' : 'kd-chip'
+            }`}
+          >
+            Online
+          </button>
+          <button
+            onClick={() => setSelectedCourseType('offline')}
+            className={`px-3 py-2 rounded-md text-sm font-medium ${
+              selectedCourseType === 'offline' ? 'kd-chip-active' : 'kd-chip'
+            }`}
+          >
+            Ofline
+          </button>
+          <div className="min-w-[170px] flex-1 sm:flex-none sm:w-[280px]">
+            <select
+              value={selectedCourseId}
+              onChange={(e) => {
+                setSelectedCourseId(e.target.value);
+                setSelectedCourseRunId('');
+                setSelectedStudentId('');
+                setSelectedPracticeId('');
+              }}
+              className="w-full px-3 py-2 border rounded-lg text-sm"
+            >
+              {filteredCourses.length === 0 ? (
+                <option value="">Kurs topilmadi</option>
+              ) : (
+                filteredCourses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.name}
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -413,12 +562,16 @@ export default function AmaliyPage() {
               value={selectedCourseRunId}
               onChange={(e) => {
                 setSelectedCourseRunId(e.target.value);
+                setSelectedStudentId('');
                 setSelectedPracticeId('');
               }}
+              disabled={!selectedCourseId}
               className="w-full px-3 py-2 border rounded-lg text-sm"
             >
-              <option value="">Barcha oqimlar</option>
-              {(courseRuns ?? []).map((run) => (
+              <option value="">
+                {selectedCourseId ? "Oqimni tanlang..." : "Avval kursni tanlang"}
+              </option>
+              {filteredCourseRuns.map((run) => (
                 <option key={run.id} value={run.id}>
                   {run.name}
                 </option>
@@ -659,7 +812,7 @@ export default function AmaliyPage() {
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-start">
+                          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-stretch">
                             <ColorPointsListSelect
                               options={exerciseOptions}
                               value={selectedColorId}
@@ -674,7 +827,7 @@ export default function AmaliyPage() {
                                 busyStudentExerciseKey === rowKey ||
                                 exerciseOptions.length === 0
                               }
-                              className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                              className="w-full h-full min-h-[120px] md:h-auto md:min-h-0 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
                             >
                               {busyStudentExerciseKey === rowKey ? '...' : 'Saqlash'}
                             </button>
@@ -796,7 +949,7 @@ export default function AmaliyPage() {
                             </div>
                           ) : (
                             <>
-                              <div className="grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-start col-span-full">
+                              <div className="grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-stretch col-span-full">
                               <ColorPointsListSelect
                                 options={practiceOptions}
                                 value={selectedColorId}
@@ -808,7 +961,7 @@ export default function AmaliyPage() {
                               <button
                                 onClick={() => void completePracticeStudent(student.id)}
                                 disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
-                                className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                                className="w-full h-full min-h-[120px] md:h-auto md:min-h-0 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
                               >
                                 {busyPracticeStudentKey === rowKey ? '...' : 'Saqlash'}
                               </button>
@@ -909,7 +1062,7 @@ function ColorPointsListSelect({
     <div
       role="radiogroup"
       aria-label="Amaliy ranglari"
-      className="w-full border rounded-lg p-2 space-y-1.5"
+      className="w-full h-full border rounded-lg p-2 space-y-1.5"
     >
       {options.map((option) => {
         const isActive = option.id === value;
