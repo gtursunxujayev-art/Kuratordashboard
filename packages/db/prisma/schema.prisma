@@ -53,6 +53,7 @@ model Tenant {
   scheduleTemplates CourseScheduleTemplate[]
   courseRunMembers  CourseRunMember[]
   telegramLinkTokens TelegramLinkToken[]
+  telegramReportReceivers TelegramReportReceiver[]
   reportDeliveryLogs ReportDeliveryLog[]
 
   @@index([subdomain])
@@ -94,6 +95,7 @@ model User {
   attendancesMarked  ClassAttendance[]
   ownedCourseRuns    CourseRun[] @relation("CourseRunKurator")
   telegramLinkTokens TelegramLinkToken[]
+  createdTelegramReportReceivers TelegramReportReceiver[] @relation("TelegramReportReceiverCreatedBy")
 
   @@unique([tenantId, email])
   @@unique([tenantId, phone])
@@ -828,6 +830,26 @@ model TelegramLinkToken {
   @@index([expiresAt])
   @@index([usedAt])
   @@map("telegram_link_tokens")
+}
+
+model TelegramReportReceiver {
+  id              String   @id @default(uuid())
+  tenantId        String
+  chatId          String
+  username        String?
+  telegramName    String?
+  createdByUserId String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUser  User   @relation("TelegramReportReceiverCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, chatId])
+  @@index([tenantId, isActive])
+  @@index([tenantId, createdByUserId, isActive])
+  @@map("telegram_report_receivers")
 }
 
 model ReportDeliveryLog {
