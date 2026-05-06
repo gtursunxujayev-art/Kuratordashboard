@@ -598,7 +598,6 @@ export default function AmaliyPage() {
                     }));
                     const selectedColorId =
                       selectedColorByExercise[exercise.id] || exerciseOptions[0]?.id || '';
-                    const selectedColor = exerciseOptions.find((option) => option.id === selectedColorId);
 
                     return (
                       <div
@@ -660,11 +659,10 @@ export default function AmaliyPage() {
                             </div>
                           </div>
                         ) : (
-                          <div className="mt-3 grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
-                            <ColorPointsSelect
+                          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-start">
+                            <ColorPointsListSelect
                               options={exerciseOptions}
                               value={selectedColorId}
-                              selectedColorHex={selectedColor?.colorHex}
                               disabled={exerciseOptions.length === 0}
                               onChange={(nextId) =>
                                 setSelectedColorByExercise((prev) => ({ ...prev, [exercise.id]: nextId }))
@@ -676,7 +674,7 @@ export default function AmaliyPage() {
                                 busyStudentExerciseKey === rowKey ||
                                 exerciseOptions.length === 0
                               }
-                              className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                              className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                             >
                               {busyStudentExerciseKey === rowKey ? '...' : 'Saqlash'}
                             </button>
@@ -731,7 +729,6 @@ export default function AmaliyPage() {
                     }));
                     const selectedColorId =
                       selectedColorByPracticeStudent[student.id] || practiceOptions[0]?.id || '';
-                    const selectedColor = practiceOptions.find((option) => option.id === selectedColorId);
 
                     return (
                       <div
@@ -799,10 +796,10 @@ export default function AmaliyPage() {
                             </div>
                           ) : (
                             <>
-                              <ColorPointsSelect
+                              <div className="grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-start col-span-full">
+                              <ColorPointsListSelect
                                 options={practiceOptions}
                                 value={selectedColorId}
-                                selectedColorHex={selectedColor?.colorHex}
                                 disabled={practiceOptions.length === 0}
                                 onChange={(nextId) =>
                                   setSelectedColorByPracticeStudent((prev) => ({ ...prev, [student.id]: nextId }))
@@ -811,10 +808,11 @@ export default function AmaliyPage() {
                               <button
                                 onClick={() => void completePracticeStudent(student.id)}
                                 disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
-                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
+                                className="w-full px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                               >
                                 {busyPracticeStudentKey === rowKey ? '...' : 'Saqlash'}
                               </button>
+                              </div>
                             </>
                           )}
                         </div>
@@ -879,6 +877,67 @@ function ColorPointsSelect({
           </>
         )}
       </select>
+    </div>
+  );
+}
+
+function ColorPointsListSelect({
+  options,
+  value,
+  disabled,
+  onChange,
+}: {
+  options: Array<{
+    id: string;
+    label: string;
+    colorHex: string;
+    points: number;
+  }>;
+  value: string;
+  disabled?: boolean;
+  onChange: (nextId: string) => void;
+}) {
+  if (options.length === 0) {
+    return (
+      <div className="w-full px-3 py-2 border rounded-lg text-sm text-gray-500">
+        Ranglar yo&apos;q
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="radiogroup"
+      aria-label="Amaliy ranglari"
+      className="w-full border rounded-lg p-2 space-y-1.5"
+    >
+      {options.map((option) => {
+        const isActive = option.id === value;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            disabled={disabled}
+            onClick={() => onChange(option.id)}
+            className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left text-sm border transition-colors ${
+              isActive
+                ? 'border-blue-500 bg-blue-50 text-blue-900'
+                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+            } disabled:opacity-50`}
+          >
+            <span
+              aria-hidden
+              className="inline-block w-3.5 h-3.5 rounded-full border border-gray-300 shrink-0"
+              style={{ backgroundColor: option.colorHex || '#D1D5DB' }}
+            />
+            <span className="truncate">
+              {option.label} ({option.points} ball)
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
