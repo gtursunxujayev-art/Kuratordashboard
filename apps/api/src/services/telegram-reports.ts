@@ -27,6 +27,7 @@ export type KuratorSummaryRow = {
 };
 
 export type CourseMatrixSection = {
+  courseType: 'online' | 'offline';
   courseName: string;
   practiceNames: string[];
   rows: Array<{
@@ -44,6 +45,13 @@ export type TenantReport = {
   kurators: KuratorSummaryRow[];
   courseSections: CourseMatrixSection[];
 };
+
+function normalizeCourseType(category: string | null | undefined): 'online' | 'offline' | null {
+  const value = (category ?? '').trim().toLowerCase();
+  if (value === 'online' || value === 'onlayn') return 'online';
+  if (value === 'offline' || value === 'ofline' || value === 'oflayn') return 'offline';
+  return null;
+}
 
 function toTashkentDate(date: Date): Date {
   return new Date(date.getTime() + TASHKENT_OFFSET_MINUTES * 60_000);
@@ -237,13 +245,21 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
 
 async function buildCourseSections(tenantId: string, period: PeriodRange): Promise<CourseMatrixSection[]> {
   const courses = await prisma.course.findMany({
-    where: { tenantId, isActive: true },
-    select: { id: true, name: true },
+    // Include only courses that have already started by the end of the report period.
+    where: { tenantId, isActive: true, startDate: { lte: period.to } },
+    select: { id: true, name: true, category: true },
     orderBy: { name: 'asc' },
   });
 
   const sections: CourseMatrixSection[] = [];
-  for (const course of courses) {
+  const eligibleCourses = courses
+    .map((course) => ({
+      ...course,
+      reportType: normalizeCourseType(course.category),
+    }))
+    .filter((course): course is (typeof course & { reportType: 'online' | 'offline' }) => course.reportType !== null);
+
+  for (const course of eligibleCourses) {
     const [practices, enrollments] = await Promise.all([
       prisma.exerciseDefinition.findMany({
         where: { tenantId, courseId: course.id, isActive: true },
@@ -313,6 +329,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
     });
 
     sections.push({
+      courseType: course.reportType,
       courseName: course.name,
       practiceNames: practices.map((row) => row.name),
       rows,
