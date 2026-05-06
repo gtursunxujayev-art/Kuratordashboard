@@ -88,13 +88,33 @@ function renderCourseSection(section: CourseMatrixSection): string {
   `;
 }
 
+function renderCourseTypeGroup(title: string, sections: CourseMatrixSection[]): string {
+  if (sections.length === 0) {
+    return `
+      <section class="course-type-group">
+        <h3 class="course-type-title">${escapeHtml(title)}</h3>
+        <div class="empty-card">No ${escapeHtml(title.toLowerCase())} course report data.</div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="course-type-group">
+      <h3 class="course-type-title">${escapeHtml(title)}</h3>
+      ${sections.map(renderCourseSection).join('')}
+    </section>
+  `;
+}
+
 function renderHtml(report: TenantReport): string {
   const periodLabel = `${report.period.fromLabel} - ${report.period.toLabel}`;
   const generatedLabel = report.generatedAt.toISOString().replace('T', ' ').replace('Z', ' UTC');
+  const onlineSections = report.courseSections.filter((section) => section.courseType === 'online');
+  const offlineSections = report.courseSections.filter((section) => section.courseType === 'offline');
   const courseSections =
     report.courseSections.length === 0
-      ? '<div class="empty-card">No active course report data.</div>'
-      : report.courseSections.map(renderCourseSection).join('');
+      ? '<div class="empty-card">No online/offline course report data.</div>'
+      : `${renderCourseTypeGroup('Online courses', onlineSections)}${renderCourseTypeGroup('Offline courses', offlineSections)}`;
 
   return `<!doctype html>
 <html>
@@ -218,6 +238,16 @@ function renderHtml(report: TenantReport): string {
     .course-section {
       margin-top: 12px;
       page-break-inside: avoid;
+    }
+    .course-type-group {
+      margin-top: 14px;
+      page-break-inside: avoid;
+    }
+    .course-type-title {
+      margin: 0 0 10px;
+      color: #111827;
+      font-size: 14px;
+      font-weight: 700;
     }
     .course-section h3 {
       margin: 0 0 8px;
