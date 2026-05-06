@@ -175,8 +175,12 @@ function TelegramReportsTab() {
   const [error, setError] = useState('');
   const [linkToken, setLinkToken] = useState<string | null>(null);
   const [deepLink, setDeepLink] = useState<string | null>(null);
+  const [testPreset, setTestPreset] = useState<
+    'today' | 'yesterday' | 'this_week' | 'last_week' | 'this_month' | 'last_month'
+  >('today');
 
   const { data, isLoading, error: queryError, refetch } = trpc.settings.telegramReportStatus.useQuery();
+  const utils = trpc.useContext();
   const createLinkMutation = trpc.settings.createTelegramLinkToken.useMutation({
     onSuccess: (result) => {
       setError('');
@@ -200,6 +204,18 @@ function TelegramReportsTab() {
       setError(err.message);
     },
   });
+  const deleteReceiverMutation = trpc.settings.deleteTelegramReceiver.useMutation({
+    onSuccess: async () => {
+      setError('');
+      setSuccess("Receiver o'chirildi.");
+      await utils.settings.telegramReportStatus.invalidate();
+      void refetch();
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
+  });
 
   return (
     <div className="space-y-4">
@@ -214,8 +230,9 @@ function TelegramReportsTab() {
           Bot sozlangan: {data?.configured ? 'Ha' : "Yo'q"}
           {data?.botUsername ? ` (@${data.botUsername})` : ''}
         </p>
+        <p className="text-xs text-gray-500">Token bir marta ishlatiladi va 30 daqiqada tugaydi.</p>
 
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           <button
             type="button"
             onClick={() => createLinkMutation.mutate()}
@@ -224,9 +241,31 @@ function TelegramReportsTab() {
           >
             {createLinkMutation.isLoading ? 'Yaratilmoqda...' : 'Telegram ulash tokeni olish'}
           </button>
+          <select
+            value={testPreset}
+            onChange={(e) =>
+              setTestPreset(
+                e.target.value as
+                  | 'today'
+                  | 'yesterday'
+                  | 'this_week'
+                  | 'last_week'
+                  | 'this_month'
+                  | 'last_month',
+              )
+            }
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm min-w-[170px]"
+          >
+            <option value="today">Bugun</option>
+            <option value="yesterday">Kecha</option>
+            <option value="this_week">Shu hafta</option>
+            <option value="last_week">O&apos;tgan hafta</option>
+            <option value="this_month">Shu oy</option>
+            <option value="last_month">O&apos;tgan oy</option>
+          </select>
           <button
             type="button"
-            onClick={() => sendTestMutation.mutate()}
+            onClick={() => sendTestMutation.mutate({ preset: testPreset })}
             disabled={sendTestMutation.isLoading}
             className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
           >
@@ -252,21 +291,45 @@ function TelegramReportsTab() {
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Admin</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Telegram name</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Username</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Telegram</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">TG ID</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Biriktirgan admin</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Qo&apos;shilgan</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {(data?.admins ?? []).map((admin) => (
-                <tr key={admin.id}>
-                  <td className="px-4 py-3 text-gray-900">{admin.name}</td>
-                  <td className="px-4 py-3 text-gray-700">{admin.username ?? '-'}</td>
+              {(data?.receivers ?? []).map((receiver) => (
+                <tr key={receiver.id}>
+                  <td className="px-4 py-3 text-gray-900">{receiver.telegramName ?? '-'}</td>
                   <td className="px-4 py-3 text-gray-700">
-                    {admin.hasTelegram ? admin.telegramIdMasked : "Bog'lanmagan"}
+                    {receiver.username ? `@${receiver.username}` : '-'}
+                  </td>
+                  <td className="px-4 py-3 text-gray-700">{receiver.chatId}</td>
+                  <td className="px-4 py-3 text-gray-700">{receiver.createdByName ?? '-'}</td>
+                  <td className="px-4 py-3 text-gray-700">
+                    {new Date(receiver.createdAt).toISOString().slice(0, 10)}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => deleteReceiverMutation.mutate({ receiverId: receiver.id })}
+                      disabled={deleteReceiverMutation.isLoading}
+                      className="text-red-600 hover:underline disabled:opacity-50"
+                    >
+                      O&apos;chirish
+                    </button>
                   </td>
                 </tr>
               ))}
+              {(data?.receivers ?? []).length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-6 text-center text-gray-500">
+                    Receiverlar hali yo&apos;q
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
