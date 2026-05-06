@@ -52,6 +52,8 @@ model Tenant {
   regionConfigs     RegionConfig[]
   scheduleTemplates CourseScheduleTemplate[]
   courseRunMembers  CourseRunMember[]
+  telegramLinkTokens TelegramLinkToken[]
+  reportDeliveryLogs ReportDeliveryLog[]
 
   @@index([subdomain])
   @@map("tenants")
@@ -91,6 +93,7 @@ model User {
   exerciseLogsMarked StudentExerciseLog[]
   attendancesMarked  ClassAttendance[]
   ownedCourseRuns    CourseRun[] @relation("CourseRunKurator")
+  telegramLinkTokens TelegramLinkToken[]
 
   @@unique([tenantId, email])
   @@unique([tenantId, phone])
@@ -807,4 +810,40 @@ model CourseScheduleTemplate {
   @@unique([tenantId, courseCategory])
   @@index([tenantId])
   @@map("course_schedule_templates")
+}
+
+model TelegramLinkToken {
+  id          String   @id @default(uuid())
+  tenantId    String
+  userId      String
+  tokenHash   String   @unique
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@index([expiresAt])
+  @@index([usedAt])
+  @@map("telegram_link_tokens")
+}
+
+model ReportDeliveryLog {
+  id         String   @id @default(uuid())
+  tenantId   String
+  periodKind String
+  dateFrom   DateTime
+  dateTo     DateTime
+  recipient  String
+  status     String
+  error      String?
+  createdAt  DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, periodKind, createdAt])
+  @@index([status])
+  @@map("report_delivery_logs")
 }
