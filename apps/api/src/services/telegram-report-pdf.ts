@@ -54,7 +54,6 @@ function renderCourseSection(section: CourseMatrixSection): string {
         <tr>
           <td class="student-cell">
             <div class="student-name">${escapeHtml(student.studentName)}</div>
-            <div class="student-number">${escapeHtml(student.customerNumber)}</div>
           </td>
           ${cells}
           <td class="num total-cell">${formatPoints(student.totalPoints)}</td>
@@ -202,7 +201,6 @@ function renderHtml(report: TenantReport): string {
     td.num { text-align: center; font-variant-numeric: tabular-nums; }
     .student-cell { min-width: 170px; }
     .student-name { font-weight: 700; color: #0f172a; }
-    .student-number { color: var(--muted); font-size: 10px; margin-top: 2px; }
     .cell-positive {
       background: rgba(34, 197, 94, 0.18);
       color: #146534;
