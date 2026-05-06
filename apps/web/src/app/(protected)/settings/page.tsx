@@ -5,7 +5,15 @@ import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'users' | 'assignments' | 'telegramReports';
+type Tab =
+  | 'templates'
+  | 'courseRuns'
+  | 'exercises'
+  | 'regions'
+  | 'users'
+  | 'assignments'
+  | 'telegramReports'
+  | 'courseVisibility';
 
 export default function SettingsPage() {
   const { isAdmin, isManager, isLoading } = useAuth();
@@ -31,6 +39,7 @@ export default function SettingsPage() {
         { key: 'courseRuns', label: 'Kurs oqimlari' },
         { key: 'exercises', label: 'Mashqlar' },
         { key: 'regions', label: 'Viloyatlar' },
+        { key: 'courseVisibility', label: 'Kurs faolligi' },
         { key: 'users', label: 'Foydalanuvchilar' },
         { key: 'assignments', label: "Kurator bog'lash" },
         { key: 'telegramReports', label: 'Telegram hisobot' },
@@ -72,9 +81,91 @@ export default function SettingsPage() {
         <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} />
       )}
       {activeTab === 'regions' && <RegionsTab />}
+      {activeTab === 'courseVisibility' && <CourseVisibilityTab />}
       {activeTab === 'users' && <UsersTab />}
       {activeTab === 'assignments' && <AssignmentsTab />}
       {activeTab === 'telegramReports' && <TelegramReportsTab />}
+    </div>
+  );
+}
+
+function CourseVisibilityTab() {
+  const utils = trpc.useContext();
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const { data: courses, isLoading, error: queryError } = trpc.settings.listCoursesWithStatus.useQuery();
+  const toggleMutation = trpc.settings.setCourseActive.useMutation({
+    onSuccess: async (_result, vars) => {
+      await Promise.all([
+        utils.settings.listCoursesWithStatus.invalidate(),
+        utils.settings.listCourses.invalidate(),
+        utils.dashboard.courses.invalidate(),
+        utils.dashboard.courseRuns.invalidate(),
+      ]);
+      setError('');
+      setSuccess(vars.isActive ? 'Kurs faol qilindi' : 'Kurs nofaol qilindi');
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold text-gray-900">Kurslar faolligi</h2>
+      <p className="text-sm text-gray-600">
+        Faol kurslar kurator sahifalarida ko&apos;rinadi va Telegram hisobotga kiritiladi.
+      </p>
+
+      {queryError && <p className="text-sm text-red-600">{queryError.message}</p>}
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {success && <p className="text-sm text-green-600">{success}</p>}
+
+      {isLoading ? (
+        <div className="text-sm text-gray-500">Yuklanmoqda...</div>
+      ) : !courses || courses.length === 0 ? (
+        <div className="bg-white rounded-xl border border-gray-200 p-6 text-center text-gray-500 text-sm">
+          Kurslar topilmadi
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Kurs</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Turi</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Boshlanish</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Holati</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {courses.map((course) => (
+                <tr key={course.id}>
+                  <td className="px-4 py-3 text-gray-900">{course.name}</td>
+                  <td className="px-4 py-3 text-gray-700">{course.category ?? '-'}</td>
+                  <td className="px-4 py-3 text-gray-700">
+                    {course.startDate ? new Date(course.startDate).toISOString().slice(0, 10) : '-'}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleMutation.mutate({ courseId: course.id, isActive: !course.isActive })}
+                      disabled={toggleMutation.isLoading}
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium disabled:opacity-50 ${
+                        course.isActive ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+                      }`}
+                    >
+                      {course.isActive ? 'Faol' : 'Nofaol'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
