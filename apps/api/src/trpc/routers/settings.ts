@@ -5,6 +5,7 @@ import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
 import {
   createTelegramLinkToken,
+  deleteTelegramReceiver,
   getTelegramReportStatus,
   sendTelegramTestReport,
 } from '../../services/telegram-reports';
@@ -1803,8 +1804,24 @@ export const settingsRouter = router({
     return createTelegramLinkToken(ctx.tenantId, ctx.user.userId);
   }),
 
-  sendTelegramTestReport: adminProcedure.mutation(async ({ ctx }) => {
-    return sendTelegramTestReport(ctx.tenantId, ctx.user.userId);
-  }),
+  sendTelegramTestReport: adminProcedure
+    .input(
+      z.object({
+        preset: z.enum(['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month']),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return sendTelegramTestReport(ctx.tenantId, ctx.user.userId, input.preset);
+    }),
+
+  deleteTelegramReceiver: adminProcedure
+    .input(
+      z.object({
+        receiverId: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return deleteTelegramReceiver(ctx.tenantId, input.receiverId);
+    }),
 });
 
