@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import { renderReportPdf } from './telegram-report-pdf';
 
 const TASHKENT_OFFSET_MINUTES = 5 * 60;
 const DEFAULT_TIMEZONE = 'Asia/Tashkent';
@@ -8,7 +9,7 @@ const LINK_TOKEN_TTL_MINUTES = 30;
 
 export type ReportPeriodKind = 'daily' | 'weekly' | 'monthly';
 
-type PeriodRange = {
+export type PeriodRange = {
   kind: ReportPeriodKind;
   from: Date;
   to: Date;
@@ -16,7 +17,7 @@ type PeriodRange = {
   toLabel: string;
 };
 
-type KuratorSummaryRow = {
+export type KuratorSummaryRow = {
   name: string;
   studentCount: number;
   completedTasks: number;
@@ -25,7 +26,7 @@ type KuratorSummaryRow = {
   performancePercent: number;
 };
 
-type CourseMatrixSection = {
+export type CourseMatrixSection = {
   courseName: string;
   practiceNames: string[];
   rows: Array<{
@@ -36,7 +37,7 @@ type CourseMatrixSection = {
   }>;
 };
 
-type TenantReport = {
+export type TenantReport = {
   tenantId: string;
   tenantName: string;
   period: PeriodRange;
@@ -44,14 +45,6 @@ type TenantReport = {
   kurators: KuratorSummaryRow[];
   courseSections: CourseMatrixSection[];
 };
-
-function normalizeAscii(input: string): string {
-  return input
-    .replace(/[^\x20-\x7E]/g, '?')
-    .replace(/\\/g, '\\\\')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
-}
 
 function toTashkentDate(date: Date): Date {
   return new Date(date.getTime() + TASHKENT_OFFSET_MINUTES * 60_000);
@@ -114,71 +107,6 @@ function computePreviousPeriod(kind: ReportPeriodKind, now: Date): PeriodRange {
   };
 }
 
-function buildSimplePdf(lines: string[]): Buffer {
-  const pageWidth = 595;
-  const pageHeight = 842;
-  const startX = 40;
-  const startY = 800;
-  const lineHeight = 14;
-  const maxLinesPerPage = 52;
-
-  const pages: string[][] = [];
-  for (let i = 0; i < lines.length; i += maxLinesPerPage) {
-    pages.push(lines.slice(i, i + maxLinesPerPage));
-  }
-  if (pages.length === 0) {
-    pages.push(['No data']);
-  }
-
-  const objects: string[] = [];
-  const pageObjectNumbers: number[] = [];
-  const contentObjectNumbers: number[] = [];
-
-  // 1 catalog, 2 pages root
-  let nextObjectNumber = 3;
-  for (let i = 0; i < pages.length; i += 1) {
-    pageObjectNumbers.push(nextObjectNumber);
-    contentObjectNumbers.push(nextObjectNumber + 1);
-    nextObjectNumber += 2;
-  }
-  const fontObjectNumber = nextObjectNumber;
-
-  objects[1] = `<< /Type /Catalog /Pages 2 0 R >>`;
-  objects[2] = `<< /Type /Pages /Count ${pages.length} /Kids [${pageObjectNumbers.map((n) => `${n} 0 R`).join(' ')}] >>`;
-
-  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
-    const pageObjectNumber = pageObjectNumbers[pageIndex];
-    const contentObjectNumber = contentObjectNumbers[pageIndex];
-    const contentLines = pages[pageIndex]
-      .map((line) => `(${normalizeAscii(line)}) Tj`)
-      .join(` T*${'\n'}`);
-    const content = `BT\n/F1 10 Tf\n${startX} ${startY} Td\n${contentLines}\nET`;
-    objects[contentObjectNumber] = `<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream`;
-    objects[pageObjectNumber] =
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] ` +
-      `/Resources << /Font << /F1 ${fontObjectNumber} 0 R >> >> /Contents ${contentObjectNumber} 0 R >>`;
-  }
-
-  objects[fontObjectNumber] = `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`;
-
-  const chunks: string[] = ['%PDF-1.4\n'];
-  const offsets: number[] = [0];
-  for (let i = 1; i <= fontObjectNumber; i += 1) {
-    offsets[i] = Buffer.byteLength(chunks.join(''), 'utf8');
-    chunks.push(`${i} 0 obj\n${objects[i]}\nendobj\n`);
-  }
-  const xrefOffset = Buffer.byteLength(chunks.join(''), 'utf8');
-  chunks.push(`xref\n0 ${fontObjectNumber + 1}\n`);
-  chunks.push(`0000000000 65535 f \n`);
-  for (let i = 1; i <= fontObjectNumber; i += 1) {
-    chunks.push(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`);
-  }
-  chunks.push(
-    `trailer\n<< /Size ${fontObjectNumber + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`,
-  );
-
-  return Buffer.from(chunks.join(''), 'utf8');
-}
 
 function ensureTelegramConfigured(): { token: string; webhookSecret: string; botUsername: string | null } {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -397,48 +325,6 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
   return sections;
 }
 
-function buildReportLines(report: TenantReport): string[] {
-  const lines: string[] = [];
-  lines.push('Kuratordashboard Telegram Report');
-  lines.push(`Tenant: ${report.tenantName}`);
-  lines.push(`Period: ${report.period.kind} (${report.period.fromLabel} .. ${report.period.toLabel})`);
-  lines.push(`Generated: ${report.generatedAt.toISOString()}`);
-  lines.push('');
-  lines.push('Kuratorlar summary:');
-  lines.push('Name | Students | Done | Pending | Missed | Perf%');
-  if (report.kurators.length === 0) {
-    lines.push('No kurators');
-  } else {
-    for (const row of report.kurators) {
-      lines.push(
-        `${row.name} | ${row.studentCount} | ${row.completedTasks} | ${row.pendingTasks} | ${row.missedStudents} | ${row.performancePercent}`,
-      );
-    }
-  }
-
-  lines.push('');
-  lines.push('Hisobot jadvali (active courses):');
-  if (report.courseSections.length === 0) {
-    lines.push('No active course sections');
-    return lines;
-  }
-
-  for (const section of report.courseSections) {
-    lines.push('');
-    lines.push(`Course: ${section.courseName}`);
-    if (section.practiceNames.length === 0) {
-      lines.push('No active practices');
-      continue;
-    }
-    lines.push(`Practices: ${section.practiceNames.join(' | ')}`);
-    for (const row of section.rows) {
-      const pointCells = row.practicePoints.map((value) => (value === 0 ? '-' : String(value))).join(' | ');
-      lines.push(`${row.studentName} (${row.customerNumber}) => ${pointCells} || total=${row.totalPoints}`);
-    }
-  }
-  return lines;
-}
-
 async function buildTenantReport(tenantId: string, period: PeriodRange): Promise<TenantReport> {
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
@@ -483,8 +369,7 @@ async function sendTenantReportToAdmins(tenantId: string, period: PeriodRange): 
   }
 
   const report = await buildTenantReport(tenantId, period);
-  const lines = buildReportLines(report);
-  const pdf = buildSimplePdf(lines);
+  const pdf = await renderReportPdf(report);
   const caption = `Hisobot: ${period.kind} (${period.fromLabel} .. ${period.toLabel})`;
   const filename = `hisobot-${period.kind}-${period.fromLabel}-${period.toLabel}.pdf`;
 
@@ -719,7 +604,7 @@ export async function sendTelegramTestReport(tenantId: string, userId: string): 
 
   const period = computePreviousPeriod('daily', new Date());
   const report = await buildTenantReport(tenantId, period);
-  const pdf = buildSimplePdf(buildReportLines(report));
+  const pdf = await renderReportPdf(report);
   await sendTelegramDocument(
     admin.telegramId,
     `hisobot-test-${period.fromLabel}.pdf`,
