@@ -2,6 +2,12 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { trpcMiddleware } from './trpc/server';
+import {
+  getTelegramWebhookSecret,
+  handleTelegramWebhook,
+  runTelegramScheduledReports,
+  validateCronSecret,
+} from './services/telegram-reports';
 
 dotenv.config();
 
@@ -57,6 +63,68 @@ app.get('/health', (_req, res) => {
 
 app.get('/ready', (_req, res) => {
   res.json({ status: 'ready', timestamp: new Date().toISOString() });
+});
+
+app.post('/webhooks/telegram', async (req, res) => {
+  const expectedSecret = getTelegramWebhookSecret();
+  if (!expectedSecret) {
+    return res.status(503).json({ ok: false, error: 'Webhook secret not configured' });
+  }
+
+  const providedSecret = String(req.header('x-telegram-bot-api-secret-token') || '');
+  if (providedSecret !== expectedSecret) {
+    return res.status(401).json({ ok: false, error: 'Invalid webhook secret' });
+  }
+
+  try {
+    const result = await handleTelegramWebhook(req.body);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'telegram_webhook_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return res.status(500).json({ ok: false, error: 'Webhook processing failed' });
+  }
+});
+
+app.post('/internal/reports/telegram/run', async (req, res) => {
+  const authHeader = String(req.header('authorization') || '');
+  const bearer = authHeader.toLowerCase().startsWith('bearer ')
+    ? authHeader.slice(7).trim()
+    : null;
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
+  const bodyToken = typeof req.body?.token === 'string' ? req.body.token : null;
+  const providedSecret = bearer || queryToken || bodyToken;
+
+  if (!validateCronSecret(providedSecret)) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized' });
+  }
+
+  const periodRaw =
+    typeof req.body?.period === 'string'
+      ? req.body.period
+      : typeof req.query.period === 'string'
+        ? req.query.period
+        : 'daily';
+  const period = periodRaw === 'weekly' || periodRaw === 'monthly' ? periodRaw : 'daily';
+
+  try {
+    const result = await runTelegramScheduledReports(period);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'telegram_report_cron_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Failed' });
+  }
 });
 
 app.use('/api/trpc', trpcMiddleware);
