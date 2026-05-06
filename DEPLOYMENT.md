@@ -15,6 +15,12 @@
 - `REPORT_CRON_SECRET` (required for `/internal/reports/telegram/run`)
 - `REPORT_TIMEZONE` (optional, default `Asia/Tashkent`)
 
+## PDF renderer runtime notes
+
+- Telegram report PDF renderer uses `puppeteer` (HTML -> PDF).
+- Do **not** set `PUPPETEER_SKIP_DOWNLOAD=true` in API build environment.
+- If your platform provides a custom Chrome binary, set `PUPPETEER_EXECUTABLE_PATH`.
+
 ### Web (Vercel)
 - `NEXT_PUBLIC_API_URL`
 
