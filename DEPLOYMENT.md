@@ -9,6 +9,11 @@
 - `PORT`
 - `NODE_ENV`
 - `CORS_ORIGIN` (comma-separated if multiple)
+- `TELEGRAM_BOT_TOKEN` (required for Telegram PDF reports)
+- `TELEGRAM_WEBHOOK_SECRET` (required; must match Telegram webhook secret header)
+- `TELEGRAM_BOT_USERNAME` (optional; used for deep-link shown in settings)
+- `REPORT_CRON_SECRET` (required for `/internal/reports/telegram/run`)
+- `REPORT_TIMEZONE` (optional, default `Asia/Tashkent`)
 
 ### Web (Vercel)
 - `NEXT_PUBLIC_API_URL`
@@ -28,5 +33,13 @@ If Kuratordashboard and Dashboarduz use the same database and shared credentials
 1. Database migration
 2. API deployment
 3. Web deployment
+4. Configure Telegram webhook + Railway cron jobs
 
 This order prevents UI/backend contract mismatch during rollout.
+
+## Telegram cron endpoints
+
+- Webhook: `POST /webhooks/telegram` with `x-telegram-bot-api-secret-token`.
+- Scheduler: `POST /internal/reports/telegram/run`
+  - Auth via `Authorization: Bearer <REPORT_CRON_SECRET>`
+  - Body/query: `period=daily|weekly|monthly`
