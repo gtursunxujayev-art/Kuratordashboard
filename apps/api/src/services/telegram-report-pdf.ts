@@ -35,6 +35,47 @@ function renderKuratorRows(rows: KuratorSummaryRow[]): string {
     .join('');
 }
 
+function renderKuratorTypeBlock(title: string, rows: KuratorSummaryRow[]): string {
+  if (rows.length === 0) {
+    return `
+      <section class="kurator-type-block">
+        <h3 class="course-type-title">${escapeHtml(title)}</h3>
+        <div class="empty-card">No ${escapeHtml(title.toLowerCase())} data.</div>
+      </section>
+    `;
+  }
+
+  const totalKurators = rows.length;
+  const totalCompleted = rows.reduce((sum, row) => sum + row.completedTasks, 0);
+  const totalPending = rows.reduce((sum, row) => sum + row.pendingTasks, 0);
+  const totalMissed = rows.reduce((sum, row) => sum + row.missedStudents, 0);
+
+  return `
+    <section class="kurator-type-block">
+      <h3 class="course-type-title">${escapeHtml(title)}</h3>
+      <div class="summary-grid">
+        <div class="summary-card"><div class="label">Kuratorlar soni</div><div class="value">${totalKurators}</div></div>
+        <div class="summary-card"><div class="label">Bajarilgan vazifalar</div><div class="value">${totalCompleted}</div></div>
+        <div class="summary-card"><div class="label">Bajarilmagan vazifalar</div><div class="value">${totalPending}</div></div>
+        <div class="summary-card"><div class="label">Kelmagan o'quvchilar</div><div class="value">${totalMissed}</div></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Kurator</th>
+            <th>O'quvchilar</th>
+            <th>Bajarilgan</th>
+            <th>Bajarilmagan</th>
+            <th>Kelmagan</th>
+            <th>Samaradorlik</th>
+          </tr>
+        </thead>
+        <tbody>${renderKuratorRows(rows)}</tbody>
+      </table>
+    </section>
+  `;
+}
+
 function renderCourseSection(section: CourseMatrixSection): string {
   const headerCells = section.practiceNames
     .map((name) => `<th>${escapeHtml(name)}</th>`)
@@ -109,12 +150,13 @@ function renderCourseTypeGroup(title: string, sections: CourseMatrixSection[]): 
 function renderHtml(report: TenantReport): string {
   const periodLabel = `${report.period.fromLabel} - ${report.period.toLabel}`;
   const generatedLabel = report.generatedAt.toISOString().replace('T', ' ').replace('Z', ' UTC');
+  const kuratorSections = `${renderKuratorTypeBlock('Online hisobot', report.kuratorsByType.online)}${renderKuratorTypeBlock('Ofline hisobot', report.kuratorsByType.offline)}`;
   const onlineSections = report.courseSections.filter((section) => section.courseType === 'online');
   const offlineSections = report.courseSections.filter((section) => section.courseType === 'offline');
   const courseSections =
     report.courseSections.length === 0
       ? '<div class="empty-card">No online/offline course report data.</div>'
-      : `${renderCourseTypeGroup('Online courses', onlineSections)}${renderCourseTypeGroup('Offline courses', offlineSections)}`;
+      : `${renderCourseTypeGroup('Online hisobot', onlineSections)}${renderCourseTypeGroup('Ofline hisobot', offlineSections)}`;
 
   return `<!doctype html>
 <html>
@@ -241,13 +283,18 @@ function renderHtml(report: TenantReport): string {
     }
     .course-type-group {
       margin-top: 14px;
-      page-break-inside: avoid;
     }
     .course-type-title {
       margin: 0 0 10px;
       color: #111827;
       font-size: 14px;
       font-weight: 700;
+    }
+    .kurator-type-block {
+      margin-top: 12px;
+    }
+    .kurator-type-block:first-of-type {
+      margin-top: 0;
     }
     .course-section h3 {
       margin: 0 0 8px;
@@ -289,25 +336,7 @@ function renderHtml(report: TenantReport): string {
     </section>
     <section class="section">
       <h2 class="section-title">Kuratorlar kesimida</h2>
-      <div class="summary-grid">
-        <div class="summary-card"><div class="label">Kuratorlar soni</div><div class="value">${report.kurators.length}</div></div>
-        <div class="summary-card"><div class="label">Bajarilgan vazifalar</div><div class="value">${report.kurators.reduce((a, b) => a + b.completedTasks, 0)}</div></div>
-        <div class="summary-card"><div class="label">Bajarilmagan vazifalar</div><div class="value">${report.kurators.reduce((a, b) => a + b.pendingTasks, 0)}</div></div>
-        <div class="summary-card"><div class="label">Kelmagan o'quvchilar</div><div class="value">${report.kurators.reduce((a, b) => a + b.missedStudents, 0)}</div></div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Kurator</th>
-            <th>O'quvchilar</th>
-            <th>Bajarilgan</th>
-            <th>Bajarilmagan</th>
-            <th>Kelmagan</th>
-            <th>Samaradorlik</th>
-          </tr>
-        </thead>
-        <tbody>${renderKuratorRows(report.kurators)}</tbody>
-      </table>
+      ${kuratorSections}
     </section>
     <section class="section">
       <h2 class="section-title">Hisobot jadvali (faol kurslar)</h2>
