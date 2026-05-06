@@ -5,7 +5,7 @@ import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
 
-type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'users' | 'assignments';
+type Tab = 'templates' | 'courseRuns' | 'exercises' | 'regions' | 'users' | 'assignments' | 'telegramReports';
 
 export default function SettingsPage() {
   const { isAdmin, isManager, isLoading } = useAuth();
@@ -33,6 +33,7 @@ export default function SettingsPage() {
         { key: 'regions', label: 'Viloyatlar' },
         { key: 'users', label: 'Foydalanuvchilar' },
         { key: 'assignments', label: "Kurator bog'lash" },
+        { key: 'telegramReports', label: 'Telegram hisobot' },
       ]
     : [
         { key: 'courseRuns', label: 'Kurs oqimlari' },
@@ -73,6 +74,112 @@ export default function SettingsPage() {
       {activeTab === 'regions' && <RegionsTab />}
       {activeTab === 'users' && <UsersTab />}
       {activeTab === 'assignments' && <AssignmentsTab />}
+      {activeTab === 'telegramReports' && <TelegramReportsTab />}
+    </div>
+  );
+}
+
+function TelegramReportsTab() {
+  const [success, setSuccess] = useState('');
+  const [error, setError] = useState('');
+  const [linkToken, setLinkToken] = useState<string | null>(null);
+  const [deepLink, setDeepLink] = useState<string | null>(null);
+
+  const { data, isLoading, error: queryError, refetch } = trpc.settings.telegramReportStatus.useQuery();
+  const createLinkMutation = trpc.settings.createTelegramLinkToken.useMutation({
+    onSuccess: (result) => {
+      setError('');
+      setSuccess('Telegram ulash tokeni yaratildi.');
+      setLinkToken(result.token);
+      setDeepLink(result.deepLink ?? null);
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
+  });
+  const sendTestMutation = trpc.settings.sendTelegramTestReport.useMutation({
+    onSuccess: () => {
+      setError('');
+      setSuccess('Test PDF yuborildi.');
+      void refetch();
+    },
+    onError: (err) => {
+      setSuccess('');
+      setError(err.message);
+    },
+  });
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-base font-semibold text-gray-900">Telegram hisobot</h2>
+
+      <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
+        <p className="text-sm text-gray-700">
+          Daily/weekly/monthly PDF hisobotlar har kuni <span className="font-semibold">08:00</span> da yuboriladi.
+        </p>
+        <p className="text-xs text-gray-500">Timezone: {data?.timezone ?? 'Asia/Tashkent'}</p>
+        <p className="text-xs text-gray-500">
+          Bot sozlangan: {data?.configured ? 'Ha' : "Yo'q"}
+          {data?.botUsername ? ` (@${data.botUsername})` : ''}
+        </p>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => createLinkMutation.mutate()}
+            disabled={createLinkMutation.isLoading}
+            className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          >
+            {createLinkMutation.isLoading ? 'Yaratilmoqda...' : 'Telegram ulash tokeni olish'}
+          </button>
+          <button
+            type="button"
+            onClick={() => sendTestMutation.mutate()}
+            disabled={sendTestMutation.isLoading}
+            className="px-4 py-2 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {sendTestMutation.isLoading ? 'Yuborilmoqda...' : 'Test PDF yuborish'}
+          </button>
+        </div>
+
+        {deepLink && (
+          <p className="text-sm text-gray-700 break-all">
+            Deep-link: <a href={deepLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">{deepLink}</a>
+          </p>
+        )}
+        {linkToken && <p className="text-xs text-gray-600 break-all">Token: {linkToken}</p>}
+        {queryError && <p className="text-sm text-red-600">{queryError.message}</p>}
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        {success && <p className="text-sm text-green-600">{success}</p>}
+      </div>
+
+      {isLoading ? (
+        <div className="text-sm text-gray-500">Yuklanmoqda...</div>
+      ) : (
+        <div className="bg-white border border-gray-200 rounded-xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-200">
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Admin</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Username</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Telegram</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {(data?.admins ?? []).map((admin) => (
+                <tr key={admin.id}>
+                  <td className="px-4 py-3 text-gray-900">{admin.name}</td>
+                  <td className="px-4 py-3 text-gray-700">{admin.username ?? '-'}</td>
+                  <td className="px-4 py-3 text-gray-700">
+                    {admin.hasTelegram ? admin.telegramIdMasked : "Bog'lanmagan"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
