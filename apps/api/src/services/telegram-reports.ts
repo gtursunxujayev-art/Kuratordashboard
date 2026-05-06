@@ -31,7 +31,6 @@ export type CourseMatrixSection = {
   practiceNames: string[];
   rows: Array<{
     studentName: string;
-    customerNumber: string;
     practicePoints: number[];
     totalPoints: number;
   }>;
@@ -161,7 +160,7 @@ async function sendTelegramDocument(chatId: string, filename: string, pdfBuffer:
 }
 
 async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promise<KuratorSummaryRow[]> {
-  const [kurators, assignments, completedGroups, pendingGroups, missedRows] = await Promise.all([
+  const [kurators, assignments, missedRows, activityRows] = await Promise.all([
     prisma.user.findMany({
       where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
       select: { id: true, name: true, username: true },
@@ -171,28 +170,19 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
       where: { tenantId, isActive: true },
       select: { kuratorUserId: true, customerId: true },
     }),
-    prisma.kuratorTask.groupBy({
-      by: ['kuratorUserId'],
-      where: {
-        tenantId,
-        completedAt: { gte: period.from, lt: period.to },
-      },
-      _count: { id: true },
-    }),
-    prisma.kuratorTask.groupBy({
-      by: ['kuratorUserId'],
-      where: {
-        tenantId,
-        completedAt: null,
-        createdAt: { gte: period.from, lt: period.to },
-      },
-      _count: { id: true },
-    }),
     prisma.classAttendance.findMany({
       where: {
         tenantId,
         attended: false,
         lessonDate: { gte: period.from, lt: period.to },
+      },
+      select: { customerId: true },
+      distinct: ['customerId'],
+    }),
+    prisma.studentExerciseLog.findMany({
+      where: {
+        tenantId,
+        completedAt: { gte: period.from, lt: period.to },
       },
       select: { customerId: true },
       distinct: ['customerId'],
@@ -219,16 +209,24 @@ async function buildKuratorSummary(tenantId: string, period: PeriodRange): Promi
     }
   }
 
-  const completedByKurator = new Map(completedGroups.map((row) => [row.kuratorUserId, row._count.id]));
-  const pendingByKurator = new Map(pendingGroups.map((row) => [row.kuratorUserId, row._count.id]));
+  const activeStudentsByKurator = new Map<string, Set<string>>();
+  for (const row of activityRows) {
+    const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
+    for (const kuratorId of kuratorSet) {
+      const activeSet = activeStudentsByKurator.get(kuratorId) ?? new Set<string>();
+      activeSet.add(row.customerId);
+      activeStudentsByKurator.set(kuratorId, activeSet);
+    }
+  }
 
   return kurators.map((kurator) => {
-    const completed = completedByKurator.get(kurator.id) ?? 0;
-    const pending = pendingByKurator.get(kurator.id) ?? 0;
+    const studentCount = studentsByKurator.get(kurator.id)?.size ?? 0;
+    const completed = activeStudentsByKurator.get(kurator.id)?.size ?? 0;
+    const pending = Math.max(0, studentCount - completed);
     const total = completed + pending;
     return {
       name: kurator.name ?? kurator.username ?? 'Kurator',
-      studentCount: studentsByKurator.get(kurator.id)?.size ?? 0,
+      studentCount,
       completedTasks: completed,
       pendingTasks: pending,
       missedStudents: missedByKurator.get(kurator.id) ?? 0,
@@ -269,7 +267,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
 
     const students = await prisma.customer.findMany({
       where: { tenantId, id: { in: studentIds } },
-      select: { id: true, name: true, customerNumber: true },
+      select: { id: true, name: true },
       orderBy: { name: 'asc' },
     });
 
@@ -309,7 +307,6 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
       });
       return {
         studentName: student.name,
-        customerNumber: student.customerNumber,
         practicePoints,
         totalPoints,
       };
