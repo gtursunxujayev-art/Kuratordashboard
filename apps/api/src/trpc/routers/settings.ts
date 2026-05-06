@@ -3,6 +3,11 @@ import { z } from 'zod';
 import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
+import {
+  createTelegramLinkToken,
+  getTelegramReportStatus,
+  sendTelegramTestReport,
+} from '../../services/telegram-reports';
 
 const scheduleTemplateSchema = z.object({
   id: z.string().optional(),
@@ -1752,5 +1757,17 @@ export const settingsRouter = router({
 
       return { assignedCount: uniqueCustomerIds.length };
     }),
+
+  telegramReportStatus: adminProcedure.query(async ({ ctx }) => {
+    return getTelegramReportStatus(ctx.tenantId);
+  }),
+
+  createTelegramLinkToken: adminProcedure.mutation(async ({ ctx }) => {
+    return createTelegramLinkToken(ctx.tenantId, ctx.user.userId);
+  }),
+
+  sendTelegramTestReport: adminProcedure.mutation(async ({ ctx }) => {
+    return sendTelegramTestReport(ctx.tenantId, ctx.user.userId);
+  }),
 });
 
