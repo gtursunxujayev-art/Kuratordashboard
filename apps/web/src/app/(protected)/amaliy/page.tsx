@@ -213,6 +213,24 @@ export default function AmaliyPage() {
     setSelectedStudentId('');
   }, [filteredCourseRuns, preferredRunIdForCourse, selectedCourseId, selectedCourseRunId]);
 
+  useEffect(() => {
+    if (dateMode === 'all') return;
+    setSelectedColorByExercise({});
+    setSelectedColorByPracticeStudent({});
+    setHiddenStudentExerciseKeys(new Set());
+    setVanishingStudentExerciseKeys(new Set());
+    setHiddenPracticeStudentKeys(new Set());
+    setVanishingPracticeStudentKeys(new Set());
+  }, [
+    dateMode,
+    mode,
+    selectedDate,
+    selectedStudentId,
+    selectedPracticeId,
+    selectedCourseId,
+    selectedCourseRunId,
+  ]);
+
   const { data: students } = trpc.amaliy.studentList.useQuery({
     courseRunId: selectedCourseRunId || undefined,
   });
@@ -324,7 +342,7 @@ export default function AmaliyPage() {
       return;
     }
 
-    const selectedColorId = selectedColorByExercise[exerciseId] || exerciseOptions[0]?.id;
+    const selectedColorId = selectedColorByExercise[exerciseId] ?? '';
     if (!selectedColorId) {
       toast.show('Rang tanlang', 'error');
       return;
@@ -345,6 +363,11 @@ export default function AmaliyPage() {
       if (dateMode === 'all') {
         void refetchStudentExercises();
       } else {
+        setSelectedColorByExercise((prev) => {
+          const next = { ...prev };
+          delete next[exerciseId];
+          return next;
+        });
         setVanishingStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
 
         setTimeout(() => {
@@ -377,8 +400,7 @@ export default function AmaliyPage() {
       return;
     }
 
-    const selectedColorId =
-      selectedColorByPracticeStudent[studentId] || practiceOptions[0]?.id;
+    const selectedColorId = selectedColorByPracticeStudent[studentId] ?? '';
     if (!selectedColorId) {
       toast.show('Rang tanlang', 'error');
       return;
@@ -399,6 +421,11 @@ export default function AmaliyPage() {
       if (dateMode === 'all') {
         void refetchPracticeStudents();
       } else {
+        setSelectedColorByPracticeStudent((prev) => {
+          const next = { ...prev };
+          delete next[studentId];
+          return next;
+        });
         setVanishingPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
 
         setTimeout(() => {
@@ -749,8 +776,7 @@ export default function AmaliyPage() {
                       colorHex: row.colorHex,
                       points: row.points,
                     }));
-                    const selectedColorId =
-                      selectedColorByExercise[exercise.id] || exerciseOptions[0]?.id || '';
+                    const selectedColorId = selectedColorByExercise[exercise.id] ?? '';
 
                     return (
                       <div
@@ -880,8 +906,7 @@ export default function AmaliyPage() {
                       colorHex: row.colorOption.colorHex,
                       points: row.points,
                     }));
-                    const selectedColorId =
-                      selectedColorByPracticeStudent[student.id] || practiceOptions[0]?.id || '';
+                    const selectedColorId = selectedColorByPracticeStudent[student.id] ?? '';
 
                     return (
                       <div
