@@ -91,7 +91,7 @@ app.post('/webhooks/telegram', async (req, res) => {
   }
 });
 
-app.post('/internal/reports/telegram/run', async (req, res) => {
+const handleTelegramReportRun: express.RequestHandler = async (req, res) => {
   const authHeader = String(req.header('authorization') || '');
   const bearer = authHeader.toLowerCase().startsWith('bearer ')
     ? authHeader.slice(7).trim()
@@ -125,7 +125,10 @@ app.post('/internal/reports/telegram/run', async (req, res) => {
     );
     return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Failed' });
   }
-});
+};
+
+app.post('/internal/reports/telegram/run', handleTelegramReportRun);
+app.get('/internal/reports/telegram/run', handleTelegramReportRun);
 
 app.use('/api/trpc', trpcMiddleware);
 
