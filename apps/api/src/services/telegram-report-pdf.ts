@@ -357,7 +357,7 @@ export async function renderReportPdf(report: TenantReport): Promise<Buffer> {
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(renderHtml(report), { waitUntil: 'networkidle0' });
+    await page.setContent(renderHtml(report), { waitUntil: 'load' });
     const pdf = await page.pdf({
       format: 'A4',
       printBackground: true,
