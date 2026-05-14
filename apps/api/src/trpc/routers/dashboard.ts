@@ -1347,7 +1347,11 @@ export const dashboardRouter = router({
         ? startOfDayLocal(latestRunForCourse.startDate)
         : (course.startDate ? startOfDayLocal(course.startDate) : todayStart);
       const anchorRunEndExclusive = latestRunForCourse
-        ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
+        ? (
+            selectedRun
+              ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
+              : maxDate(addDays(startOfDayLocal(latestRunForCourse.endDate), 1), addDays(todayStart, 1))
+          )
         : addDays(anchorRunStart, 42);
 
       let dateRange: { from: Date; to: Date };
@@ -1571,10 +1575,12 @@ export const dashboardRouter = router({
           week5: new Map<string, { count: number; latestRank: number }>(),
           week6: new Map<string, { count: number; latestRank: number }>(),
         };
+        let matchedWeek = false;
         for (const weekKey of AMALIY_WEEK_KEYS) {
           if (isDateInRange(completedDay, weekRanges[weekKey])) {
             weekPoints[weekKey] += pointValue;
             weekHasLogs[weekKey] = true;
+            matchedWeek = true;
             if (log.colorHex) {
               const bucket = weekColorStats[weekKey];
               const current = bucket.get(log.colorHex);
@@ -1583,6 +1589,19 @@ export const dashboardRouter = router({
               } else {
                 bucket.set(log.colorHex, { count: 1, latestRank: idx });
               }
+            }
+          }
+        }
+        if (!matchedWeek && input.datePreset === 'all' && isDateInRange(completedDay, dateRange)) {
+          weekPoints.week6 += pointValue;
+          weekHasLogs.week6 = true;
+          if (log.colorHex) {
+            const bucket = weekColorStats.week6;
+            const current = bucket.get(log.colorHex);
+            if (current) {
+              current.count += 1;
+            } else {
+              bucket.set(log.colorHex, { count: 1, latestRank: idx });
             }
           }
         }
