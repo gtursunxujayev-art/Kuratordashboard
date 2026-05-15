@@ -182,6 +182,23 @@ function computeTestPresetPeriod(preset: TestReportPreset, now: Date): PeriodRan
   };
 }
 
+function isMissingCourseEndDateColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('courses.enddate') && message.includes('does not exist');
+  }
+  return message.includes('courses.enddate');
+}
+
+function activeCourseWindowForPeriod(period: PeriodRange): Record<string, unknown> {
+  return {
+    isActive: true,
+    startDate: { lte: period.to },
+    OR: [{ endDate: null }, { endDate: { gte: period.from } }],
+  };
+}
+
 
 function ensureTelegramConfigured(): { token: string; webhookSecret: string; botUsername: string | null } {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -236,48 +253,59 @@ async function sendTelegramDocument(chatId: string, filename: string, pdfBuffer:
 }
 
 async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange): Promise<KuratorSummaryByType> {
-  const [kurators, assignments, missedRows, activityRows] = await Promise.all([
-    prisma.user.findMany({
-      where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
-      select: { id: true, name: true, username: true },
-      orderBy: [{ name: 'asc' }, { username: 'asc' }],
-    }),
-    prisma.kuratorAssignment.findMany({
-      where: {
-        tenantId,
-        isActive: true,
-        courseRun: { course: { isActive: true, startDate: { lte: period.to } } },
-      },
-      select: {
-        kuratorUserId: true,
-        customerId: true,
-        courseRun: { select: { course: { select: { category: true } } } },
-      },
-    }),
-    prisma.classAttendance.findMany({
-      where: {
-        tenantId,
-        attended: false,
-        lessonDate: { gte: period.from, lt: period.to },
-        courseRun: { course: { isActive: true, startDate: { lte: period.to } } },
-      },
-      select: {
-        customerId: true,
-        courseRun: { select: { course: { select: { category: true } } } },
-      },
-    }),
-    prisma.studentExerciseLog.findMany({
-      where: {
-        tenantId,
-        completedAt: { gte: period.from, lt: period.to },
-        exerciseDefinition: { course: { isActive: true, startDate: { lte: period.to } } },
-      },
-      select: {
-        customerId: true,
-        exerciseDefinition: { select: { course: { select: { category: true } } } },
-      },
-    }),
-  ]);
+  const loadRows = async (useEndDateFilter: boolean) => {
+    const courseWhere = useEndDateFilter
+      ? activeCourseWindowForPeriod(period)
+      : { isActive: true, startDate: { lte: period.to } };
+    return Promise.all([
+      prisma.user.findMany({
+        where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
+        select: { id: true, name: true, username: true },
+        orderBy: [{ name: 'asc' }, { username: 'asc' }],
+      }),
+      prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          isActive: true,
+          courseRun: { course: courseWhere as any },
+        },
+        select: {
+          kuratorUserId: true,
+          customerId: true,
+          courseRun: { select: { course: { select: { category: true } } } },
+        },
+      }),
+      prisma.classAttendance.findMany({
+        where: {
+          tenantId,
+          attended: false,
+          lessonDate: { gte: period.from, lt: period.to },
+          courseRun: { course: courseWhere as any },
+        },
+        select: {
+          customerId: true,
+          courseRun: { select: { course: { select: { category: true } } } },
+        },
+      }),
+      prisma.studentExerciseLog.findMany({
+        where: {
+          tenantId,
+          completedAt: { gte: period.from, lt: period.to },
+          exerciseDefinition: { course: courseWhere as any },
+        },
+        select: {
+          customerId: true,
+          exerciseDefinition: { select: { course: { select: { category: true } } } },
+        },
+      }),
+    ]);
+  };
+  const [kurators, assignments, missedRows, activityRows] = await loadRows(true).catch(async (error) => {
+    if (!isMissingCourseEndDateColumnError(error)) {
+      throw error;
+    }
+    return loadRows(false);
+  });
 
   const customerToKuratorsByType = {
     online: new Map<string, Set<string>>(),
@@ -392,10 +420,21 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
 
 async function buildCourseSections(tenantId: string, period: PeriodRange): Promise<CourseMatrixSection[]> {
   const courses = await prisma.course.findMany({
-    // Include only courses that have already started by the end of the report period.
-    where: { tenantId, isActive: true, startDate: { lte: period.to } },
+    where: {
+      tenantId,
+      ...(activeCourseWindowForPeriod(period) as any),
+    },
     select: { id: true, name: true, category: true },
     orderBy: { name: 'asc' },
+  }).catch(async (error) => {
+    if (!isMissingCourseEndDateColumnError(error)) {
+      throw error;
+    }
+    return prisma.course.findMany({
+      where: { tenantId, isActive: true, startDate: { lte: period.to } },
+      select: { id: true, name: true, category: true },
+      orderBy: { name: 'asc' },
+    });
   });
 
   const sections: CourseMatrixSection[] = [];
