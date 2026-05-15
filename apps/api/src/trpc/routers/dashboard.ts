@@ -32,6 +32,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseEndDateColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('courses.enddate') && message.includes('does not exist');
+  }
+  return message.includes('courses.enddate');
+}
+
 function isMissingCourseRunMembersTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1294,9 +1303,18 @@ export const dashboardRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId } = ctx;
 
-      const course = await prisma.course.findFirst({
+      let course = await prisma.course.findFirst({
         where: { id: input.courseId, tenantId, isActive: true },
-        select: { id: true, name: true, startDate: true },
+        select: { id: true, name: true, startDate: true, endDate: true },
+      }).catch(async (error) => {
+        if (!isMissingCourseEndDateColumnError(error)) {
+          throw error;
+        }
+        const fallback = await prisma.course.findFirst({
+          where: { id: input.courseId, tenantId, isActive: true },
+          select: { id: true, name: true, startDate: true },
+        });
+        return fallback ? { ...fallback, endDate: null as Date | null } : null;
       });
       if (!course) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
@@ -1343,21 +1361,46 @@ export const dashboardRouter = router({
           });
 
       const todayStart = startOfDayLocal(new Date());
-      const anchorRunStart = latestRunForCourse
+      const courseStart = course.startDate ? startOfDayLocal(course.startDate) : null;
+      const courseEndExclusive = course.endDate ? addDays(startOfDayLocal(course.endDate), 1) : null;
+
+      const runAnchorStart = latestRunForCourse
         ? startOfDayLocal(latestRunForCourse.startDate)
-        : (course.startDate ? startOfDayLocal(course.startDate) : todayStart);
-      const anchorRunEndExclusive = latestRunForCourse
+        : (courseStart ?? todayStart);
+      const runAnchorEndExclusive = latestRunForCourse
         ? (
             selectedRun
               ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
               : maxDate(addDays(startOfDayLocal(latestRunForCourse.endDate), 1), addDays(todayStart, 1))
           )
-        : addDays(anchorRunStart, 42);
+        : addDays(runAnchorStart, 42);
+
+      const useCourseAnchors = !selectedRun && Boolean(courseStart);
+      const anchorRunStart = useCourseAnchors ? (courseStart as Date) : runAnchorStart;
+      const anchorRunEndExclusive = useCourseAnchors
+        ? (
+            courseEndExclusive && courseEndExclusive.getTime() > anchorRunStart.getTime()
+              ? courseEndExclusive
+              : maxDate(runAnchorEndExclusive, addDays(anchorRunStart, 1))
+          )
+        : runAnchorEndExclusive;
 
       let dateRange: { from: Date; to: Date };
 
       if (input.datePreset === 'today') {
         dateRange = { from: todayStart, to: addDays(todayStart, 1) };
+      } else if (selectedRun) {
+        dateRange = resolveAmaliyReportDateRange({
+          datePreset: input.datePreset,
+          runStart: anchorRunStart,
+          runEndExclusive: anchorRunEndExclusive,
+        });
+      } else if (useCourseAnchors) {
+        dateRange = resolveAmaliyReportDateRange({
+          datePreset: input.datePreset,
+          runStart: anchorRunStart,
+          runEndExclusive: anchorRunEndExclusive,
+        });
       } else if (latestRunForCourse) {
         dateRange = resolveAmaliyReportDateRange({
           datePreset: input.datePreset,
