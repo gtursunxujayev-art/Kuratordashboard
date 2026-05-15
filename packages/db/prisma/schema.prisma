@@ -384,6 +384,7 @@ model Course {
   tenantId  String
   name      String
   startDate DateTime?
+  endDate   DateTime?
   category  String   @default("offline")
   isActive  Boolean  @default(true)
   isHiddenFromIncomeForm Boolean @default(false)
