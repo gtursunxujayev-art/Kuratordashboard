@@ -204,15 +204,27 @@ function throwMissingRegionsMigrationError(): never {
   });
 }
 
-function normalizeCourseCategory(value: string): 'online' | 'intensiv' | 'offline' {
+function normalizeCourseCategory(value: string): 'online' | 'intensiv' | 'offline' | 'additional_service' {
   const normalized = value.trim().toLowerCase();
+  if (
+    normalized.includes('additional')
+    || normalized.includes("qo'shimcha")
+    || normalized.includes("qo‘shimcha")
+    || normalized.includes('xizmat')
+    || normalized.includes('servis')
+    || normalized.includes('service')
+  ) {
+    return 'additional_service';
+  }
   if (normalized.includes('intens')) return 'intensiv';
   if (normalized.includes('online') || normalized.includes('onlayn')) return 'online';
   return 'offline';
 }
 
-function requiredStartDayByCategory(category: string): 1 | 6 {
-  return normalizeCourseCategory(category) === 'online' ? 1 : 6;
+function requiredStartDayByCategory(category: string): 1 | 6 | null {
+  const normalized = normalizeCourseCategory(category);
+  if (normalized === 'additional_service') return null;
+  return normalized === 'online' ? 1 : 6;
 }
 
 function requiredStartDayLabel(day: 1 | 6): string {
@@ -220,10 +232,13 @@ function requiredStartDayLabel(day: 1 | 6): string {
 }
 
 function computeEndDate(startDate: Date, durationWeeks: number, courseCategory: string): Date {
-  // Online starts on Monday and spans full weeks ending Sunday.
-  // Offline/Intensiv keeps Saturday-start logic ending Sunday.
+  // Online starts Monday, Offline/Intensiv starts Saturday.
+  // Additional-service courses can start any day and span full calendar weeks from that day.
   const requiredDay = requiredStartDayByCategory(courseCategory);
-  const dayOffset = requiredDay === 1 ? (durationWeeks * 7 - 1) : (durationWeeks * 7 - 6);
+  const dayOffset =
+    requiredDay === null
+      ? (durationWeeks * 7 - 1)
+      : (requiredDay === 1 ? (durationWeeks * 7 - 1) : (durationWeeks * 7 - 6));
   const end = new Date(startDate);
   end.setDate(end.getDate() + dayOffset);
   return end;
@@ -785,7 +800,7 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: "Kursning boshlanish sanasi noto'g'ri" });
       }
       const requiredStartDay = requiredStartDayByCategory(course.category);
-      if (start.getDay() !== requiredStartDay) {
+      if (requiredStartDay !== null && start.getDay() !== requiredStartDay) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: `Kursning boshlanish sanasi ${requiredStartDayLabel(requiredStartDay)} kuni bo'lishi kerak`,
