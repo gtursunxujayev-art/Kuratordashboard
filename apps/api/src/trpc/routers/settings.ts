@@ -244,6 +244,30 @@ function computeEndDate(startDate: Date, durationWeeks: number, courseCategory: 
   return end;
 }
 
+function parseLocalDateInput(value: string, fieldLabel: string): Date {
+  const raw = value.trim();
+  const parsed = new Date(`${raw}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `${fieldLabel} noto'g'ri formatda`,
+    });
+  }
+  return parsed;
+}
+
+function normalizeDateToLocalStart(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function calculateDurationWeeksFromDates(startDate: Date, endDate: Date): number {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const start = normalizeDateToLocalStart(startDate);
+  const end = normalizeDateToLocalStart(endDate);
+  const inclusiveDays = Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
+  return Math.max(1, Math.ceil(inclusiveDays / 7));
+}
+
 function normalizeOptional(input?: string): string | undefined {
   const value = input?.trim();
   return value ? value : undefined;
@@ -749,6 +773,8 @@ export const settingsRouter = router({
       z.object({
         courseId: z.string(),
         name: z.string().min(1).max(200),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
@@ -767,25 +793,31 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
       }
 
-      let start: Date;
+      let defaultCourseStart: Date | null = null;
+      let defaultCourseEnd: Date | null = null;
       try {
-        const rows = await prisma.$queryRaw<Array<{ startDate: Date | string | null }>>`
-          SELECT "startDate"
+        const rows = await prisma.$queryRaw<Array<{ startDate: Date | string | null; endDate: Date | string | null }>>`
+          SELECT "startDate", "endDate"
           FROM "courses"
           WHERE "id" = ${input.courseId}
             AND "tenantId" = ${ctx.tenantId}
           LIMIT 1
         `;
 
-        const rawStartDate = rows[0]?.startDate;
-        if (!rawStartDate) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: "Kursning boshlanish sanasi topilmadi. Avval kurs start date ni kiriting.",
-          });
+        const rawStartDate = rows[0]?.startDate ?? null;
+        const rawEndDate = rows[0]?.endDate ?? null;
+        if (rawStartDate) {
+          const parsed = rawStartDate instanceof Date ? rawStartDate : new Date(String(rawStartDate));
+          if (!Number.isNaN(parsed.getTime())) {
+            defaultCourseStart = normalizeDateToLocalStart(parsed);
+          }
         }
-
-        start = rawStartDate instanceof Date ? rawStartDate : new Date(String(rawStartDate));
+        if (rawEndDate) {
+          const parsed = rawEndDate instanceof Date ? rawEndDate : new Date(String(rawEndDate));
+          if (!Number.isNaN(parsed.getTime())) {
+            defaultCourseEnd = normalizeDateToLocalStart(parsed);
+          }
+        }
       } catch (error) {
         if (error instanceof TRPCError) {
           throw error;
@@ -796,8 +828,15 @@ export const settingsRouter = router({
         throw error;
       }
 
-      if (Number.isNaN(start.getTime())) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: "Kursning boshlanish sanasi noto'g'ri" });
+      const start = input.startDate
+        ? parseLocalDateInput(input.startDate, "Boshlanish sanasi")
+        : defaultCourseStart;
+
+      if (!start || Number.isNaN(start.getTime())) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Kursning boshlanish sanasi topilmadi. Avval kurs start date ni kiriting.",
+        });
       }
       const requiredStartDay = requiredStartDayByCategory(course.category);
       if (requiredStartDay !== null && start.getDay() !== requiredStartDay) {
@@ -822,7 +861,18 @@ export const settingsRouter = router({
       const durationWeeks = input.durationWeeks ?? template?.durationWeeks ?? 6;
       const baseLessons = input.baseLessons ?? template?.baseLessons ?? 12;
       const premiumExtraLessons = input.premiumExtraLessons ?? template?.premiumExtraLessons ?? 2;
-      const endDate = computeEndDate(start, durationWeeks, course.category);
+      const computedEndDate = computeEndDate(start, durationWeeks, course.category);
+      const endDate = input.endDate
+        ? parseLocalDateInput(input.endDate, 'Tugash sanasi')
+        : (defaultCourseEnd ?? computedEndDate);
+
+      if (endDate.getTime() < start.getTime()) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas",
+        });
+      }
+      const durationWeeksFromDates = calculateDurationWeeksFromDates(start, endDate);
 
       const rosterIds = Array.from(new Set(input.customerIds ?? []));
       if (rosterIds.length > 0) {
@@ -846,7 +896,7 @@ export const settingsRouter = router({
             name: input.name,
             startDate: start,
             endDate,
-            durationWeeks,
+            durationWeeks: durationWeeksFromDates,
             baseLessons,
             premiumExtraLessons,
           },
@@ -877,6 +927,8 @@ export const settingsRouter = router({
       z.object({
         courseRunId: z.string(),
         name: z.string().min(1).max(200).optional(),
+        startDate: z.string().optional(),
+        endDate: z.string().optional(),
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
@@ -908,11 +960,35 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
 
-      const nextDurationWeeks = input.durationWeeks ?? existing.durationWeeks;
-      const durationChanged = input.durationWeeks !== undefined && input.durationWeeks !== existing.durationWeeks;
-      const nextEndDate = durationChanged
-        ? computeEndDate(existing.startDate, nextDurationWeeks, existing.course.category)
+      const nextStartDate = input.startDate
+        ? parseLocalDateInput(input.startDate, "Boshlanish sanasi")
+        : existing.startDate;
+
+      const hasDateInput = input.startDate !== undefined || input.endDate !== undefined;
+      let nextEndDate = input.endDate
+        ? parseLocalDateInput(input.endDate, 'Tugash sanasi')
         : existing.endDate;
+
+      if (!hasDateInput && input.durationWeeks !== undefined) {
+        nextEndDate = computeEndDate(nextStartDate, input.durationWeeks, existing.course.category);
+      }
+
+      if (nextEndDate.getTime() < nextStartDate.getTime()) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Tugash sanasi boshlanish sanasidan oldin bo'lishi mumkin emas",
+        });
+      }
+
+      const requiredStartDay = requiredStartDayByCategory(existing.course.category);
+      if (requiredStartDay !== null && nextStartDate.getDay() !== requiredStartDay) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Kursning boshlanish sanasi ${requiredStartDayLabel(requiredStartDay)} kuni bo'lishi kerak`,
+        });
+      }
+
+      const nextDurationWeeks = calculateDurationWeeksFromDates(nextStartDate, nextEndDate);
 
       const rosterIds = input.customerIds === undefined ? null : Array.from(new Set(input.customerIds));
       if (rosterIds && rosterIds.length > 0) {
@@ -933,12 +1009,13 @@ export const settingsRouter = router({
           where: { id: input.courseRunId },
           data: {
             ...(input.name !== undefined ? { name: input.name } : {}),
-            ...(input.durationWeeks !== undefined ? { durationWeeks: nextDurationWeeks } : {}),
+            startDate: nextStartDate,
+            endDate: nextEndDate,
+            durationWeeks: nextDurationWeeks,
             ...(input.baseLessons !== undefined ? { baseLessons: input.baseLessons } : {}),
             ...(input.premiumExtraLessons !== undefined
               ? { premiumExtraLessons: input.premiumExtraLessons }
               : {}),
-            ...(durationChanged ? { endDate: nextEndDate } : {}),
           },
         });
 
@@ -1636,7 +1713,7 @@ export const settingsRouter = router({
   listCourses: protectedProcedure.query(async ({ ctx }) => {
     return prisma.course.findMany({
       where: { tenantId: ctx.tenantId, isActive: true },
-      select: { id: true, name: true, category: true },
+      select: { id: true, name: true, category: true, startDate: true, endDate: true },
       orderBy: { name: 'asc' },
     });
   }),
