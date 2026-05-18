@@ -504,12 +504,32 @@ function CourseRunsTab({
   selectedRunId: string;
   onSelectRun: (id: string) => void;
 }) {
+  const toDateInputValue = (value: Date | string | null | undefined) => {
+    if (!value) return '';
+    const parsed = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return parsed.toISOString().slice(0, 10);
+  };
+
+  const durationWeeksFromDateRange = (startDate: string, endDate: string) => {
+    const start = new Date(`${startDate}T00:00:00`);
+    const end = new Date(`${endDate}T00:00:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end.getTime() < start.getTime()) {
+      return null;
+    }
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const inclusiveDays = Math.floor((end.getTime() - start.getTime()) / DAY_MS) + 1;
+    return Math.max(1, Math.ceil(inclusiveDays / 7));
+  };
+
   const utils = trpc.useContext();
   const [showForm, setShowForm] = useState(false);
   const [editingRunId, setEditingRunId] = useState<string | null>(null);
   const [form, setForm] = useState({
     courseId: '',
     name: '',
+    startDate: '',
+    endDate: '',
     durationWeeks: 6,
     baseLessons: 12,
     premiumExtraLessons: 2,
@@ -527,6 +547,16 @@ function CourseRunsTab({
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
+  const coursesById = useMemo(() => {
+    const map = new Map<
+      string,
+      { id: string; name: string; category: string; startDate: Date | null; endDate: Date | null }
+    >();
+    for (const course of courses ?? []) {
+      map.set(course.id, course);
+    }
+    return map;
+  }, [courses]);
 
   // Roster picker queries — gated by the form's currently-selected courseId.
   const { data: tariffs } = trpc.settings.listTariffsByCourse.useQuery(
@@ -556,6 +586,8 @@ function CourseRunsTab({
     setForm({
       courseId: '',
       name: '',
+      startDate: '',
+      endDate: '',
       durationWeeks: 6,
       baseLessons: 12,
       premiumExtraLessons: 2,
@@ -576,6 +608,8 @@ function CourseRunsTab({
     id: string;
     courseId: string;
     name: string;
+    startDate: string | Date;
+    endDate: string | Date;
     durationWeeks: number;
     baseLessons: number;
     premiumExtraLessons: number;
@@ -584,6 +618,8 @@ function CourseRunsTab({
     setForm({
       courseId: run.courseId,
       name: run.name,
+      startDate: toDateInputValue(run.startDate),
+      endDate: toDateInputValue(run.endDate),
       durationWeeks: run.durationWeeks,
       baseLessons: run.baseLessons,
       premiumExtraLessons: run.premiumExtraLessons,
@@ -603,6 +639,13 @@ function CourseRunsTab({
       setSelectedCustomerIds(new Set(existingMembers));
     }
   }, [editingRunId, existingMembers]);
+
+  useEffect(() => {
+    if (!form.startDate || !form.endDate) return;
+    const computedWeeks = durationWeeksFromDateRange(form.startDate, form.endDate);
+    if (!computedWeeks || computedWeeks === form.durationWeeks) return;
+    setForm((prev) => ({ ...prev, durationWeeks: computedWeeks }));
+  }, [form.startDate, form.endDate, form.durationWeeks]);
 
   const handleSave = async () => {
     if (!form.name) {
@@ -626,6 +669,8 @@ function CourseRunsTab({
         await updateMutation.mutateAsync({
           courseRunId: editingRunId,
           name: form.name,
+          startDate: form.startDate || undefined,
+          endDate: form.endDate || undefined,
           durationWeeks: form.durationWeeks,
           baseLessons: form.baseLessons,
           premiumExtraLessons: form.premiumExtraLessons,
@@ -644,6 +689,8 @@ function CourseRunsTab({
         const createdRun = await createMutation.mutateAsync({
           courseId: form.courseId,
           name: form.name,
+          startDate: form.startDate || undefined,
+          endDate: form.endDate || undefined,
           durationWeeks: form.durationWeeks,
           baseLessons: form.baseLessons,
           premiumExtraLessons: form.premiumExtraLessons,
@@ -718,7 +765,23 @@ function CourseRunsTab({
               <label className="block text-xs font-medium text-gray-500 mb-1">Kurs</label>
               <select
                 value={form.courseId}
-                onChange={(e) => setForm({ ...form, courseId: e.target.value })}
+                onChange={(e) => {
+                  const nextCourseId = e.target.value;
+                  if (isEditing) {
+                    setForm({ ...form, courseId: nextCourseId });
+                    return;
+                  }
+
+                  const selectedCourse = coursesById.get(nextCourseId);
+                  const nextStart = toDateInputValue(selectedCourse?.startDate);
+                  const nextEnd = toDateInputValue(selectedCourse?.endDate);
+                  setForm((prev) => ({
+                    ...prev,
+                    courseId: nextCourseId,
+                    startDate: nextStart || prev.startDate,
+                    endDate: nextEnd || prev.endDate,
+                  }));
+                }}
                 disabled={isEditing}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm disabled:bg-gray-100 disabled:text-gray-500"
               >
@@ -740,14 +803,32 @@ function CourseRunsTab({
               />
             </div>
             <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Boshlanish sanasi</label>
+              <input
+                type="date"
+                value={form.startDate}
+                onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Tugash sanasi</label>
+              <input
+                type="date"
+                value={form.endDate}
+                onChange={(e) => setForm({ ...form, endDate: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+              />
+            </div>
+            <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Davomiylik (hafta)</label>
               <input
                 type="number"
                 min={1}
                 max={52}
                 value={form.durationWeeks}
-                onChange={(e) => setForm({ ...form, durationWeeks: Number(e.target.value) })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                readOnly
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-gray-50 text-gray-600"
               />
             </div>
             <div>
@@ -774,7 +855,7 @@ function CourseRunsTab({
             </div>
           </div>
           <p className="text-xs text-gray-500">
-            Boshlanish sanasi kursning `start date` qiymatidan avtomatik olinadi.
+            Boshlanish va tugash sanalari kursdan avtomatik olinadi, lekin bu yerda qo'lda o'zgartirishingiz mumkin.
           </p>
 
           {/* Roster picker — explicit hand-picked mini-group of students */}
@@ -959,6 +1040,8 @@ function CourseRunsTab({
                             id: run.id,
                             courseId: run.courseId,
                             name: run.name,
+                            startDate: run.startDate,
+                            endDate: run.endDate,
                             durationWeeks: run.durationWeeks,
                             baseLessons: run.baseLessons,
                             premiumExtraLessons: run.premiumExtraLessons,
