@@ -17,6 +17,7 @@ const amaliyReportDatePresetSchema = z.enum([
 ]);
 type AmaliyWeekKey = 'week1' | 'week2' | 'week3' | 'week4' | 'week5' | 'week6';
 const AMALIY_WEEK_KEYS: AmaliyWeekKey[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
+const REPORT_TIME_ZONE = 'Asia/Tashkent';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -78,8 +79,22 @@ function isAdminOrManager(roles: string[]): boolean {
   return roles.includes('Admin') || roles.includes('Manager');
 }
 
+function getDatePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = Number(parts.find((part) => part.type === 'year')?.value ?? '0');
+  const month = Number(parts.find((part) => part.type === 'month')?.value ?? '0');
+  const day = Number(parts.find((part) => part.type === 'day')?.value ?? '0');
+  return { year, month, day };
+}
+
 function startOfDayLocal(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const { year, month, day } = getDatePartsInTimeZone(date, REPORT_TIME_ZONE);
+  return new Date(year, month - 1, day);
 }
 
 function addDays(date: Date, days: number): Date {
@@ -196,6 +211,12 @@ function getFirstMondayOnOrAfter(startDate: Date): Date {
   return addDays(startDate, daysToMonday);
 }
 
+function getNextMonday(startDate: Date): Date {
+  const day = startDate.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
+  const daysToMonday = ((8 - day) % 7) || 7;
+  return addDays(startDate, daysToMonday);
+}
+
 function resolveAmaliyReportDateRange(params: {
   datePreset: z.infer<typeof amaliyReportDatePresetSchema>;
   runStart: Date;
@@ -213,24 +234,13 @@ function resolveAmaliyReportDateRange(params: {
   }
 
   const weekNumber = Number(datePreset.replace('week', ''));
-  const startsOnMonday = runStart.getDay() === 1;
+  const firstWeekEndExclusive = getNextMonday(runStart);
 
-  let from: Date;
-  let to: Date;
-
-  if (startsOnMonday) {
-    from = addDays(runStart, (weekNumber - 1) * 7);
+  let from = runStart;
+  let to = firstWeekEndExclusive;
+  if (weekNumber > 1) {
+    from = addDays(firstWeekEndExclusive, (weekNumber - 2) * 7);
     to = addDays(from, 7);
-  } else {
-    const firstMonday = getFirstMondayOnOrAfter(runStart);
-    if (weekNumber === 1) {
-      // Partial week from run start until Sunday, as requested by product spec.
-      from = runStart;
-      to = firstMonday;
-    } else {
-      from = addDays(firstMonday, (weekNumber - 2) * 7);
-      to = addDays(from, 7);
-    }
   }
 
   return {
