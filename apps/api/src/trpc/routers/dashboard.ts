@@ -1375,7 +1375,8 @@ export const dashboardRouter = router({
           )
         : addDays(runAnchorStart, 42);
 
-      const useCourseAnchors = !selectedRun && Boolean(courseStart);
+      // Course dates are authoritative for report windows; run selection only scopes student group.
+      const useCourseAnchors = Boolean(courseStart);
       const anchorRunStart = useCourseAnchors ? (courseStart as Date) : runAnchorStart;
       const anchorRunEndExclusive = useCourseAnchors
         ? (
@@ -1389,12 +1390,6 @@ export const dashboardRouter = router({
 
       if (input.datePreset === 'today') {
         dateRange = { from: todayStart, to: addDays(todayStart, 1) };
-      } else if (selectedRun) {
-        dateRange = resolveAmaliyReportDateRange({
-          datePreset: input.datePreset,
-          runStart: anchorRunStart,
-          runEndExclusive: anchorRunEndExclusive,
-        });
       } else if (useCourseAnchors) {
         dateRange = resolveAmaliyReportDateRange({
           datePreset: input.datePreset,
