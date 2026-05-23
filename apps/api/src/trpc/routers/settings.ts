@@ -7,6 +7,7 @@ import {
   createTelegramLinkToken,
   deleteTelegramReceiver,
   getTelegramReportStatus,
+  getTelegramSelfStatus,
   sendTelegramTestReport,
 } from '../../services/telegram-reports';
 
@@ -1888,15 +1889,19 @@ export const settingsRouter = router({
       return { assignedCount: uniqueCustomerIds.length };
     }),
 
-  telegramReportStatus: adminProcedure.query(async ({ ctx }) => {
+  telegramReportStatus: managerProcedure.query(async ({ ctx }) => {
     return getTelegramReportStatus(ctx.tenantId);
   }),
 
-  createTelegramLinkToken: adminProcedure.mutation(async ({ ctx }) => {
+  createTelegramLinkToken: protectedProcedure.mutation(async ({ ctx }) => {
     return createTelegramLinkToken(ctx.tenantId, ctx.user.userId);
   }),
 
-  sendTelegramTestReport: adminProcedure
+  telegramSelfStatus: protectedProcedure.query(async ({ ctx }) => {
+    return getTelegramSelfStatus(ctx.tenantId, ctx.user.userId);
+  }),
+
+  sendTelegramTestReport: managerProcedure
     .input(
       z.object({
         preset: z.enum(['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month']),
@@ -1906,7 +1911,7 @@ export const settingsRouter = router({
       return sendTelegramTestReport(ctx.tenantId, ctx.user.userId, input.preset);
     }),
 
-  deleteTelegramReceiver: adminProcedure
+  deleteTelegramReceiver: managerProcedure
     .input(
       z.object({
         receiverId: z.string().min(1),
