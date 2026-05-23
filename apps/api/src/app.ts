@@ -111,9 +111,27 @@ const handleTelegramReportRun: express.RequestHandler = async (req, res) => {
         ? req.query.period
         : 'daily';
   const period = periodRaw === 'weekly' || periodRaw === 'monthly' ? periodRaw : 'daily';
+  const audienceRaw =
+    typeof req.body?.audience === 'string'
+      ? req.body.audience
+      : typeof req.query.audience === 'string'
+        ? req.query.audience
+        : 'admin_manager';
+  const audience = audienceRaw === 'curators' ? 'curators' : 'admin_manager';
+  const slotRaw =
+    typeof req.body?.slot === 'string'
+      ? req.body.slot
+      : typeof req.query.slot === 'string'
+        ? req.query.slot
+        : 'noon';
+  const slot = slotRaw === 'evening' ? 'evening' : 'noon';
 
   try {
-    const result = await runTelegramScheduledReports(period);
+    const result = await runTelegramScheduledReports({
+      kind: period,
+      audience,
+      slot,
+    });
     return res.json({ ok: true, ...result });
   } catch (error) {
     console.error(
