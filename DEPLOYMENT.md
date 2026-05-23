@@ -46,6 +46,8 @@ This order prevents UI/backend contract mismatch during rollout.
 ## Telegram cron endpoints
 
 - Webhook: `POST /webhooks/telegram` with `x-telegram-bot-api-secret-token`.
+  - Important: webhook URL must point to API domain (Railway), not Web domain (Vercel).
 - Scheduler: `POST /internal/reports/telegram/run`
   - Auth via `Authorization: Bearer <REPORT_CRON_SECRET>`
-  - Body/query: `period=daily|weekly|monthly`
+  - Body/query (admin/manager PDF): `audience=admin_manager&period=daily|weekly|monthly`
+  - Body/query (curator text): `audience=curators&slot=noon|evening&period=daily`
