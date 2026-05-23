@@ -48,6 +48,7 @@ export default function SettingsPage() {
         { key: 'courseRuns', label: 'Kurs oqimlari' },
         { key: 'exercises', label: 'Mashqlar' },
         { key: 'assignments', label: "Kurator bog'lash" },
+        { key: 'telegramReports', label: 'Telegram hisobot' },
       ];
 
   return (
@@ -223,7 +224,11 @@ function TelegramReportsTab() {
 
       <div className="bg-white border border-gray-200 rounded-xl p-4 space-y-3">
         <p className="text-sm text-gray-700">
-          Daily/weekly/monthly PDF hisobotlar har kuni <span className="font-semibold">08:00</span> da yuboriladi.
+          Admin/Menejer uchun daily/weekly/monthly PDF hisobotlar jadval bo&apos;yicha yuboriladi.
+        </p>
+        <p className="text-sm text-gray-700">
+          Kuratorlar uchun shaxsiy text hisobotlar har kuni <span className="font-semibold">12:00</span> va{' '}
+          <span className="font-semibold">18:00</span> da yuboriladi.
         </p>
         <p className="text-xs text-gray-500">Timezone: {data?.timezone ?? 'Asia/Tashkent'}</p>
         <p className="text-xs text-gray-500">
@@ -231,6 +236,18 @@ function TelegramReportsTab() {
           {data?.botUsername ? ` (@${data.botUsername})` : ''}
         </p>
         <p className="text-xs text-gray-500">Token bir marta ishlatiladi va 30 daqiqada tugaydi.</p>
+        {data?.lastAdminManagerDelivery && (
+          <p className="text-xs text-gray-600">
+            Oxirgi admin/menejer yuborish: {data.lastAdminManagerDelivery.periodKind} · sent:{' '}
+            {data.lastAdminManagerDelivery.sent} · failed: {data.lastAdminManagerDelivery.failed}
+          </p>
+        )}
+        {data?.lastCuratorDelivery && (
+          <p className="text-xs text-gray-600">
+            Oxirgi kurator yuborish: {data.lastCuratorDelivery.periodKind} · sent: {data.lastCuratorDelivery.sent} ·
+            failed: {data.lastCuratorDelivery.failed}
+          </p>
+        )}
 
         <div className="flex flex-wrap gap-2 items-center">
           <button
