@@ -9,6 +9,8 @@ const LINK_TOKEN_TTL_MINUTES = 30;
 
 export type ReportPeriodKind = 'daily' | 'weekly' | 'monthly';
 export type TestReportPreset = 'today' | 'yesterday' | 'this_week' | 'last_week' | 'this_month' | 'last_month';
+export type ReportAudience = 'admin_manager' | 'curators';
+export type CuratorScheduleSlot = 'noon' | 'evening';
 
 export type PeriodRange = {
   kind: ReportPeriodKind;
@@ -53,6 +55,14 @@ export type TenantReport = {
   kuratorsByType: KuratorSummaryByType;
   courseSections: CourseMatrixSection[];
 };
+
+type AllowedLinkRole = 'Admin' | 'Manager' | 'Kurator';
+const ALLOWED_LINK_ROLES: AllowedLinkRole[] = ['Admin', 'Manager', 'Kurator'];
+const ADMIN_MANAGER_ROLES: Array<'Admin' | 'Manager'> = ['Admin', 'Manager'];
+
+function hasAllowedLinkRole(roles: string[]): boolean {
+  return roles.some((role) => ALLOWED_LINK_ROLES.includes(role as AllowedLinkRole));
+}
 
 function normalizeCourseType(category: string | null | undefined): 'online' | 'offline' | null {
   const value = (category ?? '').trim().toLowerCase();
@@ -561,11 +571,16 @@ async function sendTenantReportToReceivers(tenantId: string, period: PeriodRange
     where: {
       tenantId,
       isActive: true,
+      createdByUser: {
+        isActive: true,
+        roles: { hasSome: ADMIN_MANAGER_ROLES },
+      },
     },
-    select: { id: true, chatId: true },
+    select: { id: true, chatId: true, createdByUserId: true },
   });
 
   if (receivers.length === 0) {
+    console.warn(JSON.stringify({ level: 'warn', event: 'telegram_schedule_no_receivers', tenantId, audience: 'admin_manager' }));
     return { recipients: 0, sent: 0, failed: 0 };
   }
 
@@ -607,6 +622,188 @@ async function sendTenantReportToReceivers(tenantId: string, period: PeriodRange
     }
   }
 
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      event: 'telegram_admin_manager_report_delivery',
+      tenantId,
+      periodKind: period.kind,
+      recipients: receivers.length,
+      sent,
+      failed,
+    }),
+  );
+
+  return { recipients: receivers.length, sent, failed };
+}
+
+async function sendTenantCuratorSummaries(
+  tenantId: string,
+  now: Date,
+  slot: CuratorScheduleSlot,
+): Promise<{ recipients: number; sent: number; failed: number }> {
+  const dayStart = startOfTashkentDay(now);
+  const dayEnd = addDays(dayStart, 1);
+
+  const receivers = await prisma.telegramReportReceiver.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      createdByUser: {
+        isActive: true,
+        roles: { has: 'Kurator' },
+      },
+    },
+    select: {
+      chatId: true,
+      createdByUserId: true,
+      createdByUser: {
+        select: {
+          id: true,
+          name: true,
+          username: true,
+        },
+      },
+    },
+    orderBy: [{ createdAt: 'asc' }],
+  });
+
+  if (receivers.length === 0) {
+    console.warn(JSON.stringify({ level: 'warn', event: 'telegram_schedule_no_receivers', tenantId, audience: 'curators', slot }));
+    return { recipients: 0, sent: 0, failed: 0 };
+  }
+
+  const uniqueKuratorIds = Array.from(new Set(receivers.map((receiver) => receiver.createdByUserId)));
+  const assignments = await prisma.kuratorAssignment.findMany({
+    where: {
+      tenantId,
+      isActive: true,
+      kuratorUserId: { in: uniqueKuratorIds },
+      courseRun: {
+        startDate: { lte: now },
+        endDate: { gte: dayStart },
+      },
+    },
+    select: {
+      kuratorUserId: true,
+      customerId: true,
+    },
+  });
+
+  const assignedStudentsByKurator = new Map<string, Set<string>>();
+  for (const row of assignments) {
+    const set = assignedStudentsByKurator.get(row.kuratorUserId) ?? new Set<string>();
+    set.add(row.customerId);
+    assignedStudentsByKurator.set(row.kuratorUserId, set);
+  }
+
+  const allAssignedCustomerIds = Array.from(
+    new Set(assignments.map((row) => row.customerId).filter((id): id is string => Boolean(id))),
+  );
+
+  const [exerciseLogs, attendanceLogs] = await Promise.all([
+    allAssignedCustomerIds.length > 0
+      ? prisma.studentExerciseLog.findMany({
+          where: {
+            tenantId,
+            customerId: { in: allAssignedCustomerIds },
+            completedAt: { gte: dayStart, lt: dayEnd },
+          },
+          select: { customerId: true },
+        })
+      : Promise.resolve([] as Array<{ customerId: string }>),
+    allAssignedCustomerIds.length > 0
+      ? prisma.classAttendance.findMany({
+          where: {
+            tenantId,
+            customerId: { in: allAssignedCustomerIds },
+            lessonDate: { gte: dayStart, lt: dayEnd },
+          },
+          select: { customerId: true, attended: true },
+        })
+      : Promise.resolve([] as Array<{ customerId: string; attended: boolean }>),
+  ]);
+
+  const completedCustomers = new Set(exerciseLogs.map((row) => row.customerId));
+  const attendanceByCustomer = new Map<string, { keldi: number; kelmadi: number }>();
+  for (const row of attendanceLogs) {
+    const current = attendanceByCustomer.get(row.customerId) ?? { keldi: 0, kelmadi: 0 };
+    if (row.attended) current.keldi += 1;
+    else current.kelmadi += 1;
+    attendanceByCustomer.set(row.customerId, current);
+  }
+
+  const slotLabel = slot === 'noon' ? '12:00' : '18:00';
+  let sent = 0;
+  let failed = 0;
+  for (const receiver of receivers) {
+    const kuratorId = receiver.createdByUserId;
+    const students = assignedStudentsByKurator.get(kuratorId) ?? new Set<string>();
+    const studentCount = students.size;
+    let completed = 0;
+    let keldi = 0;
+    let kelmadi = 0;
+    for (const studentId of students) {
+      if (completedCustomers.has(studentId)) completed += 1;
+      const attendance = attendanceByCustomer.get(studentId);
+      if (attendance) {
+        keldi += attendance.keldi;
+        kelmadi += attendance.kelmadi;
+      }
+    }
+    const pending = Math.max(0, studentCount - completed);
+
+    const kuratorName = receiver.createdByUser.name ?? receiver.createdByUser.username ?? 'Kurator';
+    const text =
+      `Kurator hisobot (${slotLabel})\n` +
+      `Sana: ${toYmd(dayStart)}\n` +
+      `Kurator: ${kuratorName}\n` +
+      `Biriktirilgan o'quvchilar: ${studentCount}\n` +
+      `Amaliy bajarganlar: ${completed}\n` +
+      `Amaliy bajarilmaganlar: ${pending}\n` +
+      `Davomat keldi: ${keldi}\n` +
+      `Davomat kelmadi: ${kelmadi}`;
+
+    try {
+      await sendTelegramMessage(receiver.chatId, text);
+      sent += 1;
+      await prisma.reportDeliveryLog.create({
+        data: {
+          tenantId,
+          periodKind: `curator_${slot}`,
+          dateFrom: dayStart,
+          dateTo: now,
+          recipient: receiver.chatId,
+          status: 'sent',
+        },
+      });
+    } catch (error) {
+      failed += 1;
+      await prisma.reportDeliveryLog.create({
+        data: {
+          tenantId,
+          periodKind: `curator_${slot}`,
+          dateFrom: dayStart,
+          dateTo: now,
+          recipient: receiver.chatId,
+          status: 'failed',
+          error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+        },
+      });
+    }
+  }
+
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      event: 'telegram_curator_summary_delivery',
+      tenantId,
+      slot,
+      recipients: receivers.length,
+      sent,
+      failed,
+    }),
+  );
   return { recipients: receivers.length, sent, failed };
 }
 
@@ -616,7 +813,12 @@ export function validateCronSecret(provided: string | null | undefined): boolean
   return provided === expected;
 }
 
-export async function runTelegramScheduledReports(kind: ReportPeriodKind, now = new Date()): Promise<{
+export async function runTelegramScheduledReports(params: {
+  kind: ReportPeriodKind;
+  now?: Date;
+  audience?: ReportAudience;
+  slot?: CuratorScheduleSlot;
+}): Promise<{
   period: PeriodRange;
   tenants: number;
   recipients: number;
@@ -624,7 +826,20 @@ export async function runTelegramScheduledReports(kind: ReportPeriodKind, now = 
   failed: number;
 }> {
   ensureTelegramConfigured();
-  const period = computePreviousPeriod(kind, now);
+  const now = params.now ?? new Date();
+  const audience = params.audience ?? 'admin_manager';
+  const slot = params.slot ?? 'noon';
+  const kind = params.kind;
+  const period =
+    audience === 'curators'
+      ? {
+          kind: 'daily' as ReportPeriodKind,
+          from: startOfTashkentDay(now),
+          to: now,
+          fromLabel: toYmd(startOfTashkentDay(now)),
+          toLabel: toYmd(now),
+        }
+      : computePreviousPeriod(kind, now);
   const tenants = await prisma.tenant.findMany({
     select: { id: true },
     orderBy: { createdAt: 'asc' },
@@ -635,11 +850,28 @@ export async function runTelegramScheduledReports(kind: ReportPeriodKind, now = 
   let failed = 0;
 
   for (const tenant of tenants) {
-    const result = await sendTenantReportToReceivers(tenant.id, period);
+    const result =
+      audience === 'curators'
+        ? await sendTenantCuratorSummaries(tenant.id, now, slot)
+        : await sendTenantReportToReceivers(tenant.id, period);
     recipients += result.recipients;
     sent += result.sent;
     failed += result.failed;
   }
+
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      event: 'telegram_scheduled_reports_finished',
+      audience,
+      slot: audience === 'curators' ? slot : null,
+      periodKind: kind,
+      tenants: tenants.length,
+      recipients,
+      sent,
+      failed,
+    }),
+  );
 
   return { period, tenants: tenants.length, recipients, sent, failed };
 }
@@ -660,12 +892,14 @@ export async function createTelegramLinkToken(tenantId: string, userId: string):
       id: userId,
       tenantId,
       isActive: true,
-      roles: { has: 'Admin' },
     },
-    select: { id: true },
+    select: { id: true, roles: true },
   });
-  if (!user) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat faol admin Telegram bog'lay oladi" });
+  if (!user || !hasAllowedLinkRole(user.roles)) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: "Faqat faol admin, menejer yoki kurator Telegram bog'lay oladi",
+    });
   }
 
   const token = crypto.randomBytes(24).toString('hex');
@@ -730,13 +964,12 @@ export async function handleTelegramWebhook(update: any): Promise<{ handled: boo
       id: link.userId,
       tenantId: link.tenantId,
       isActive: true,
-      roles: { has: 'Admin' },
     },
-    select: { id: true, name: true, username: true },
+    select: { id: true, name: true, username: true, roles: true },
   });
-  if (!user) {
-    await sendTelegramMessage(String(chatIdRaw), "Bu token uchun admin foydalanuvchi topilmadi.");
-    return { handled: true, message: 'Admin not found' };
+  if (!user || !hasAllowedLinkRole(user.roles)) {
+    await sendTelegramMessage(String(chatIdRaw), "Bu token uchun foydalanuvchi topilmadi yoki huquqi yo'q.");
+    return { handled: true, message: 'Linked user not allowed' };
   }
 
   const from = update?.message?.from ?? null;
@@ -798,7 +1031,7 @@ export async function handleTelegramWebhook(update: any): Promise<{ handled: boo
 
   await sendTelegramMessage(
     chatId,
-    `Ulanish muvaffaqiyatli. ${user.name ?? user.username ?? 'Admin'} uchun hisobotlar shu chatga yuboriladi.`,
+    `Ulanish muvaffaqiyatli. ${user.name ?? user.username ?? 'Foydalanuvchi'} uchun hisobotlar shu chatga yuboriladi.`,
   );
   return { handled: true, message: 'Linked' };
 }
@@ -807,6 +1040,22 @@ export async function getTelegramReportStatus(tenantId: string): Promise<{
   configured: boolean;
   timezone: string;
   botUsername: string | null;
+  lastAdminManagerDelivery: {
+    periodKind: string;
+    dateFrom: Date;
+    dateTo: Date;
+    sent: number;
+    failed: number;
+    createdAt: Date;
+  } | null;
+  lastCuratorDelivery: {
+    periodKind: string;
+    dateFrom: Date;
+    dateTo: Date;
+    sent: number;
+    failed: number;
+    createdAt: Date;
+  } | null;
   receivers: Array<{
     id: string;
     chatId: string;
@@ -818,27 +1067,75 @@ export async function getTelegramReportStatus(tenantId: string): Promise<{
   }>;
 }> {
   const botConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_WEBHOOK_SECRET);
-  const receivers = await prisma.telegramReportReceiver.findMany({
-    where: {
-      tenantId,
-      isActive: true,
-    },
-    select: {
-      id: true,
-      chatId: true,
-      username: true,
-      telegramName: true,
-      createdAt: true,
-      createdByUserId: true,
-      createdByUser: { select: { name: true, username: true } },
-    },
-    orderBy: [{ createdAt: 'desc' }],
-  });
+  const [receivers, latestAdminManagerLog, latestCuratorLog] = await Promise.all([
+    prisma.telegramReportReceiver.findMany({
+      where: {
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        chatId: true,
+        username: true,
+        telegramName: true,
+        createdAt: true,
+        createdByUserId: true,
+        createdByUser: { select: { name: true, username: true } },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+    }),
+    prisma.reportDeliveryLog.findFirst({
+      where: {
+        tenantId,
+        periodKind: { in: ['daily', 'weekly', 'monthly'] },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      select: { periodKind: true, dateFrom: true, dateTo: true, createdAt: true },
+    }),
+    prisma.reportDeliveryLog.findFirst({
+      where: {
+        tenantId,
+        periodKind: { in: ['curator_noon', 'curator_evening'] },
+      },
+      orderBy: [{ createdAt: 'desc' }],
+      select: { periodKind: true, dateFrom: true, dateTo: true, createdAt: true },
+    }),
+  ]);
+
+  const summarizeDelivery = async (seed: { periodKind: string; dateFrom: Date; dateTo: Date; createdAt: Date } | null) => {
+    if (!seed) return null;
+    const rows = await prisma.reportDeliveryLog.findMany({
+      where: {
+        tenantId,
+        periodKind: seed.periodKind,
+        dateFrom: seed.dateFrom,
+        dateTo: seed.dateTo,
+      },
+      select: { status: true },
+    });
+    const sent = rows.filter((row) => row.status === 'sent').length;
+    const failed = rows.filter((row) => row.status === 'failed').length;
+    return {
+      periodKind: seed.periodKind,
+      dateFrom: seed.dateFrom,
+      dateTo: seed.dateTo,
+      sent,
+      failed,
+      createdAt: seed.createdAt,
+    };
+  };
+
+  const [lastAdminManagerDelivery, lastCuratorDelivery] = await Promise.all([
+    summarizeDelivery(latestAdminManagerLog),
+    summarizeDelivery(latestCuratorLog),
+  ]);
 
   return {
     configured: botConfigured,
     timezone: process.env.REPORT_TIMEZONE || DEFAULT_TIMEZONE,
     botUsername: process.env.TELEGRAM_BOT_USERNAME?.trim() || null,
+    lastAdminManagerDelivery,
+    lastCuratorDelivery,
     receivers: receivers.map((receiver) => ({
       id: receiver.id,
       chatId: receiver.chatId,
@@ -851,23 +1148,64 @@ export async function getTelegramReportStatus(tenantId: string): Promise<{
   };
 }
 
+export async function getTelegramSelfStatus(tenantId: string, userId: string): Promise<{
+  configured: boolean;
+  timezone: string;
+  botUsername: string | null;
+  receiver: {
+    chatId: string;
+    username: string | null;
+    telegramName: string | null;
+    createdAt: Date;
+  } | null;
+}> {
+  const botConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_WEBHOOK_SECRET);
+  const receiver = await prisma.telegramReportReceiver.findFirst({
+    where: {
+      tenantId,
+      createdByUserId: userId,
+      isActive: true,
+    },
+    select: {
+      chatId: true,
+      username: true,
+      telegramName: true,
+      createdAt: true,
+    },
+    orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+  });
+
+  return {
+    configured: botConfigured,
+    timezone: process.env.REPORT_TIMEZONE || DEFAULT_TIMEZONE,
+    botUsername: process.env.TELEGRAM_BOT_USERNAME?.trim() || null,
+    receiver: receiver
+      ? {
+          chatId: receiver.chatId,
+          username: receiver.username ?? null,
+          telegramName: receiver.telegramName ?? null,
+          createdAt: receiver.createdAt,
+        }
+      : null,
+  };
+}
+
 export async function sendTelegramTestReport(
   tenantId: string,
   userId: string,
   preset: TestReportPreset,
 ): Promise<{ sent: boolean; recipient: string; period: PeriodRange }> {
   ensureTelegramConfigured();
-  const admin = await prisma.user.findFirst({
+  const user = await prisma.user.findFirst({
     where: {
       id: userId,
       tenantId,
       isActive: true,
-      roles: { has: 'Admin' },
     },
-    select: { id: true },
+    select: { id: true, roles: true },
   });
-  if (!admin) {
-    throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat faol admin test yubora oladi" });
+  if (!user || !user.roles.some((role) => role === 'Admin' || role === 'Manager')) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat faol admin yoki menejer test yubora oladi" });
   }
 
   const receiver = await prisma.telegramReportReceiver.findFirst({
