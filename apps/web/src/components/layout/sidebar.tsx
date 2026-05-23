@@ -14,6 +14,7 @@ const dashboardChildren = [
 const navItems = [
   { href: '/students', label: "O'quvchilar", icon: 'ST' },
   { href: '/amaliy', label: 'Amaliy', icon: 'AM' },
+  { href: '/telegram', label: 'Telegram', icon: 'TG' },
 ] as const;
 
 const managerNavItems = [
