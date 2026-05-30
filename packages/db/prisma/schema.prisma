@@ -870,3 +870,20 @@ model ReportDeliveryLog {
   @@index([status])
   @@map("report_delivery_logs")
 }
+
+model TelegramScheduleRun {
+  id          String   @id @default(uuid())
+  jobKey      String
+  slotTime    DateTime
+  status      String   // running | sent | failed
+  error       String?
+  startedAt   DateTime @default(now())
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([jobKey, slotTime])
+  @@index([slotTime])
+  @@index([status])
+  @@map("telegram_schedule_runs")
+}
