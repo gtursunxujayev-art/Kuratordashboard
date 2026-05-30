@@ -12,6 +12,99 @@ import {
 dotenv.config();
 
 const app = express();
+const TASHKENT_OFFSET_MINUTES = 5 * 60;
+const TELEGRAM_SCHEDULER_INTERVAL_MS = 30_000;
+const internalSchedulerRuns = new Set<string>();
+
+function toTashkentDate(date: Date): Date {
+  return new Date(date.getTime() + TASHKENT_OFFSET_MINUTES * 60_000);
+}
+
+function tashkentYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function shouldRunInternalScheduler(): boolean {
+  if (process.env.NODE_ENV === 'test') return false;
+  const flag = (process.env.TELEGRAM_INTERNAL_SCHEDULER_ENABLED || 'true').trim().toLowerCase();
+  return flag !== '0' && flag !== 'false' && flag !== 'off';
+}
+
+function startTelegramInternalScheduler(): void {
+  if (!shouldRunInternalScheduler()) return;
+
+  const tick = async () => {
+    const now = new Date();
+    const localNow = toTashkentDate(now);
+    const minute = localNow.getMinutes();
+    const hour = localNow.getHours();
+    const weekday = localNow.getDay(); // 0=Sun, 1=Mon
+    const dayOfMonth = localNow.getDate();
+    const dayKey = tashkentYmd(localNow);
+
+    if (minute !== 0) return;
+
+    const runJob = async (
+      key: string,
+      params: { kind: 'daily' | 'weekly' | 'monthly'; audience: 'admin_manager' | 'curators'; slot?: 'noon' | 'evening' },
+    ) => {
+      if (internalSchedulerRuns.has(key)) return;
+      internalSchedulerRuns.add(key);
+      try {
+        const result = await runTelegramScheduledReports({
+          kind: params.kind,
+          audience: params.audience,
+          slot: params.slot,
+        });
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'telegram_internal_scheduler_sent',
+            key,
+            ...result,
+          }),
+        );
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            event: 'telegram_internal_scheduler_failed',
+            key,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    };
+
+    if (hour === 8) {
+      await runJob(`admin_manager:daily:${dayKey}`, { kind: 'daily', audience: 'admin_manager' });
+      if (weekday === 1) {
+        await runJob(`admin_manager:weekly:${dayKey}`, { kind: 'weekly', audience: 'admin_manager' });
+      }
+      if (dayOfMonth === 1) {
+        await runJob(`admin_manager:monthly:${dayKey}`, { kind: 'monthly', audience: 'admin_manager' });
+      }
+    }
+
+    if (hour === 12) {
+      await runJob(`curators:noon:${dayKey}`, { kind: 'daily', audience: 'curators', slot: 'noon' });
+    }
+    if (hour === 18) {
+      await runJob(`curators:evening:${dayKey}`, { kind: 'daily', audience: 'curators', slot: 'evening' });
+    }
+  };
+
+  // Run once quickly after boot, then on interval.
+  setTimeout(() => {
+    void tick();
+  }, 5_000);
+  setInterval(() => {
+    void tick();
+  }, TELEGRAM_SCHEDULER_INTERVAL_MS);
+}
 
 const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'http://localhost:3000')
   .split(',')
@@ -171,5 +264,7 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   const statusCode = message === 'CORS blocked' ? 403 : 500;
   res.status(statusCode).json({ error: message });
 });
+
+startTelegramInternalScheduler();
 
 export default app;
