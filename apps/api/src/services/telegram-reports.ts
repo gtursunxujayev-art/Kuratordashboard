@@ -71,6 +71,28 @@ function normalizeCourseType(category: string | null | undefined): 'online' | 'o
   return null;
 }
 
+function getCourseTypeAliases(courseType: 'online' | 'offline'): string[] {
+  return courseType === 'online' ? ['online', 'onlayn'] : ['offline', 'ofline', 'oflayn'];
+}
+
+function calculatePerformancePercent(params: {
+  completedTasks: number;
+  pendingTasks: number;
+  attendedLessons: number;
+  totalLessons: number;
+  exerciseLogs: number;
+}): number {
+  const { completedTasks, pendingTasks, attendedLessons, totalLessons, exerciseLogs } = params;
+  const taskTotal = completedTasks + pendingTasks;
+  const taskRate = taskTotal > 0 ? (completedTasks / taskTotal) * 100 : 0;
+  const attendanceRate = totalLessons > 0 ? (attendedLessons / totalLessons) * 100 : 0;
+  const activityRate = Math.min(100, exerciseLogs * 10);
+  if (taskTotal === 0 && totalLessons === 0 && exerciseLogs === 0) {
+    return 0;
+  }
+  return Math.round(taskRate * 0.4 + attendanceRate * 0.5 + activityRate * 0.1);
+}
+
 function toTashkentDate(date: Date): Date {
   return new Date(date.getTime() + TASHKENT_OFFSET_MINUTES * 60_000);
 }
@@ -263,11 +285,17 @@ async function sendTelegramDocument(chatId: string, filename: string, pdfBuffer:
 }
 
 async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange): Promise<KuratorSummaryByType> {
+  type InternalKuratorSummaryRow = KuratorSummaryRow & {
+    _attendedLessons: number;
+    _totalLessons: number;
+    _exerciseLogs: number;
+  };
+
   const loadRows = async (useEndDateFilter: boolean) => {
     const courseWhere = useEndDateFilter
       ? activeCourseWindowForPeriod(period)
       : { isActive: true, startDate: { lte: period.to } };
-    return Promise.all([
+    const [kurators, assignments] = await Promise.all([
       prisma.user.findMany({
         where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
         select: { id: true, name: true, username: true },
@@ -285,42 +313,16 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
           courseRun: { select: { course: { select: { category: true } } } },
         },
       }),
-      prisma.classAttendance.findMany({
-        where: {
-          tenantId,
-          attended: false,
-          lessonDate: { gte: period.from, lt: period.to },
-          courseRun: { course: courseWhere as any },
-        },
-        select: {
-          customerId: true,
-          courseRun: { select: { course: { select: { category: true } } } },
-        },
-      }),
-      prisma.studentExerciseLog.findMany({
-        where: {
-          tenantId,
-          completedAt: { gte: period.from, lt: period.to },
-          exerciseDefinition: { course: courseWhere as any },
-        },
-        select: {
-          customerId: true,
-          exerciseDefinition: { select: { course: { select: { category: true } } } },
-        },
-      }),
     ]);
+    return { kurators, assignments };
   };
-  const [kurators, assignments, missedRows, activityRows] = await loadRows(true).catch(async (error) => {
+  const { kurators, assignments } = await loadRows(true).catch(async (error) => {
     if (!isMissingCourseEndDateColumnError(error)) {
       throw error;
     }
     return loadRows(false);
   });
 
-  const customerToKuratorsByType = {
-    online: new Map<string, Set<string>>(),
-    offline: new Map<string, Set<string>>(),
-  };
   const studentsByKuratorByType = {
     online: new Map<string, Set<string>>(),
     offline: new Map<string, Set<string>>(),
@@ -330,101 +332,175 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
     const courseType = normalizeCourseType(row.courseRun.course.category);
     if (!courseType) continue;
 
-    const customerToKurators = customerToKuratorsByType[courseType];
     const studentsByKurator = studentsByKuratorByType[courseType];
-
-    const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
-    kuratorSet.add(row.kuratorUserId);
-    customerToKurators.set(row.customerId, kuratorSet);
 
     const studentSet = studentsByKurator.get(row.kuratorUserId) ?? new Set<string>();
     studentSet.add(row.customerId);
     studentsByKurator.set(row.kuratorUserId, studentSet);
   }
 
-  const missedByKuratorByType = {
-    online: new Map<string, number>(),
-    offline: new Map<string, number>(),
-  };
-  for (const row of missedRows) {
-    const courseType = normalizeCourseType(row.courseRun.course.category);
-    if (!courseType) continue;
-
-    const customerToKurators = customerToKuratorsByType[courseType];
-    const missedByKurator = missedByKuratorByType[courseType];
-    const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
-    for (const kuratorId of kuratorSet) {
-      missedByKurator.set(kuratorId, (missedByKurator.get(kuratorId) ?? 0) + 1);
-    }
-  }
-
-  const activeStudentsByKuratorByType = {
-    online: new Map<string, Set<string>>(),
-    offline: new Map<string, Set<string>>(),
-  };
-  for (const row of activityRows) {
-    const courseType = normalizeCourseType(row.exerciseDefinition.course.category);
-    if (!courseType) continue;
-
-    const customerToKurators = customerToKuratorsByType[courseType];
-    const activeStudentsByKurator = activeStudentsByKuratorByType[courseType];
-    const kuratorSet = customerToKurators.get(row.customerId) ?? new Set<string>();
-    for (const kuratorId of kuratorSet) {
-      const activeSet = activeStudentsByKurator.get(kuratorId) ?? new Set<string>();
-      activeSet.add(row.customerId);
-      activeStudentsByKurator.set(kuratorId, activeSet);
-    }
-  }
-
-  const buildRows = (courseType: 'online' | 'offline'): KuratorSummaryRow[] => {
+  const buildRows = async (courseType: 'online' | 'offline'): Promise<InternalKuratorSummaryRow[]> => {
+    const courseTypeAliases = getCourseTypeAliases(courseType);
     const studentsByKurator = studentsByKuratorByType[courseType];
-    const activeStudentsByKurator = activeStudentsByKuratorByType[courseType];
-    const missedByKurator = missedByKuratorByType[courseType];
+    const kuratorIds = kurators.map((kurator) => kurator.id);
+    const uniqueStudentIds = Array.from(new Set(Array.from(studentsByKurator.values()).flatMap((set) => Array.from(set))));
+    if (kuratorIds.length === 0 || uniqueStudentIds.length === 0) {
+      return [];
+    }
+
+    const [completedTaskRows, pendingTaskRows, attendanceTotals, attendanceAttended, exerciseRows] = await Promise.all([
+      prisma.kuratorTask.groupBy({
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: uniqueStudentIds },
+          completedAt: { gte: period.from, lt: period.to },
+        },
+        _count: { id: true },
+      }),
+      prisma.kuratorTask.groupBy({
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: uniqueStudentIds },
+          completedAt: null,
+          createdAt: { gte: period.from, lt: period.to },
+        },
+        _count: { id: true },
+      }),
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: uniqueStudentIds },
+          lessonDate: { gte: period.from, lt: period.to },
+          courseRun: { course: { category: { in: courseTypeAliases } } },
+        } as any,
+        _count: { id: true },
+      } as any),
+      prisma.classAttendance.groupBy({
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: uniqueStudentIds },
+          lessonDate: { gte: period.from, lt: period.to },
+          attended: true,
+          courseRun: { course: { category: { in: courseTypeAliases } } },
+        } as any,
+        _count: { id: true },
+      } as any),
+      prisma.studentExerciseLog.groupBy({
+        by: ['customerId'],
+        where: {
+          tenantId,
+          customerId: { in: uniqueStudentIds },
+          completedAt: { gte: period.from, lt: period.to },
+          exerciseDefinition: { course: { category: { in: courseTypeAliases } } },
+        } as any,
+        _count: { id: true },
+      } as any),
+    ]);
+
+    const extractCount = (row: any): number =>
+      row && row._count && typeof row._count === 'object' ? Number(row._count.id ?? 0) : 0;
+
+    const completedTaskMap = new Map(completedTaskRows.map((row) => [row.customerId, extractCount(row)]));
+    const pendingTaskMap = new Map(pendingTaskRows.map((row) => [row.customerId, extractCount(row)]));
+    const attendanceTotalMap = new Map(attendanceTotals.map((row) => [row.customerId, extractCount(row)]));
+    const attendanceAttendedMap = new Map(attendanceAttended.map((row) => [row.customerId, extractCount(row)]));
+    const exerciseMap = new Map(exerciseRows.map((row) => [row.customerId, extractCount(row)]));
 
     return kurators
-      .map((kurator) => {
-        const studentCount = studentsByKurator.get(kurator.id)?.size ?? 0;
-        const completed = activeStudentsByKurator.get(kurator.id)?.size ?? 0;
-        const pending = Math.max(0, studentCount - completed);
-        const total = completed + pending;
+      .map((kurator): InternalKuratorSummaryRow => {
+        const studentIds = Array.from(studentsByKurator.get(kurator.id) ?? []);
+        let completedTasks = 0;
+        let pendingTasks = 0;
+        let attendedLessons = 0;
+        let totalLessons = 0;
+        let exerciseLogs = 0;
+        let missedStudents = 0;
+
+        for (const studentId of studentIds) {
+          completedTasks += completedTaskMap.get(studentId) ?? 0;
+          pendingTasks += pendingTaskMap.get(studentId) ?? 0;
+          const studentAttendanceTotal = attendanceTotalMap.get(studentId) ?? 0;
+          const studentAttendanceAttended = attendanceAttendedMap.get(studentId) ?? 0;
+          attendedLessons += studentAttendanceAttended;
+          totalLessons += studentAttendanceTotal;
+          exerciseLogs += exerciseMap.get(studentId) ?? 0;
+          if (studentAttendanceTotal > 0 && studentAttendanceAttended < studentAttendanceTotal) {
+            missedStudents += 1;
+          }
+        }
+
         return {
           name: kurator.name ?? kurator.username ?? 'Kurator',
-          studentCount,
-          completedTasks: completed,
-          pendingTasks: pending,
-          missedStudents: missedByKurator.get(kurator.id) ?? 0,
-          performancePercent: total > 0 ? Math.round((completed / total) * 100) : 0,
+          studentCount: studentIds.length,
+          completedTasks,
+          pendingTasks,
+          missedStudents,
+          performancePercent: calculatePerformancePercent({
+            completedTasks,
+            pendingTasks,
+            attendedLessons,
+            totalLessons,
+            exerciseLogs,
+          }),
+          _attendedLessons: attendedLessons,
+          _totalLessons: totalLessons,
+          _exerciseLogs: exerciseLogs,
         };
       })
       .filter((row) => row.studentCount > 0 || row.completedTasks > 0 || row.pendingTasks > 0 || row.missedStudents > 0);
   };
 
-  const online = buildRows('online');
-  const offline = buildRows('offline');
-  const allMap = new Map<string, KuratorSummaryRow>();
-  for (const row of [...online, ...offline]) {
+  const [onlineInternal, offlineInternal] = await Promise.all([buildRows('online'), buildRows('offline')]);
+  const stripInternal = (row: InternalKuratorSummaryRow): KuratorSummaryRow => ({
+    name: row.name,
+    studentCount: row.studentCount,
+    completedTasks: row.completedTasks,
+    pendingTasks: row.pendingTasks,
+    missedStudents: row.missedStudents,
+    performancePercent: row.performancePercent,
+  });
+  const online = onlineInternal.map(stripInternal);
+  const offline = offlineInternal.map(stripInternal);
+
+  const allMap = new Map<string, InternalKuratorSummaryRow>();
+  for (const row of [...onlineInternal, ...offlineInternal]) {
     const current = allMap.get(row.name);
     if (!current) {
       allMap.set(row.name, { ...row });
       continue;
     }
-    const completed = current.completedTasks + row.completedTasks;
-    const pending = current.pendingTasks + row.pendingTasks;
-    const total = completed + pending;
+    const completedTasks = current.completedTasks + row.completedTasks;
+    const pendingTasks = current.pendingTasks + row.pendingTasks;
+    const attendedLessons = current._attendedLessons + row._attendedLessons;
+    const totalLessons = current._totalLessons + row._totalLessons;
+    const exerciseLogs = current._exerciseLogs + row._exerciseLogs;
     allMap.set(row.name, {
       name: row.name,
       studentCount: current.studentCount + row.studentCount,
-      completedTasks: completed,
-      pendingTasks: pending,
+      completedTasks,
+      pendingTasks,
       missedStudents: current.missedStudents + row.missedStudents,
-      performancePercent: total > 0 ? Math.round((completed / total) * 100) : 0,
+      performancePercent: calculatePerformancePercent({
+        completedTasks,
+        pendingTasks,
+        attendedLessons,
+        totalLessons,
+        exerciseLogs,
+      }),
+      _attendedLessons: attendedLessons,
+      _totalLessons: totalLessons,
+      _exerciseLogs: exerciseLogs,
     });
   }
 
   return {
     online,
     offline,
-    all: Array.from(allMap.values()),
+    all: Array.from(allMap.values()).map(stripInternal),
   };
 }
 
@@ -456,25 +532,47 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
     .filter((course): course is (typeof course & { reportType: 'online' | 'offline' }) => course.reportType !== null);
 
   for (const course of eligibleCourses) {
-    const [practices, enrollments] = await Promise.all([
+    const [practices, activeRuns] = await Promise.all([
       prisma.exerciseDefinition.findMany({
         where: { tenantId, courseId: course.id, isActive: true },
         select: { id: true, name: true, type: true },
         orderBy: [{ orderIndex: 'asc' }, { name: 'asc' }],
       }),
-      prisma.income.findMany({
+      prisma.courseRun.findMany({
         where: {
           tenantId,
           courseId: course.id,
-          type: 'new_sale',
-          lifecycleStatus: 'active',
+          startDate: { lte: period.to },
+          endDate: { gte: period.from },
         },
-        select: { customerId: true },
-        distinct: ['customerId'],
+        select: { id: true },
       }),
     ]);
 
-    const studentIds = enrollments.map((row) => row.customerId);
+    const runIds = activeRuns.map((run) => run.id);
+    if (runIds.length === 0) continue;
+
+    const [runMembers, assignments] = await Promise.all([
+      prisma.courseRunMember.findMany({
+        where: {
+          tenantId,
+          courseRunId: { in: runIds },
+        },
+        select: { customerId: true },
+      }),
+      prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          courseRunId: { in: runIds },
+          isActive: true,
+        },
+        select: { customerId: true },
+      }),
+    ]);
+
+    const studentIds = Array.from(
+      new Set([...runMembers.map((row) => row.customerId), ...assignments.map((row) => row.customerId)]),
+    );
     if (studentIds.length === 0) continue;
 
     const students = await prisma.customer.findMany({
@@ -805,6 +903,229 @@ async function sendTenantCuratorSummaries(
     }),
   );
   return { recipients: receivers.length, sent, failed };
+}
+
+type TelegramSchedulerJobKey =
+  | 'admin_manager_daily'
+  | 'admin_manager_weekly'
+  | 'admin_manager_monthly'
+  | 'curator_noon'
+  | 'curator_evening';
+
+type TelegramScheduledSlot = {
+  jobKey: TelegramSchedulerJobKey;
+  slotTime: Date;
+  params: {
+    kind: ReportPeriodKind;
+    audience: ReportAudience;
+    slot?: CuratorScheduleSlot;
+  };
+};
+
+function truncateToLocalMinute(localDate: Date): Date {
+  return new Date(
+    localDate.getFullYear(),
+    localDate.getMonth(),
+    localDate.getDate(),
+    localDate.getHours(),
+    localDate.getMinutes(),
+    0,
+    0,
+  );
+}
+
+function localSlotToUtc(localDay: Date, hour: number): Date {
+  return fromTashkentDate(
+    new Date(localDay.getFullYear(), localDay.getMonth(), localDay.getDate(), hour, 0, 0, 0),
+  );
+}
+
+function uniqueBySlot(slots: TelegramScheduledSlot[]): TelegramScheduledSlot[] {
+  const seen = new Set<string>();
+  const out: TelegramScheduledSlot[] = [];
+  for (const slot of slots) {
+    const key = `${slot.jobKey}:${slot.slotTime.toISOString()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(slot);
+  }
+  return out;
+}
+
+export function resolveDueTelegramScheduleSlots(now: Date): TelegramScheduledSlot[] {
+  const lookbackHoursRaw = Number(process.env.TELEGRAM_INTERNAL_SCHEDULER_LOOKBACK_HOURS ?? 36);
+  const lookbackHours = Number.isFinite(lookbackHoursRaw) ? Math.max(1, Math.min(168, Math.floor(lookbackHoursRaw))) : 36;
+
+  const localNow = truncateToLocalMinute(toTashkentDate(now));
+  const localLookback = new Date(localNow.getTime() - lookbackHours * 60 * 60 * 1000);
+  const startDay = new Date(localLookback.getFullYear(), localLookback.getMonth(), localLookback.getDate());
+  const endDay = new Date(localNow.getFullYear(), localNow.getMonth(), localNow.getDate());
+
+  const slots: TelegramScheduledSlot[] = [];
+  for (let day = new Date(startDay); day <= endDay; day = addDays(day, 1)) {
+    const candidates: TelegramScheduledSlot[] = [
+      {
+        jobKey: 'admin_manager_daily',
+        slotTime: localSlotToUtc(day, 8),
+        params: { kind: 'daily', audience: 'admin_manager' },
+      },
+      {
+        jobKey: 'curator_noon',
+        slotTime: localSlotToUtc(day, 12),
+        params: { kind: 'daily', audience: 'curators', slot: 'noon' },
+      },
+      {
+        jobKey: 'curator_evening',
+        slotTime: localSlotToUtc(day, 18),
+        params: { kind: 'daily', audience: 'curators', slot: 'evening' },
+      },
+    ];
+
+    if (day.getDay() === 1) {
+      candidates.push({
+        jobKey: 'admin_manager_weekly',
+        slotTime: localSlotToUtc(day, 8),
+        params: { kind: 'weekly', audience: 'admin_manager' },
+      });
+    }
+    if (day.getDate() === 1) {
+      candidates.push({
+        jobKey: 'admin_manager_monthly',
+        slotTime: localSlotToUtc(day, 8),
+        params: { kind: 'monthly', audience: 'admin_manager' },
+      });
+    }
+
+    for (const slot of candidates) {
+      const localSlot = truncateToLocalMinute(toTashkentDate(slot.slotTime));
+      if (localSlot <= localNow && localSlot >= localLookback) {
+        slots.push(slot);
+      }
+    }
+  }
+
+  return uniqueBySlot(slots).sort((a, b) => a.slotTime.getTime() - b.slotTime.getTime());
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return String((error as any)?.code || '') === 'P2002';
+}
+
+export async function processDueTelegramScheduledSlots(now: Date = new Date()): Promise<{
+  checked: number;
+  claimed: number;
+  skipped: number;
+  sent: number;
+  failed: number;
+}> {
+  ensureTelegramConfigured();
+  const slots = resolveDueTelegramScheduleSlots(now);
+  let claimed = 0;
+  let skipped = 0;
+  let sent = 0;
+  let failed = 0;
+
+  for (const slot of slots) {
+    let scheduleRunId: string | null = null;
+    try {
+      const created = await prisma.telegramScheduleRun.create({
+        data: {
+          jobKey: slot.jobKey,
+          slotTime: slot.slotTime,
+          status: 'running',
+        },
+        select: { id: true },
+      });
+      scheduleRunId = created.id;
+      claimed += 1;
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          event: 'slot_claimed',
+          jobKey: slot.jobKey,
+          slotTime: slot.slotTime.toISOString(),
+        }),
+      );
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        skipped += 1;
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'slot_skipped_already_claimed',
+            jobKey: slot.jobKey,
+            slotTime: slot.slotTime.toISOString(),
+          }),
+        );
+        continue;
+      }
+      throw error;
+    }
+
+    try {
+      const result = await runTelegramScheduledReports({
+        kind: slot.params.kind,
+        audience: slot.params.audience,
+        slot: slot.params.slot,
+        now: slot.slotTime,
+      });
+
+      const slotFailed = result.failed > 0;
+      if (slotFailed) {
+        failed += 1;
+      } else {
+        sent += 1;
+      }
+
+      await prisma.telegramScheduleRun.update({
+        where: { id: scheduleRunId },
+        data: {
+          status: slotFailed ? 'failed' : 'sent',
+          error: slotFailed ? `failed_recipients=${result.failed}` : null,
+          finishedAt: new Date(),
+        },
+      });
+
+      console.log(
+        JSON.stringify({
+          level: slotFailed ? 'warn' : 'info',
+          event: slotFailed ? 'slot_failed' : 'slot_sent',
+          jobKey: slot.jobKey,
+          slotTime: slot.slotTime.toISOString(),
+          recipients: result.recipients,
+          sentRecipients: result.sent,
+          failedRecipients: result.failed,
+        }),
+      );
+    } catch (error) {
+      failed += 1;
+      await prisma.telegramScheduleRun.update({
+        where: { id: scheduleRunId },
+        data: {
+          status: 'failed',
+          error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+          finishedAt: new Date(),
+        },
+      });
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'slot_failed',
+          jobKey: slot.jobKey,
+          slotTime: slot.slotTime.toISOString(),
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
+  return {
+    checked: slots.length,
+    claimed,
+    skipped,
+    sent,
+    failed,
+  };
 }
 
 export function validateCronSecret(provided: string | null | undefined): boolean {
