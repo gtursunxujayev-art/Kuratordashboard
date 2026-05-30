@@ -432,6 +432,64 @@ type StudentPerformance = {
   performancePercent: number;
 };
 
+type AggregatedPerformance = {
+  completedTasks: number;
+  pendingTasks: number;
+  attendedLessons: number;
+  totalLessons: number;
+  exerciseLogs: number;
+  missedStudents: number;
+  performancePercent: number;
+};
+
+function calculatePerformancePercent(params: {
+  completedTasks: number;
+  pendingTasks: number;
+  attendedLessons: number;
+  totalLessons: number;
+  exerciseLogs: number;
+}): number {
+  const { completedTasks, pendingTasks, attendedLessons, totalLessons, exerciseLogs } = params;
+  const taskTotal = completedTasks + pendingTasks;
+  const taskRate = taskTotal > 0 ? (completedTasks / taskTotal) * 100 : 0;
+  const attendanceRate = totalLessons > 0 ? (attendedLessons / totalLessons) * 100 : 0;
+  const activityRate = Math.min(100, exerciseLogs * 10);
+
+  if (taskTotal === 0 && totalLessons === 0 && exerciseLogs === 0) {
+    return 0;
+  }
+  return Math.round(taskRate * 0.4 + attendanceRate * 0.5 + activityRate * 0.1);
+}
+
+function aggregateStudentPerformanceRows(rows: StudentPerformance[]): AggregatedPerformance {
+  const totals = rows.reduce(
+    (acc, row) => {
+      acc.completedTasks += row.completedTasks;
+      acc.pendingTasks += row.pendingTasks;
+      acc.attendedLessons += row.attendedLessons;
+      acc.totalLessons += row.totalLessons;
+      acc.exerciseLogs += row.exerciseLogs;
+      if (row.totalLessons > 0 && row.attendedLessons < row.totalLessons) {
+        acc.missedStudents += 1;
+      }
+      return acc;
+    },
+    {
+      completedTasks: 0,
+      pendingTasks: 0,
+      attendedLessons: 0,
+      totalLessons: 0,
+      exerciseLogs: 0,
+      missedStudents: 0,
+    },
+  );
+
+  return {
+    ...totals,
+    performancePercent: calculatePerformancePercent(totals),
+  };
+}
+
 async function buildStudentPerformanceMap(params: {
   tenantId: string;
   customerIds: string[];
@@ -711,7 +769,7 @@ export const dashboardRouter = router({
       const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
       const adminOrManager = isAdminOrManager(user.roles);
 
-      const [kurators, assignments, completedGroups, pendingGroups] = await Promise.all([
+      const [kurators, assignments] = await Promise.all([
         prisma.user.findMany({
           where: {
             tenantId,
@@ -734,27 +792,6 @@ export const dashboardRouter = router({
             ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
           },
           select: { kuratorUserId: true, customerId: true },
-        }),
-        prisma.kuratorTask.groupBy({
-          by: ['kuratorUserId'],
-          where: {
-            tenantId,
-            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
-            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
-            completedAt: dateRange ? { gte: dateRange.from, lt: dateRange.to } : { not: null },
-          },
-          _count: { id: true },
-        }),
-        prisma.kuratorTask.groupBy({
-          by: ['kuratorUserId'],
-          where: {
-            tenantId,
-            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
-            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
-            completedAt: null,
-            ...(dateRange ? { createdAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
-          },
-          _count: { id: true },
         }),
       ]);
 
@@ -799,17 +836,10 @@ export const dashboardRouter = router({
       }
 
       const studentIdsByKurator = new Map<string, Set<string>>();
-      const kuratorsByStudent = new Map<string, string[]>();
       const upsertPair = (kuratorUserId: string, customerId: string) => {
         const studentSet = studentIdsByKurator.get(kuratorUserId) ?? new Set<string>();
         studentSet.add(customerId);
         studentIdsByKurator.set(kuratorUserId, studentSet);
-
-        const linkedKurators = kuratorsByStudent.get(customerId) ?? [];
-        if (!linkedKurators.includes(kuratorUserId)) {
-          linkedKurators.push(kuratorUserId);
-        }
-        kuratorsByStudent.set(customerId, linkedKurators);
       };
       for (const assignment of assignments) {
         upsertPair(assignment.kuratorUserId, assignment.customerId);
@@ -818,48 +848,57 @@ export const dashboardRouter = router({
         upsertPair(pair.kuratorUserId, pair.customerId);
       }
 
-      const uniqueStudentIds = Array.from(kuratorsByStudent.keys());
-      const missedRows = uniqueStudentIds.length > 0
-        ? await prisma.classAttendance.findMany({
-            where: {
-              tenantId,
-              customerId: { in: uniqueStudentIds },
-              attended: false,
-              ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-              ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
-            },
-            select: { customerId: true },
-            distinct: ['customerId'],
-          })
-        : [];
+      const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
+      const effectiveExerciseCourseId = input.courseId ?? runCourseId;
+      const perfByKurator = new Map<string, AggregatedPerformance>();
+      await Promise.all(
+        kurators.map(async (kurator) => {
+          const studentIds = Array.from(studentIdsByKurator.get(kurator.id) ?? []);
+          if (studentIds.length === 0) {
+            perfByKurator.set(kurator.id, {
+              completedTasks: 0,
+              pendingTasks: 0,
+              attendedLessons: 0,
+              totalLessons: 0,
+              exerciseLogs: 0,
+              missedStudents: 0,
+              performancePercent: 0,
+            });
+            return;
+          }
 
-      const missedByKurator = new Map<string, number>();
-      for (const missed of missedRows) {
-        const ownerKurators = kuratorsByStudent.get(missed.customerId) ?? [];
-        for (const kuratorId of ownerKurators) {
-          missedByKurator.set(kuratorId, (missedByKurator.get(kuratorId) ?? 0) + 1);
-        }
-      }
-
-      const completedByKurator = new Map(completedGroups.map((row) => [row.kuratorUserId, row._count.id]));
-      const pendingByKurator = new Map(pendingGroups.map((row) => [row.kuratorUserId, row._count.id]));
+          const perfMap = await buildStudentPerformanceMap({
+            tenantId,
+            customerIds: studentIds,
+            dateRange,
+            exerciseCourseId: effectiveExerciseCourseId,
+            courseRunId: input.courseRunId,
+          });
+          const rows = studentIds
+            .map((studentId) => perfMap.get(studentId))
+            .filter((row): row is StudentPerformance => Boolean(row));
+          perfByKurator.set(kurator.id, aggregateStudentPerformanceRows(rows));
+        }),
+      );
 
       return kurators.map((kurator) => {
         const studentCount = studentIdsByKurator.get(kurator.id)?.size ?? 0;
-        const completedTasks = completedByKurator.get(kurator.id) ?? 0;
-        const pendingTasks = pendingByKurator.get(kurator.id) ?? 0;
-        const totalTasks = completedTasks + pendingTasks;
-        const performancePercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+        const aggregated = perfByKurator.get(kurator.id) ?? {
+          completedTasks: 0,
+          pendingTasks: 0,
+          missedStudents: 0,
+          performancePercent: 0,
+        };
 
         return {
           id: kurator.id,
           name: kurator.name ?? kurator.username ?? 'Kurator',
           studentCount,
-          performancePercent,
+          performancePercent: aggregated.performancePercent,
           performanceNote: 'Vaqtinchalik formula',
-          completedTasks,
-          pendingTasks,
-          missedStudents: missedByKurator.get(kurator.id) ?? 0,
+          completedTasks: aggregated.completedTasks,
+          pendingTasks: aggregated.pendingTasks,
+          missedStudents: aggregated.missedStudents,
         };
       });
     }),
@@ -1248,7 +1287,6 @@ export const dashboardRouter = router({
         dateRange,
         exerciseCourseId: effectiveExerciseCourseId,
         courseRunId: input.courseRunId,
-        kuratorUserId: input.kuratorUserId,
       });
 
       const students = studentIds.length
@@ -1278,22 +1316,16 @@ export const dashboardRouter = router({
         };
       });
 
-      const completedTasks = enrichedStudents.reduce((sum, row) => sum + row.completedTasks, 0);
-      const pendingTasks = enrichedStudents.reduce((sum, row) => sum + row.pendingTasks, 0);
-      const missedStudents = enrichedStudents.filter(
-        (row) => row.totalLessons > 0 && row.attendedLessons < row.totalLessons,
-      ).length;
-      const totalTasks = completedTasks + pendingTasks;
-      const performancePercent = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+      const aggregated = aggregateStudentPerformanceRows(enrichedStudents);
 
       return {
         kurator,
         summary: {
           studentCount: enrichedStudents.length,
-          completedTasks,
-          pendingTasks,
-          missedStudents,
-          performancePercent,
+          completedTasks: aggregated.completedTasks,
+          pendingTasks: aggregated.pendingTasks,
+          missedStudents: aggregated.missedStudents,
+          performancePercent: aggregated.performancePercent,
           performanceNote: 'Vaqtinchalik formula',
         },
         students: enrichedStudents,
