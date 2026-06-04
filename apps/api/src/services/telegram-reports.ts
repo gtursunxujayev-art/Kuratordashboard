@@ -245,8 +245,16 @@ function ensureTelegramConfigured(): { token: string; webhookSecret: string; bot
   return { token, webhookSecret, botUsername };
 }
 
+function requireTelegramBotToken(): string {
+  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!token) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'TELEGRAM_BOT_TOKEN sozlanmagan' });
+  }
+  return token;
+}
+
 async function telegramApiCall<T>(method: string, payload: Record<string, unknown>): Promise<T> {
-  const { token } = ensureTelegramConfigured();
+  const token = requireTelegramBotToken();
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -268,7 +276,7 @@ async function sendTelegramMessage(chatId: string, text: string): Promise<void> 
 }
 
 async function sendTelegramDocument(chatId: string, filename: string, pdfBuffer: Buffer, caption: string): Promise<void> {
-  const { token } = ensureTelegramConfigured();
+  const token = requireTelegramBotToken();
   const form = new FormData();
   form.append('chat_id', chatId);
   form.append('caption', caption);
@@ -952,6 +960,41 @@ function uniqueBySlot(slots: TelegramScheduledSlot[]): TelegramScheduledSlot[] {
   return out;
 }
 
+const inMemorySchedulerLocks = new Map<string, number>();
+const IN_MEMORY_LOCK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function slotLockKey(slot: TelegramScheduledSlot): string {
+  return `${slot.jobKey}:${slot.slotTime.toISOString()}`;
+}
+
+function cleanupInMemorySchedulerLocks(nowMs: number): void {
+  for (const [key, createdAtMs] of inMemorySchedulerLocks.entries()) {
+    if (nowMs - createdAtMs > IN_MEMORY_LOCK_TTL_MS) {
+      inMemorySchedulerLocks.delete(key);
+    }
+  }
+}
+
+function claimInMemorySchedulerLock(slot: TelegramScheduledSlot): boolean {
+  const nowMs = Date.now();
+  cleanupInMemorySchedulerLocks(nowMs);
+  const key = slotLockKey(slot);
+  if (inMemorySchedulerLocks.has(key)) {
+    return false;
+  }
+  inMemorySchedulerLocks.set(key, nowMs);
+  return true;
+}
+
+function isMissingScheduleRunTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('telegram_schedule_runs') && message.includes('does not exist');
+  }
+  return message.includes('telegram_schedule_runs');
+}
+
 export function resolveDueTelegramScheduleSlots(now: Date): TelegramScheduledSlot[] {
   const lookbackHoursRaw = Number(process.env.TELEGRAM_INTERNAL_SCHEDULER_LOOKBACK_HOURS ?? 36);
   const lookbackHours = Number.isFinite(lookbackHoursRaw) ? Math.max(1, Math.min(168, Math.floor(lookbackHoursRaw))) : 36;
@@ -1007,8 +1050,49 @@ export function resolveDueTelegramScheduleSlots(now: Date): TelegramScheduledSlo
   return uniqueBySlot(slots).sort((a, b) => a.slotTime.getTime() - b.slotTime.getTime());
 }
 
-function isUniqueConstraintError(error: unknown): boolean {
-  return String((error as any)?.code || '') === 'P2002';
+const STALE_RUNNING_SLOT_MINUTES = 20;
+
+async function reclaimStaleRunningSlot(slot: TelegramScheduledSlot, now: Date): Promise<{ id: string } | null> {
+  const existing = await prisma.telegramScheduleRun.findUnique({
+    where: {
+      jobKey_slotTime: {
+        jobKey: slot.jobKey,
+        slotTime: slot.slotTime,
+      },
+    },
+    select: {
+      id: true,
+      status: true,
+      startedAt: true,
+      finishedAt: true,
+    },
+  });
+
+  if (!existing) return null;
+  if (existing.status !== 'running' || existing.finishedAt) return null;
+
+  const staleBefore = new Date(now.getTime() - STALE_RUNNING_SLOT_MINUTES * 60_000);
+  if (existing.startedAt > staleBefore) {
+    return null;
+  }
+
+  const claimed = await prisma.telegramScheduleRun.updateMany({
+    where: {
+      id: existing.id,
+      status: 'running',
+      finishedAt: null,
+    },
+    data: {
+      startedAt: now,
+      error: `reclaimed_stale_run_previous_started_at=${existing.startedAt.toISOString()}`,
+    },
+  });
+
+  if (claimed.count !== 1) {
+    return null;
+  }
+
+  return { id: existing.id };
 }
 
 export async function processDueTelegramScheduledSlots(now: Date = new Date()): Promise<{
@@ -1018,48 +1102,110 @@ export async function processDueTelegramScheduledSlots(now: Date = new Date()): 
   sent: number;
   failed: number;
 }> {
-  ensureTelegramConfigured();
+  requireTelegramBotToken();
   const slots = resolveDueTelegramScheduleSlots(now);
   let claimed = 0;
   let skipped = 0;
   let sent = 0;
   let failed = 0;
+  let schedulerLockMode: 'db' | 'memory' = 'db';
 
   for (const slot of slots) {
     let scheduleRunId: string | null = null;
-    try {
-      const created = await prisma.telegramScheduleRun.create({
-        data: {
-          jobKey: slot.jobKey,
-          slotTime: slot.slotTime,
-          status: 'running',
-        },
-        select: { id: true },
-      });
-      scheduleRunId = created.id;
-      claimed += 1;
-      console.log(
-        JSON.stringify({
-          level: 'info',
-          event: 'slot_claimed',
-          jobKey: slot.jobKey,
-          slotTime: slot.slotTime.toISOString(),
-        }),
-      );
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
+    if (schedulerLockMode === 'db') {
+      try {
+        const proposedId = crypto.randomUUID();
+        const created = await prisma.telegramScheduleRun.createMany({
+          data: {
+            id: proposedId,
+            jobKey: slot.jobKey,
+            slotTime: slot.slotTime,
+            status: 'running',
+          },
+          skipDuplicates: true,
+        });
+        if (created.count === 1) {
+          scheduleRunId = proposedId;
+          claimed += 1;
+          console.log(
+            JSON.stringify({
+              level: 'info',
+              event: 'slot_claimed',
+              mode: 'db',
+              jobKey: slot.jobKey,
+              slotTime: slot.slotTime.toISOString(),
+            }),
+          );
+        } else {
+          const reclaimed = await reclaimStaleRunningSlot(slot, new Date());
+          if (!reclaimed) {
+            skipped += 1;
+            console.log(
+              JSON.stringify({
+                level: 'info',
+                event: 'slot_skipped_already_claimed',
+                mode: 'db',
+                jobKey: slot.jobKey,
+                slotTime: slot.slotTime.toISOString(),
+              }),
+            );
+            continue;
+          }
+          scheduleRunId = reclaimed.id;
+          claimed += 1;
+          console.log(
+            JSON.stringify({
+              level: 'warn',
+              event: 'slot_reclaimed_stale_running',
+              mode: 'db',
+              jobKey: slot.jobKey,
+              slotTime: slot.slotTime.toISOString(),
+              staleAfterMinutes: STALE_RUNNING_SLOT_MINUTES,
+            }),
+          );
+        }
+      } catch (error) {
+        if (isMissingScheduleRunTableError(error)) {
+          schedulerLockMode = 'memory';
+          console.warn(
+            JSON.stringify({
+              level: 'warn',
+              event: 'telegram_scheduler_lock_fallback_memory',
+              message:
+                'telegram_schedule_runs table is missing. Scheduler continues in single-instance memory mode until migration is deployed.',
+            }),
+          );
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    if (schedulerLockMode === 'memory' && !scheduleRunId) {
+      const memoryClaimed = claimInMemorySchedulerLock(slot);
+      if (!memoryClaimed) {
         skipped += 1;
         console.log(
           JSON.stringify({
             level: 'info',
             event: 'slot_skipped_already_claimed',
+            mode: 'memory',
             jobKey: slot.jobKey,
             slotTime: slot.slotTime.toISOString(),
           }),
         );
         continue;
       }
-      throw error;
+      claimed += 1;
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          event: 'slot_claimed',
+          mode: 'memory',
+          jobKey: slot.jobKey,
+          slotTime: slot.slotTime.toISOString(),
+        }),
+      );
     }
 
     try {
@@ -1077,19 +1223,22 @@ export async function processDueTelegramScheduledSlots(now: Date = new Date()): 
         sent += 1;
       }
 
-      await prisma.telegramScheduleRun.update({
-        where: { id: scheduleRunId },
-        data: {
-          status: slotFailed ? 'failed' : 'sent',
-          error: slotFailed ? `failed_recipients=${result.failed}` : null,
-          finishedAt: new Date(),
-        },
-      });
+      if (scheduleRunId) {
+        await prisma.telegramScheduleRun.update({
+          where: { id: scheduleRunId },
+          data: {
+            status: slotFailed ? 'failed' : 'sent',
+            error: slotFailed ? `failed_recipients=${result.failed}` : null,
+            finishedAt: new Date(),
+          },
+        });
+      }
 
       console.log(
         JSON.stringify({
           level: slotFailed ? 'warn' : 'info',
           event: slotFailed ? 'slot_failed' : 'slot_sent',
+          mode: scheduleRunId ? 'db' : 'memory',
           jobKey: slot.jobKey,
           slotTime: slot.slotTime.toISOString(),
           recipients: result.recipients,
@@ -1099,18 +1248,21 @@ export async function processDueTelegramScheduledSlots(now: Date = new Date()): 
       );
     } catch (error) {
       failed += 1;
-      await prisma.telegramScheduleRun.update({
-        where: { id: scheduleRunId },
-        data: {
-          status: 'failed',
-          error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
-          finishedAt: new Date(),
-        },
-      });
+      if (scheduleRunId) {
+        await prisma.telegramScheduleRun.update({
+          where: { id: scheduleRunId },
+          data: {
+            status: 'failed',
+            error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+            finishedAt: new Date(),
+          },
+        });
+      }
       console.error(
         JSON.stringify({
           level: 'error',
           event: 'slot_failed',
+          mode: scheduleRunId ? 'db' : 'memory',
           jobKey: slot.jobKey,
           slotTime: slot.slotTime.toISOString(),
           message: error instanceof Error ? error.message : String(error),
@@ -1146,7 +1298,7 @@ export async function runTelegramScheduledReports(params: {
   sent: number;
   failed: number;
 }> {
-  ensureTelegramConfigured();
+  requireTelegramBotToken();
   const now = params.now ?? new Date();
   const audience = params.audience ?? 'admin_manager';
   const slot = params.slot ?? 'noon';
@@ -1245,7 +1397,7 @@ export async function createTelegramLinkToken(tenantId: string, userId: string):
 }
 
 export async function handleTelegramWebhook(update: any): Promise<{ handled: boolean; message?: string }> {
-  ensureTelegramConfigured();
+  requireTelegramBotToken();
   const messageText = String(update?.message?.text ?? '').trim();
   const chatIdRaw = update?.message?.chat?.id;
   if (!messageText || !chatIdRaw) {
@@ -1516,7 +1668,7 @@ export async function sendTelegramTestReport(
   userId: string,
   preset: TestReportPreset,
 ): Promise<{ sent: boolean; recipient: string; period: PeriodRange }> {
-  ensureTelegramConfigured();
+  requireTelegramBotToken();
   const user = await prisma.user.findFirst({
     where: {
       id: userId,
