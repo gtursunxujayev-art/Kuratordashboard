@@ -14,28 +14,50 @@ dotenv.config();
 
 const app = express();
 const TELEGRAM_SCHEDULER_INTERVAL_MS = 30_000;
+const TELEGRAM_REQUEST_TICK_INTERVAL_MS = 10 * 60_000;
+
+let requestDrivenSchedulerLastRunAt = 0;
+let requestDrivenSchedulerRunning = false;
 
 function shouldRunInternalScheduler(): boolean {
-  if (process.env.NODE_ENV === 'test') return false;
-  const flag = (process.env.TELEGRAM_INTERNAL_SCHEDULER_ENABLED || 'true').trim().toLowerCase();
-  return flag !== '0' && flag !== 'false' && flag !== 'off';
+  return process.env.NODE_ENV !== 'test';
 }
 
 function startTelegramInternalScheduler(): void {
-  if (!shouldRunInternalScheduler()) return;
+  if (!shouldRunInternalScheduler()) {
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'telegram_internal_scheduler_disabled',
+        reason: 'test_environment',
+      }),
+    );
+    return;
+  }
+
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      event: 'telegram_internal_scheduler_started',
+      intervalMs: TELEGRAM_SCHEDULER_INTERVAL_MS,
+      timezone: process.env.REPORT_TIMEZONE || 'Asia/Tashkent',
+    }),
+  );
+
+  let isTickRunning = false;
 
   const tick = async () => {
+    if (isTickRunning) return;
+    isTickRunning = true;
     try {
       const result = await processDueTelegramScheduledSlots(new Date());
-      if (result.claimed > 0 || result.failed > 0) {
-        console.log(
-          JSON.stringify({
-            level: result.failed > 0 ? 'warn' : 'info',
-            event: 'telegram_internal_scheduler_tick',
-            ...result,
-          }),
-        );
-      }
+      console.log(
+        JSON.stringify({
+          level: result.failed > 0 ? 'warn' : 'info',
+          event: 'telegram_internal_scheduler_tick',
+          ...result,
+        }),
+      );
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -44,16 +66,51 @@ function startTelegramInternalScheduler(): void {
           message: error instanceof Error ? error.message : String(error),
         }),
       );
+    } finally {
+      isTickRunning = false;
     }
   };
 
-  // Run once quickly after boot, then on interval.
-  setTimeout(() => {
+  // Run immediately after boot, then on interval.
+  setImmediate(() => {
     void tick();
-  }, 5_000);
+  });
   setInterval(() => {
     void tick();
   }, TELEGRAM_SCHEDULER_INTERVAL_MS);
+}
+
+function triggerRequestDrivenSchedulerTick(reason: string): void {
+  if (process.env.NODE_ENV === 'test') return;
+  const nowMs = Date.now();
+  if (requestDrivenSchedulerRunning) return;
+  if (nowMs - requestDrivenSchedulerLastRunAt < TELEGRAM_REQUEST_TICK_INTERVAL_MS) return;
+  requestDrivenSchedulerLastRunAt = nowMs;
+  requestDrivenSchedulerRunning = true;
+  void processDueTelegramScheduledSlots(new Date())
+    .then((result) => {
+      console.log(
+        JSON.stringify({
+          level: result.failed > 0 ? 'warn' : 'info',
+          event: 'telegram_internal_scheduler_request_tick',
+          reason,
+          ...result,
+        }),
+      );
+    })
+    .catch((error) => {
+      console.error(
+        JSON.stringify({
+          level: 'error',
+          event: 'telegram_internal_scheduler_request_tick_failed',
+          reason,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    })
+    .finally(() => {
+      requestDrivenSchedulerRunning = false;
+    });
 }
 
 const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'http://localhost:3000')
@@ -78,6 +135,10 @@ app.use(
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use((req, _res, next) => {
+  triggerRequestDrivenSchedulerTick(req.path || req.originalUrl || 'request');
+  next();
+});
 
 app.use((req, res, next) => {
   const started = Date.now();
