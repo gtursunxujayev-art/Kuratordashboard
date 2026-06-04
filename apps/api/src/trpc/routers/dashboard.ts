@@ -1406,39 +1406,43 @@ export const dashboardRouter = router({
       const courseStart = course.startDate ? startOfDayLocal(course.startDate) : null;
       const courseEndExclusive = course.endDate ? addDays(startOfDayLocal(course.endDate), 1) : null;
 
-      const runAnchorStart = latestRunForCourse
+      const latestRunAnchorStart = latestRunForCourse
         ? startOfDayLocal(latestRunForCourse.startDate)
         : (courseStart ?? todayStart);
-      const runAnchorEndExclusive = latestRunForCourse
+      const latestRunAnchorEndExclusive = latestRunForCourse
         ? (
             selectedRun
               ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
               : maxDate(addDays(startOfDayLocal(latestRunForCourse.endDate), 1), addDays(todayStart, 1))
           )
-        : addDays(runAnchorStart, 42);
+        : addDays(latestRunAnchorStart, 42);
 
-      // Course dates are authoritative for report windows; run selection only scopes student group.
-      const useCourseAnchors = Boolean(courseStart);
-      const anchorRunStart = useCourseAnchors ? (courseStart as Date) : runAnchorStart;
-      const anchorRunEndExclusive = useCourseAnchors
-        ? (
-            courseEndExclusive && courseEndExclusive.getTime() > anchorRunStart.getTime()
-              ? courseEndExclusive
-              : maxDate(runAnchorEndExclusive, addDays(anchorRunStart, 1))
-          )
-        : runAnchorEndExclusive;
+      const selectedRunAnchorStart = selectedRun ? startOfDayLocal(selectedRun.startDate) : null;
+      const selectedRunAnchorEndExclusive = selectedRun ? addDays(startOfDayLocal(selectedRun.endDate), 1) : null;
+
+      // Date window source priority:
+      // 1. selected run dates when a run is chosen
+      // 2. course dates for "all runs" report mode
+      // 3. latest run fallback when course endDate is unavailable
+      const anchorRunStart = selectedRunAnchorStart
+        ?? courseStart
+        ?? latestRunAnchorStart;
+      const anchorRunEndExclusive = selectedRunAnchorEndExclusive
+        ?? (
+          courseStart
+            ? (
+                courseEndExclusive && courseEndExclusive.getTime() > anchorRunStart.getTime()
+                  ? courseEndExclusive
+                  : maxDate(latestRunAnchorEndExclusive, addDays(anchorRunStart, 1))
+              )
+            : latestRunAnchorEndExclusive
+        );
 
       let dateRange: { from: Date; to: Date };
 
       if (input.datePreset === 'today') {
         dateRange = { from: todayStart, to: addDays(todayStart, 1) };
-      } else if (useCourseAnchors) {
-        dateRange = resolveAmaliyReportDateRange({
-          datePreset: input.datePreset,
-          runStart: anchorRunStart,
-          runEndExclusive: anchorRunEndExclusive,
-        });
-      } else if (latestRunForCourse) {
+      } else if (selectedRun || courseStart || latestRunForCourse) {
         dateRange = resolveAmaliyReportDateRange({
           datePreset: input.datePreset,
           runStart: anchorRunStart,
