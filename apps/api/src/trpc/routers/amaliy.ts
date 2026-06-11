@@ -683,8 +683,9 @@ export const amaliyRouter = router({
             tariffName: string | null;
             isPremiumEligible: boolean;
             dayStatuses: { base: AttendanceStatus; premiumExtra: AttendanceStatus | null };
-            baseSlots: Array<{ date: string; status: AttendanceStatus }>;
-            premiumExtraSlots: Array<{ date: string; status: AttendanceStatus }>;
+            daySource: { base: string | null; premiumExtra: string | null };
+            baseSlots: Array<{ date: string; status: AttendanceStatus; source: string | null }>;
+            premiumExtraSlots: Array<{ date: string; status: AttendanceStatus; source: string | null }>;
           }>,
         };
       }
@@ -793,6 +794,7 @@ export const amaliyRouter = router({
                 customerId: true,
                 lessonType: true,
                 attended: true,
+                source: true,
                 updatedAt: true,
               },
               orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
@@ -814,6 +816,7 @@ export const amaliyRouter = router({
                 lessonType: true,
                 lessonDate: true,
                 attended: true,
+                source: true,
                 updatedAt: true,
               },
               orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
@@ -822,10 +825,12 @@ export const amaliyRouter = router({
       ]);
 
       const dayAttendanceByKey = new Map<string, AttendanceStatus>();
+      const daySourceByKey = new Map<string, string | null>();
       for (const row of dayAttendanceRows) {
         const key = `${row.customerId}:${row.lessonType}`;
         if (dayAttendanceByKey.has(key)) continue;
         dayAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
+        daySourceByKey.set(key, row.source ?? null);
       }
 
       const baseSlotsInfo = buildAttendanceSlotDates({
@@ -844,6 +849,7 @@ export const amaliyRouter = router({
       const premiumSlotDateSet = new Set(premiumSlotDates);
 
       const runAttendanceByKey = new Map<string, AttendanceStatus>();
+      const runSourceByKey = new Map<string, string | null>();
       if (input.mode === 'all') {
         for (const row of runAttendanceRows) {
           const dateKey = toDateKeyLocal(row.lessonDate);
@@ -855,6 +861,7 @@ export const amaliyRouter = router({
           const key = `${row.customerId}:${row.lessonType}:${dateKey}`;
           if (runAttendanceByKey.has(key)) continue;
           runAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
+          runSourceByKey.set(key, row.source ?? null);
         }
       }
 
@@ -873,14 +880,19 @@ export const amaliyRouter = router({
         students: students.map((student) => {
           const isPremiumEligible = premiumEligibilityByCustomer.get(student.id) ?? false;
           const dayBase = dayAttendanceByKey.get(`${student.id}:base`) ?? 'tanlanmagan';
+          const dayBaseSource = daySourceByKey.get(`${student.id}:base`) ?? null;
           const dayPremium = isPremiumEligible
             ? (dayAttendanceByKey.get(`${student.id}:premium_extra`) ?? 'tanlanmagan')
+            : null;
+          const dayPremiumSource = isPremiumEligible
+            ? (daySourceByKey.get(`${student.id}:premium_extra`) ?? null)
             : null;
 
           const baseSlots = input.mode === 'all'
             ? baseSlotDates.map((dateKey) => ({
                 date: dateKey,
                 status: runAttendanceByKey.get(`${student.id}:base:${dateKey}`) ?? 'tanlanmagan',
+                source: runSourceByKey.get(`${student.id}:base:${dateKey}`) ?? null,
               }))
             : [];
 
@@ -888,6 +900,7 @@ export const amaliyRouter = router({
             ? premiumSlotDates.map((dateKey) => ({
                 date: dateKey,
                 status: runAttendanceByKey.get(`${student.id}:premium_extra:${dateKey}`) ?? 'tanlanmagan',
+                source: runSourceByKey.get(`${student.id}:premium_extra:${dateKey}`) ?? null,
               }))
             : [];
 
@@ -899,6 +912,7 @@ export const amaliyRouter = router({
             tariffName: tariffNameByCustomer.get(student.id) ?? null,
             isPremiumEligible,
             dayStatuses: { base: dayBase, premiumExtra: dayPremium },
+            daySource: { base: dayBaseSource, premiumExtra: dayPremiumSource },
             baseSlots,
             premiumExtraSlots,
           };

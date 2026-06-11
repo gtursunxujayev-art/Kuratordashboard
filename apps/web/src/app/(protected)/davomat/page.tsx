@@ -272,9 +272,15 @@ export default function DavomatPage() {
                             {student.baseSlots.map((slot) => {
                               const key = slotKey(student.id, 'base', slot.date);
                               const selectedStatus = selectedAllBase[key] ?? slot.status;
+                              const isFaceId = !selectedAllBase[key] && slot.status === 'keldi' && slot.source === 'system';
                               return (
                                 <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                   <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                  {isFaceId && (
+                                    <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
+                                      Face ID
+                                    </span>
+                                  )}
                                   <AttendanceStatusSelect
                                     value={selectedStatus}
                                     onChange={(nextStatus) =>
@@ -299,9 +305,15 @@ export default function DavomatPage() {
                               {student.premiumExtraSlots.map((slot) => {
                                 const key = slotKey(student.id, 'premium_extra', slot.date);
                                 const selectedStatus = selectedAllPremium[key] ?? slot.status;
+                                const isFaceId = !selectedAllPremium[key] && slot.status === 'keldi' && slot.source === 'system';
                                 return (
                                   <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                     <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
+                                    {isFaceId && (
+                                      <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
+                                        Face ID
+                                      </span>
+                                    )}
                                     <AttendanceStatusSelect
                                       value={selectedStatus}
                                       onChange={(nextStatus) =>
@@ -372,12 +384,29 @@ export default function DavomatPage() {
                   )}
 
                   {dateMode !== 'all' && (
-                    <p className="text-xs kd-subtle">
-                      Asosiy: {statusLabel(selectedDayBase[student.id] ?? student.dayStatuses.base)}
-                      {student.isPremiumEligible
-                        ? ` • Premium: ${statusLabel(selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan')}`
-                        : ''}
-                    </p>
+                    <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs kd-subtle">
+                      <span>Asosiy: {statusLabel(selectedDayBase[student.id] ?? student.dayStatuses.base)}</span>
+                      {!selectedDayBase[student.id] &&
+                        student.dayStatuses.base === 'keldi' &&
+                        student.daySource?.base === 'system' && (
+                          <span className="px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
+                            Face ID
+                          </span>
+                        )}
+                      {student.isPremiumEligible && (
+                        <>
+                          <span>•</span>
+                          <span>Premium: {statusLabel(selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan')}</span>
+                          {!selectedDayPremium[student.id] &&
+                            student.dayStatuses.premiumExtra === 'keldi' &&
+                            student.daySource?.premiumExtra === 'system' && (
+                              <span className="px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
+                                Face ID
+                              </span>
+                            )}
+                        </>
+                      )}
+                    </div>
                   )}
                 </div>
               );

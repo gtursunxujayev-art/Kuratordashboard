@@ -62,12 +62,6 @@ function formatDateTime(date: Date | null | undefined): string {
   });
 }
 
-function maskPhone(phone: string | null | undefined): string {
-  if (!phone) return '—';
-  if (phone.length <= 4) return phone;
-  return '***' + phone.slice(-4);
-}
-
 function StatusBadge({ status }: { status: string }) {
   const cls = STATUS_BADGE_CLASS[status] ?? 'bg-gray-100 text-gray-500';
   const label = STATUS_LABELS[status] ?? status;
@@ -203,10 +197,10 @@ export default function FaceIdLogsPage() {
           <label className="text-xs text-gray-500">Telefon raqam</label>
           <input
             type="text"
-            placeholder="998901234567"
+            placeholder="Telefon bo'yicha qidirish"
             value={filterPhone}
             onChange={(e) => setFilterPhone(e.target.value)}
-            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-36"
+            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-44"
           />
         </div>
 
@@ -214,10 +208,10 @@ export default function FaceIdLogsPage() {
           <label className="text-xs text-gray-500">Filial / qurilma</label>
           <input
             type="text"
-            placeholder="Toshkent..."
+            placeholder="Filial nomi bo'yicha qidirish"
             value={filterBranch}
             onChange={(e) => setFilterBranch(e.target.value)}
-            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-36"
+            className="text-sm border border-gray-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-blue-400 w-52"
           />
         </div>
 
@@ -256,6 +250,7 @@ export default function FaceIdLogsPage() {
             >
               <th className="px-3 py-2">Vaqt</th>
               <th className="px-3 py-2">Holat</th>
+              <th className="px-3 py-2">O&apos;quvchi</th>
               <th className="px-3 py-2">Telefon</th>
               <th className="px-3 py-2">Tashqi ID</th>
               <th className="px-3 py-2">Dars sanasi</th>
@@ -266,14 +261,14 @@ export default function FaceIdLogsPage() {
           <tbody>
             {eventsQuery.isLoading && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-gray-400">
+                <td colSpan={8} className="px-3 py-8 text-center text-gray-400">
                   Yuklanmoqda...
                 </td>
               </tr>
             )}
             {!eventsQuery.isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-8 text-center text-gray-400">
+                <td colSpan={8} className="px-3 py-8 text-center text-gray-400">
                   Hodisalar topilmadi
                 </td>
               </tr>
@@ -290,8 +285,20 @@ export default function FaceIdLogsPage() {
                 <td className="px-3 py-2">
                   <StatusBadge status={item.status} />
                 </td>
+                <td className="px-3 py-2">
+                  {item.customerName ? (
+                    <div>
+                      <div className="text-sm text-gray-800">{item.customerName}</div>
+                      {item.customerNumber && (
+                        <div className="text-xs text-gray-400">{item.customerNumber}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2 font-mono text-gray-600">
-                  {maskPhone(item.phone)}
+                  {item.phone ?? '—'}
                 </td>
                 <td className="px-3 py-2 text-gray-500 text-xs font-mono">
                   {item.externalUserId ? item.externalUserId.slice(0, 12) + (item.externalUserId.length > 12 ? '…' : '') : '—'}
@@ -313,8 +320,8 @@ export default function FaceIdLogsPage() {
 
       {/* Disclaimer */}
       <p className="text-xs text-gray-400 mt-3">
-        Faqat ma'lum o'quvchi bilan bog'liq hodisalar ko'rsatiladi.
-        Noma'lum o'quvchilar va noto'g'ri formatdagi so'rovlar server loglarida qayd etiladi.
+        Barcha IN hodisalar ko&apos;rsatiladi (mos kelmagan skanlar ham). Qurilma yoki forvarder{' '}
+        <code className="bg-gray-100 px-1 rounded">/webhooks/faceid</code> manziliga POST yuborishi kerak.
       </p>
     </div>
   );

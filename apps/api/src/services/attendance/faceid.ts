@@ -69,6 +69,7 @@ export type FaceIdWebhookResult = {
     | 'not_class_day'
     | 'ignored_action'
     | 'invalid_payload';
+  reason?: string;
   customerId?: string;
   courseRunId?: string;
   lessonDate?: string;
@@ -467,7 +468,7 @@ function buildMeta(
     courseRunId: result.courseRunId ?? null,
     lessonDate: result.lessonDate ?? null,
     branchName: parsed.branchName,
-    reason: result.status === 'marked' ? null : result.status,
+    reason: result.status === 'marked' ? null : (result.reason ?? result.status),
   };
 }
 
@@ -485,6 +486,13 @@ export function extractFaceIdMetaFromPayload(rawPayload: unknown): Partial<FaceI
 // ---------------------------------------------------------------------------
 // Public entrypoint
 // ---------------------------------------------------------------------------
+
+async function resolveFaceIdTenantId(): Promise<string | null> {
+  const envTenant = process.env.FACEID_TENANT_ID?.trim();
+  if (envTenant) return envTenant;
+  const tenants = await prisma.tenant.findMany({ select: { id: true }, take: 2 });
+  return tenants.length === 1 ? tenants[0].id : null;
+}
 
 export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookResult> {
   // 1. Parse & validate payload structure
@@ -532,81 +540,65 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
     return { ok: true, status: 'ignored_action' };
   }
 
-  // 3. Match student
-  const tenantScopeId = process.env.FACEID_TENANT_ID?.trim() || null;
-  const student = await matchStudent(parsed, tenantScopeId);
-  if (!student) {
-    console.log(
-      JSON.stringify({
-        level: 'info',
-        event: 'faceid_webhook',
-        status: 'student_not_found',
-        reason: parsed.phone
-          ? 'no_customer_with_matching_phone'
-          : parsed.externalUserId
-            ? 'no_customer_with_matching_external_id'
-            : 'no_identifier_provided',
-        hasPhone: !!parsed.phone,
-        hasExternalId: !!parsed.externalUserId,
-        branchName: parsed.branchName,
-      }),
-    );
-    return { ok: true, status: 'student_not_found' };
-  }
-
-  const tenantId = student.tenantId;
   const rawBody = JSON.stringify(body ?? {});
-  const idempotencyKey = buildIdempotencyKey(tenantId, rawBody);
+  const tenantScopeId = process.env.FACEID_TENANT_ID?.trim() || null;
+  const earlyTenantId = await resolveFaceIdTenantId();
 
-  // 4. Create WebhookEvent (idempotency gate) — placed here so all post-student-match
-  //    outcomes are persisted with their _faceid_meta and are auditable via tRPC.
-  const initialMeta: FaceIdMeta = {
-    status: 'processing',
-    phone: parsed.phone,
-    externalUserId: parsed.externalUserId,
-    customerId: student.id,
-    courseRunId: null,
-    lessonDate: null,
-    branchName: parsed.branchName,
-    reason: null,
-  };
+  // 3. Create WebhookEvent before student match (single-tenant path).
+  //    This ensures every IN event is visible on the Face ID page, including unmatched scans.
+  let webhookEventId: string | null = null;
+  let eventTenantId: string | null = null;
 
-  let webhookEventId: string;
-  try {
-    const ev = await prisma.webhookEvent.create({
-      data: {
-        tenantId,
-        source: 'faceid',
-        eventType: parsed.eventType,
-        idempotencyKey,
-        rawPayload: { ...parsed.rawPayload, _faceid_meta: initialMeta } as object,
-        processed: false,
-      },
-      select: { id: true },
-    });
-    webhookEventId = ev.id;
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      console.log(
-        JSON.stringify({
-          level: 'info',
-          event: 'faceid_webhook',
-          status: 'duplicate',
-          customerId: student.id,
-          idempotencyKey: idempotencyKey.slice(0, 8) + '...',
-        }),
-      );
-      return { ok: true, status: 'duplicate', customerId: student.id };
+  if (earlyTenantId) {
+    const idempotencyKey = buildIdempotencyKey(earlyTenantId, rawBody);
+    const initialMeta: FaceIdMeta = {
+      status: 'processing',
+      phone: parsed.phone,
+      externalUserId: parsed.externalUserId,
+      customerId: null,
+      courseRunId: null,
+      lessonDate: null,
+      branchName: parsed.branchName,
+      reason: null,
+    };
+    try {
+      const ev = await prisma.webhookEvent.create({
+        data: {
+          tenantId: earlyTenantId,
+          source: 'faceid_student',
+          eventType: parsed.eventType,
+          idempotencyKey,
+          rawPayload: { ...parsed.rawPayload, _faceid_meta: initialMeta } as object,
+          processed: false,
+        },
+        select: { id: true },
+      });
+      webhookEventId = ev.id;
+      eventTenantId = earlyTenantId;
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'faceid_webhook',
+            status: 'duplicate',
+            idempotencyKey: idempotencyKey.slice(0, 8) + '...',
+          }),
+        );
+        return { ok: true, status: 'duplicate' };
+      }
+      throw error;
     }
-    throw error;
   }
 
   // Finalize WebhookEvent with the processing result (best-effort)
-  const finalizeEvent = async (result: FaceIdWebhookResult): Promise<void> => {
+  const finalizeEvent = async (result: FaceIdWebhookResult, tenantId: string): Promise<void> => {
+    if (!webhookEventId) return;
     await prisma.webhookEvent
       .update({
         where: { id: webhookEventId },
         data: {
+          ...(tenantId !== eventTenantId ? { tenantId } : {}),
           processed: true,
           processedAt: new Date(),
           rawPayload: { ...parsed.rawPayload, _faceid_meta: buildMeta(parsed, result) } as object,
@@ -614,6 +606,78 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
       })
       .catch(() => undefined);
   };
+
+  // 4. Match student
+  const student = await matchStudent(parsed, tenantScopeId);
+  if (!student) {
+    const reason = parsed.phone
+      ? 'no_customer_with_matching_phone'
+      : parsed.externalUserId
+        ? 'no_customer_with_matching_external_id'
+        : 'no_identifier_provided';
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'faceid_webhook',
+        status: 'student_not_found',
+        reason,
+        hasPhone: !!parsed.phone,
+        hasExternalId: !!parsed.externalUserId,
+        branchName: parsed.branchName,
+      }),
+    );
+    const result: FaceIdWebhookResult = { ok: true, status: 'student_not_found', reason };
+    if (webhookEventId && eventTenantId) {
+      await finalizeEvent(result, eventTenantId);
+    }
+    return result;
+  }
+
+  const tenantId = student.tenantId;
+
+  // Multi-tenant fallback: create event now using the matched student's tenantId
+  if (!webhookEventId) {
+    const idempotencyKey = buildIdempotencyKey(tenantId, rawBody);
+    const initialMeta: FaceIdMeta = {
+      status: 'processing',
+      phone: parsed.phone,
+      externalUserId: parsed.externalUserId,
+      customerId: student.id,
+      courseRunId: null,
+      lessonDate: null,
+      branchName: parsed.branchName,
+      reason: null,
+    };
+    try {
+      const ev = await prisma.webhookEvent.create({
+        data: {
+          tenantId,
+          source: 'faceid_student',
+          eventType: parsed.eventType,
+          idempotencyKey,
+          rawPayload: { ...parsed.rawPayload, _faceid_meta: initialMeta } as object,
+          processed: false,
+        },
+        select: { id: true },
+      });
+      webhookEventId = ev.id;
+      eventTenantId = tenantId;
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        console.log(
+          JSON.stringify({
+            level: 'info',
+            event: 'faceid_webhook',
+            status: 'duplicate',
+            customerId: student.id,
+            idempotencyKey: buildIdempotencyKey(tenantId, rawBody).slice(0, 8) + '...',
+          }),
+        );
+        return { ok: true, status: 'duplicate', customerId: student.id };
+      }
+      throw error;
+    }
+  }
 
   // 5. Validate date
   if (!parsed.localDate) {
@@ -627,7 +691,7 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
         customerId: student.id,
       }),
     );
-    await finalizeEvent(result);
+    await finalizeEvent(result, tenantId);
     return result;
   }
 
@@ -644,7 +708,7 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
         customerId: student.id,
       }),
     );
-    await finalizeEvent(result);
+    await finalizeEvent(result, tenantId);
     return result;
   }
 
@@ -660,7 +724,7 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
         customerId: student.id,
       }),
     );
-    await finalizeEvent(result);
+    await finalizeEvent(result, tenantId);
     return result;
   }
 
@@ -678,7 +742,7 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
         customerId: student.id,
       }),
     );
-    await finalizeEvent(result);
+    await finalizeEvent(result, tenantId);
     return result;
   }
 
@@ -713,7 +777,7 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
   );
 
   // 8. Finalize WebhookEvent + audit log
-  await finalizeEvent(result);
+  await finalizeEvent(result, tenantId);
 
   await prisma.auditLog
     .create({

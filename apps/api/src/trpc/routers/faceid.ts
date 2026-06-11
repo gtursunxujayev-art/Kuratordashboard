@@ -27,7 +27,7 @@ export const faceidRouter = router({
       const events = await prisma.webhookEvent.findMany({
         where: {
           tenantId,
-          source: 'faceid',
+          source: 'faceid_student',
           ...(Object.keys(createdAtFilter).length > 0 ? { createdAt: createdAtFilter } : {}),
         },
         orderBy: { createdAt: 'desc' },
@@ -57,6 +57,8 @@ export const faceidRouter = router({
           lessonDate: meta.lessonDate ?? null,
           branchName: meta.branchName ?? null,
           reason: meta.reason ?? null,
+          customerName: null as string | null,
+          customerNumber: null as string | null,
         };
       });
 
@@ -75,6 +77,22 @@ export const faceidRouter = router({
       if (branch) {
         const lower = branch.toLowerCase();
         items = items.filter((i) => i.branchName?.toLowerCase().includes(lower));
+      }
+
+      // Resolve customer names for all filtered items in one query
+      const customerIds = [...new Set(
+        items.map((i) => i.customerId).filter((id): id is string => id !== null),
+      )];
+      if (customerIds.length > 0) {
+        const customers = await prisma.customer.findMany({
+          where: { tenantId, id: { in: customerIds } },
+          select: { id: true, name: true, customerNumber: true },
+        });
+        const customerMap = new Map(customers.map((c) => [c.id, c]));
+        items = items.map((item) => {
+          const c = item.customerId ? customerMap.get(item.customerId) : undefined;
+          return { ...item, customerName: c?.name ?? null, customerNumber: c?.customerNumber ?? null };
+        });
       }
 
       return {
@@ -97,7 +115,7 @@ export const faceidRouter = router({
       const events = await prisma.webhookEvent.findMany({
         where: {
           tenantId,
-          source: 'faceid',
+          source: 'faceid_student',
           createdAt: { gte: since },
         },
         select: { rawPayload: true },
@@ -108,10 +126,10 @@ export const faceidRouter = router({
         already_marked: 0,
         manual_mark_kept: 0,
         duplicate: 0,
+        student_not_found: 0,
         no_lesson: 0,
         not_class_day: 0,
         invalid_payload: 0,
-        processing: 0,
       };
 
       for (const ev of events) {
