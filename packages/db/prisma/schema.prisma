@@ -341,6 +341,7 @@ model Customer {
   telegramUsername String?
   // KD-specific fields (added via migration — nullable, backward compatible)
   phone           String?
+  faceIdExternalId String? // Face ID device user.id, learned on first phone match
   gender          String?  // 'male' | 'female'
   region          String?
   secondaryPhone  String?
@@ -376,6 +377,7 @@ model Customer {
   @@index([profileTariffId])
   @@index([profileSubTariffId])
   @@unique([tenantId, legacyProfileImportKey])
+  @@index([tenantId, faceIdExternalId])
   @@map("customers")
 }
 
@@ -715,14 +717,15 @@ model ClassAttendance {
   lessonDate     DateTime // the specific class date (Saturday or Sunday)
   lessonType     String   @default("base") // 'base' | 'premium_extra'
   attended       Boolean  @default(false)
-  markedByUserId String
+  source         String   @default("manual") // 'manual' | 'system' (e.g. Face ID auto check-in)
+  markedByUserId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
   tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
   courseRun  CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
-  markedBy   User      @relation(fields: [markedByUserId], references: [id], onDelete: Restrict)
+  markedBy   User?     @relation(fields: [markedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, customerId, courseRunId, lessonDate, lessonType])
   @@index([tenantId])

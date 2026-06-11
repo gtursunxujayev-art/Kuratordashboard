@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
@@ -9,6 +10,7 @@ import {
   runTelegramScheduledReports,
   validateCronSecret,
 } from './services/telegram-reports';
+import { handleFaceIdWebhook } from './services/attendance/faceid';
 
 dotenv.config();
 
@@ -188,6 +190,67 @@ app.post('/webhooks/telegram', async (req, res) => {
       JSON.stringify({
         level: 'error',
         event: 'telegram_webhook_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return res.status(500).json({ ok: false, error: 'Webhook processing failed' });
+  }
+});
+
+function getFaceIdWebhookSecret(): string | null {
+  return process.env.FACEID_WEBHOOK_SECRET?.trim() || null;
+}
+
+function extractFaceIdToken(req: express.Request): string | null {
+  const auth = String(req.header('authorization') || '');
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : null;
+  if (bearer) return bearer;
+  const queryToken =
+    (typeof req.query.token === 'string' && req.query.token.trim()) ||
+    (typeof req.query.webhook_token === 'string' && req.query.webhook_token.trim()) ||
+    (typeof req.query.access_token === 'string' && req.query.access_token.trim()) ||
+    '';
+  if (queryToken) return queryToken;
+  const bodyToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
+  return bodyToken || null;
+}
+
+function tokensMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+app.get('/webhooks/faceid', (_req, res) => {
+  res.json({
+    ok: true,
+    endpoint: '/webhooks/faceid',
+    method: 'POST',
+    message: 'Face ID student attendance webhook is alive.',
+    auth: ['Authorization: Bearer <token>', '?token=<token>', 'body.token'],
+  });
+});
+
+app.post('/webhooks/faceid', async (req, res) => {
+  const expectedSecret = getFaceIdWebhookSecret();
+  if (!expectedSecret) {
+    return res.status(503).json({ ok: false, error: 'FACEID_WEBHOOK_SECRET sozlanmagan' });
+  }
+
+  const providedToken = extractFaceIdToken(req);
+  if (!providedToken || !tokensMatch(providedToken, expectedSecret)) {
+    return res.status(401).json({ ok: false, error: 'Invalid Face ID webhook token' });
+  }
+
+  try {
+    const result = await handleFaceIdWebhook(req.body);
+    return res.json(result);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'faceid_webhook_failed',
         message: error instanceof Error ? error.message : String(error),
       }),
     );

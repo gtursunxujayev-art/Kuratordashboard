@@ -14,6 +14,8 @@
 - `TELEGRAM_BOT_USERNAME` (optional; used for deep-link shown in settings)
 - `REPORT_CRON_SECRET` (required for `/internal/reports/telegram/run`)
 - `REPORT_TIMEZONE` (optional, default `Asia/Tashkent`)
+- `FACEID_WEBHOOK_SECRET` (required for Face ID attendance webhook)
+- `FACEID_TENANT_ID` (optional; scopes Face ID matching to one tenant — omit for multi-tenant)
 
 ## PDF renderer runtime notes
 
@@ -42,6 +44,16 @@ If Kuratordashboard and Dashboarduz use the same database and shared credentials
 4. Configure Telegram webhook + Railway cron jobs
 
 This order prevents UI/backend contract mismatch during rollout.
+
+## Face ID student attendance webhook
+
+- Endpoint: `POST /webhooks/faceid` (Railway API domain).
+- Auth: `Authorization: Bearer <FACEID_WEBHOOK_SECRET>`, or `?token=`, or `body.token`.
+- Only `action: "IN"` events mark attendance; `OUT` is ignored.
+- Student = `Customer` row matched by `faceIdExternalId` (learned) or last-9-digit phone; employees in `users` are naturally ignored.
+- Marks `ClassAttendance` with `attended=true`, `source='system'`, `markedByUserId=null` for the base lesson (Sat/Sun) of the most recently started active `CourseRun` the student belongs to.
+- Manual marks (`source='manual'`) are never overwritten.
+- Idempotent: duplicate deliveries return `{ status: 'duplicate' }` via `WebhookEvent`.
 
 ## Telegram cron endpoints
 
