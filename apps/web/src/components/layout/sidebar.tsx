@@ -20,6 +20,7 @@ const navItems = [
 const managerNavItems = [
   { href: '/davomat', label: 'Davomat', icon: 'DV' },
   { href: '/hisobot', label: 'Hisobot', icon: 'HS' },
+  { href: '/faceid', label: 'Face ID Jurnal', icon: 'FI' },
   { href: '/settings', label: 'Sozlamalar', icon: 'SZ' },
 ];
 

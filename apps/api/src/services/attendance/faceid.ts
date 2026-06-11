@@ -4,41 +4,34 @@ import { prisma } from '@kuratordashboard/db';
 /**
  * Face ID -> student class attendance ingestion.
  *
- * Differs from Dashboarduz (which tracks EMPLOYEE work-time on the `users` table):
- *  - A student is a `Customer` (no role column). Anyone matched in `customers` is a student;
- *    employees live in `users` and are therefore naturally ignored.
- *  - Attendance is per-lesson (`ClassAttendance`): a specific class date (Sat/Sun) inside a
- *    `CourseRun` the student belongs to. We mark `attended = true` for that lesson.
- *  - Marks created here are `source = 'system'`, `markedByUserId = null`.
- *  - Manual marks (source = 'manual') are authoritative and are never overwritten.
+ * A student is a `Customer`. Employees live in `users` and are naturally ignored.
+ * Marks created here are `source = 'system'`, `markedByUserId = null`.
+ * Manual marks (source = 'manual') are authoritative and are never overwritten.
  */
+
+// ---------------------------------------------------------------------------
+// Supported payload field synonyms
+// ---------------------------------------------------------------------------
+
+const IN_SYNONYMS = new Set(['IN', 'CHECK_IN', 'CHECKIN', 'ENTER', 'ENTRY', 'ACCESS_GRANTED']);
+const OUT_SYNONYMS = new Set(['OUT', 'CHECK_OUT', 'CHECKOUT', 'EXIT']);
+
+const ACTION_FIELDS = ['action', 'event', 'event_type', 'type', 'direction', 'check_type'];
+const USER_ID_PATHS = [
+  'user.id', 'user.user_id', 'user.person_id',
+  'person.id', 'person_id', 'employee_id', 'external_user_id',
+];
+const PHONE_PATHS = [
+  'user.phone_number', 'user.phone', 'user.mobile',
+  'person.phone', 'phone', 'mobile',
+];
+const DATE_FIELDS = ['local_date', 'date', 'event_date'];
+const TIMESTAMP_FIELDS = ['timestamp', 'event_time', 'created_at', 'time'];
+const BRANCH_FIELDS = ['branch_name', 'branch', 'device_name', 'location_name'];
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-type FaceIdUser = {
-  id?: string | number | null;
-  first_name?: string | null;
-  last_name?: string | null;
-  phone_number?: string | null;
-  role?: string | null;
-};
-
-export type FaceIdPayload = {
-  event_type?: string | null;
-  action?: string | null;
-  user?: FaceIdUser | null;
-  timestamp?: string | null;
-  local_time?: string | null;
-  local_date?: string | null;
-  local_time_only?: string | null;
-  latitude?: string | number | null;
-  longitude?: string | number | null;
-  source?: string | null;
-  branch_name?: string | null;
-  late_minutes?: string | number | null;
-};
 
 type ParsedFaceIdEvent = {
   action: 'IN' | 'OUT';
@@ -51,6 +44,17 @@ type ParsedFaceIdEvent = {
   branchName: string | null;
   source: string;
   rawPayload: Record<string, unknown>;
+};
+
+export type FaceIdMeta = {
+  status: string;
+  phone: string | null;
+  externalUserId: string | null;
+  customerId: string | null;
+  courseRunId: string | null;
+  lessonDate: string | null;
+  branchName: string | null;
+  reason: string | null;
 };
 
 export type FaceIdWebhookResult = {
@@ -70,6 +74,153 @@ export type FaceIdWebhookResult = {
   lessonDate?: string;
   candidateRunIds?: string[];
 };
+
+// ---------------------------------------------------------------------------
+// Low-level helpers
+// ---------------------------------------------------------------------------
+
+function normalizePhone(value: unknown): string {
+  return String(value ?? '').replace(/\D/g, '');
+}
+
+function asString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  return str.length > 0 ? str : null;
+}
+
+function getNestedValue(obj: Record<string, unknown>, path: string): unknown {
+  const parts = path.split('.');
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== 'object') return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function extractFirst(obj: Record<string, unknown>, paths: string[]): string | null {
+  for (const path of paths) {
+    const val = getNestedValue(obj, path);
+    if (val !== null && val !== undefined) {
+      const str = String(val).trim();
+      if (str.length > 0) return str;
+    }
+  }
+  return null;
+}
+
+function normalizeAction(raw: string): 'IN' | 'OUT' | null {
+  const upper = raw.trim().toUpperCase().replace(/[-\s]/g, '_');
+  if (IN_SYNONYMS.has(upper)) return 'IN';
+  if (OUT_SYNONYMS.has(upper)) return 'OUT';
+  return null;
+}
+
+function timestampToLocalDate(ts: string): string | null {
+  if (!ts) return null;
+  let date: Date;
+  const num = Number(ts);
+  if (!Number.isNaN(num) && num > 0) {
+    // Unix timestamp: treat as seconds if < 1e10, milliseconds otherwise
+    date = new Date(num < 1e10 ? num * 1000 : num);
+  } else {
+    date = new Date(ts);
+  }
+  if (Number.isNaN(date.getTime())) return null;
+
+  const tz = process.env.REPORT_TIMEZONE || 'Asia/Tashkent';
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(date);
+    const year = parts.find((p) => p.type === 'year')?.value;
+    const month = parts.find((p) => p.type === 'month')?.value;
+    const day = parts.find((p) => p.type === 'day')?.value;
+    return year && month && day ? `${year}-${month}-${day}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Payload parsing — tolerates many real-world Face ID device formats
+// ---------------------------------------------------------------------------
+
+export function parseFaceIdPayload(body: unknown): ParsedFaceIdEvent | null {
+  if (!body || typeof body !== 'object') return null;
+
+  const root = body as Record<string, unknown>;
+
+  // Unwrap common wrapper keys: { request: {...} }, { data: {...} }, { body: {...} }
+  let payload = root;
+  for (const wrapper of ['request', 'data', 'body']) {
+    const wrapped = root[wrapper];
+    if (wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)) {
+      payload = wrapped as Record<string, unknown>;
+      break;
+    }
+  }
+
+  // Normalize action from any recognized field
+  let action: 'IN' | 'OUT' | null = null;
+  for (const field of ACTION_FIELDS) {
+    const raw = payload[field];
+    if (raw !== null && raw !== undefined && String(raw).trim().length > 0) {
+      const normalized = normalizeAction(String(raw));
+      if (normalized) {
+        action = normalized;
+        break;
+      }
+    }
+  }
+  if (!action) return null;
+
+  // User external ID
+  const externalUserIdRaw = extractFirst(payload, USER_ID_PATHS);
+  const externalUserId = externalUserIdRaw ? String(externalUserIdRaw).trim() : null;
+
+  // Phone
+  const rawPhone = extractFirst(payload, PHONE_PATHS);
+  const phone = rawPhone ? normalizePhone(rawPhone) : null;
+
+  // Local date — explicit field first, then derive from timestamp in Tashkent tz
+  let localDate = extractFirst(payload, DATE_FIELDS);
+  if (!localDate) {
+    const ts = extractFirst(payload, TIMESTAMP_FIELDS);
+    if (ts) localDate = timestampToLocalDate(ts);
+  }
+
+  // Event type label (human-readable; used for WebhookEvent.eventType)
+  const eventType = extractFirst(payload, ['event_type', 'type', 'action']) ?? 'check_in_out';
+
+  // Branch / device / location
+  const branchName = extractFirst(payload, BRANCH_FIELDS);
+
+  // Name fields (best-effort)
+  const firstName = asString(
+    getNestedValue(payload, 'user.first_name') ?? getNestedValue(payload, 'person.first_name'),
+  );
+  const lastName = asString(
+    getNestedValue(payload, 'user.last_name') ?? getNestedValue(payload, 'person.last_name'),
+  );
+
+  return {
+    action,
+    eventType,
+    externalUserId: externalUserId || null,
+    phone: phone && phone.length >= 7 ? phone : null,
+    firstName,
+    lastName,
+    localDate,
+    branchName,
+    source: asString(payload.source) ?? 'FACE_ID',
+    rawPayload: payload,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Date helpers (mirrors apps/api/src/trpc/routers/amaliy.ts)
@@ -104,58 +255,20 @@ function toDateKeyLocal(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-/** First `targetCount` class days (Sat/Sun) between start and end inclusive. */
 function buildSlotDateKeys(startDate: Date, endDate: Date, targetCount: number): string[] {
   const start = startOfDayLocal(startDate);
   const end = startOfDayLocal(endDate);
   const classDays: string[] = [];
-  for (let cursor = new Date(start); cursor.getTime() <= end.getTime(); cursor = addDaysLocal(cursor, 1)) {
+  for (
+    let cursor = new Date(start);
+    cursor.getTime() <= end.getTime();
+    cursor = addDaysLocal(cursor, 1)
+  ) {
     if (isClassDay(cursor)) {
       classDays.push(toDateKeyLocal(cursor));
     }
   }
   return classDays.slice(0, Math.max(0, targetCount));
-}
-
-// ---------------------------------------------------------------------------
-// Payload parsing
-// ---------------------------------------------------------------------------
-
-function normalizePhone(value: unknown): string {
-  return String(value ?? '').replace(/\D/g, '');
-}
-
-function asString(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  const str = String(value).trim();
-  return str.length > 0 ? str : null;
-}
-
-export function parseFaceIdPayload(body: unknown): ParsedFaceIdEvent | null {
-  if (!body || typeof body !== 'object') return null;
-  // The device/forwarder may wrap the payload under `request`.
-  const root = body as Record<string, unknown>;
-  const payload = (root.request && typeof root.request === 'object'
-    ? (root.request as Record<string, unknown>)
-    : root) as FaceIdPayload;
-
-  const actionRaw = String(payload.action ?? '').trim().toUpperCase();
-  if (actionRaw !== 'IN' && actionRaw !== 'OUT') return null;
-
-  const user = (payload.user ?? {}) as FaceIdUser;
-
-  return {
-    action: actionRaw,
-    eventType: String(payload.event_type ?? 'check_in_out'),
-    externalUserId: asString(user.id),
-    phone: normalizePhone(user.phone_number) || null,
-    firstName: asString(user.first_name),
-    lastName: asString(user.last_name),
-    localDate: asString(payload.local_date),
-    branchName: asString(payload.branch_name),
-    source: String(payload.source ?? 'FACE_ID'),
-    rawPayload: payload as Record<string, unknown>,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +292,7 @@ async function matchStudent(
     if (byExternal) return byExternal;
   }
 
-  // 2) Phone match. Compare on the last 9 digits then confirm a full normalized match,
-  //    because stored phones may carry country codes / formatting.
+  // 2) Phone match. Compare on the last 9 digits then confirm a full normalized match.
   if (parsed.phone && parsed.phone.length >= 7) {
     const last9 = parsed.phone.slice(-9);
     const candidates = await prisma.customer.findMany({
@@ -203,12 +315,22 @@ async function matchStudent(
             where: { id: found.id },
             data: { faceIdExternalId: parsed.externalUserId },
           })
-          .catch(() => undefined); // best-effort; e.g. id already taken by another row
+          .catch(() => undefined);
       }
       return { id: found.id, tenantId: found.tenantId, faceIdExternalId: found.faceIdExternalId };
     }
-    // exact.length === 0 -> not a student (or no phone on file)
-    // exact.length > 1   -> ambiguous phone; refuse to guess
+
+    if (exact.length > 1) {
+      console.log(
+        JSON.stringify({
+          level: 'warn',
+          event: 'faceid_student_ambiguous',
+          reason: 'multiple_phone_matches',
+          phoneMasked: `***${parsed.phone.slice(-4)}`,
+          matchCount: exact.length,
+        }),
+      );
+    }
   }
 
   return null;
@@ -222,12 +344,6 @@ type LessonResolution =
   | { status: 'ok'; courseRunId: string; lessonDate: Date; candidateRunIds: string[] }
   | { status: 'no_lesson' };
 
-/**
- * Find the active CourseRun (the student belongs to) that has a BASE lesson on `eventDate`.
- * Per product decision: when several active runs have a lesson that day, mark the one that
- * started most recently (latest startDate). This is deterministic and never refuses.
- * Face ID only marks `base` lessons (physical presence); `premium_extra` stays curriculum-driven/manual.
- */
 async function resolveLesson(
   tenantId: string,
   customerId: string,
@@ -237,7 +353,6 @@ async function resolveLesson(
   const dayEnd = addDaysLocal(dayStart, 1);
   const dateKey = toDateKeyLocal(dayStart);
 
-  // Runs the student is a member of whose [startDate, endDate] window covers this date.
   const memberships = await prisma.courseRunMember.findMany({
     where: {
       tenantId,
@@ -329,100 +444,276 @@ async function markAttendance(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Public entrypoint
+// WebhookEvent helpers
 // ---------------------------------------------------------------------------
 
 function buildIdempotencyKey(tenantId: string, rawBody: string): string {
   return crypto.createHash('sha256').update(`faceid:${tenantId}:${rawBody}`).digest('hex');
 }
 
-/**
- * Process a single Face ID webhook body end-to-end:
- * parse -> match student -> resolve lesson -> idempotent record -> mark attendance.
- * Returns a structured, side-effect-free-on-error summary.
- */
+function isUniqueViolation(error: unknown): boolean {
+  return String((error as any)?.code || '').toUpperCase() === 'P2002';
+}
+
+function buildMeta(
+  parsed: ParsedFaceIdEvent,
+  result: FaceIdWebhookResult,
+): FaceIdMeta {
+  return {
+    status: result.status,
+    phone: parsed.phone,
+    externalUserId: parsed.externalUserId,
+    customerId: result.customerId ?? null,
+    courseRunId: result.courseRunId ?? null,
+    lessonDate: result.lessonDate ?? null,
+    branchName: parsed.branchName,
+    reason: result.status === 'marked' ? null : result.status,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Public: extract _faceid_meta from a stored rawPayload (used by tRPC router)
+// ---------------------------------------------------------------------------
+
+export function extractFaceIdMetaFromPayload(rawPayload: unknown): Partial<FaceIdMeta> {
+  if (!rawPayload || typeof rawPayload !== 'object') return {};
+  const meta = (rawPayload as Record<string, unknown>)['_faceid_meta'];
+  if (!meta || typeof meta !== 'object') return {};
+  return meta as Partial<FaceIdMeta>;
+}
+
+// ---------------------------------------------------------------------------
+// Public entrypoint
+// ---------------------------------------------------------------------------
+
 export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookResult> {
+  // 1. Parse & validate payload structure
   const parsed = parseFaceIdPayload(body);
   if (!parsed) {
+    console.log(
+      JSON.stringify({
+        level: 'warn',
+        event: 'faceid_webhook',
+        status: 'invalid_payload',
+        reason: 'parse_failed',
+        bodyType: typeof body,
+      }),
+    );
     return { ok: true, status: 'invalid_payload' };
   }
 
-  // A single physical check-in is enough for a class; OUT events are not attendance signals.
+  // Log parsed summary — no identifiers, no secrets
+  console.log(
+    JSON.stringify({
+      level: 'info',
+      event: 'faceid_webhook',
+      status: 'parsed',
+      action: parsed.action,
+      eventType: parsed.eventType,
+      hasPhone: !!parsed.phone,
+      hasExternalId: !!parsed.externalUserId,
+      localDate: parsed.localDate,
+      branchName: parsed.branchName,
+      dateSource: parsed.localDate ? 'explicit' : 'derived_from_timestamp',
+    }),
+  );
+
+  // 2. Only IN events mark attendance; OUT events are explicitly ignored
   if (parsed.action !== 'IN') {
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'faceid_webhook',
+        status: 'ignored_action',
+        action: parsed.action,
+        branchName: parsed.branchName,
+      }),
+    );
     return { ok: true, status: 'ignored_action' };
   }
 
+  // 3. Match student
   const tenantScopeId = process.env.FACEID_TENANT_ID?.trim() || null;
-
   const student = await matchStudent(parsed, tenantScopeId);
   if (!student) {
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'faceid_webhook',
+        status: 'student_not_found',
+        reason: parsed.phone
+          ? 'no_customer_with_matching_phone'
+          : parsed.externalUserId
+            ? 'no_customer_with_matching_external_id'
+            : 'no_identifier_provided',
+        hasPhone: !!parsed.phone,
+        hasExternalId: !!parsed.externalUserId,
+        branchName: parsed.branchName,
+      }),
+    );
     return { ok: true, status: 'student_not_found' };
   }
 
   const tenantId = student.tenantId;
-
-  if (!parsed.localDate) {
-    return { ok: true, status: 'invalid_payload', customerId: student.id };
-  }
-  const eventDate = parseLocalDateKey(parsed.localDate);
-  if (!eventDate) {
-    return { ok: true, status: 'invalid_payload', customerId: student.id };
-  }
-  if (!isClassDay(eventDate)) {
-    return { ok: true, status: 'not_class_day', customerId: student.id };
-  }
-
-  // Idempotency: a re-delivered identical payload must not double-process.
   const rawBody = JSON.stringify(body ?? {});
   const idempotencyKey = buildIdempotencyKey(tenantId, rawBody);
+
+  // 4. Create WebhookEvent (idempotency gate) — placed here so all post-student-match
+  //    outcomes are persisted with their _faceid_meta and are auditable via tRPC.
+  const initialMeta: FaceIdMeta = {
+    status: 'processing',
+    phone: parsed.phone,
+    externalUserId: parsed.externalUserId,
+    customerId: student.id,
+    courseRunId: null,
+    lessonDate: null,
+    branchName: parsed.branchName,
+    reason: null,
+  };
+
+  let webhookEventId: string;
   try {
-    await prisma.webhookEvent.create({
+    const ev = await prisma.webhookEvent.create({
       data: {
         tenantId,
         source: 'faceid',
         eventType: parsed.eventType,
         idempotencyKey,
-        rawPayload: parsed.rawPayload as object,
+        rawPayload: { ...parsed.rawPayload, _faceid_meta: initialMeta } as object,
         processed: false,
       },
+      select: { id: true },
     });
+    webhookEventId = ev.id;
   } catch (error) {
     if (isUniqueViolation(error)) {
+      console.log(
+        JSON.stringify({
+          level: 'info',
+          event: 'faceid_webhook',
+          status: 'duplicate',
+          customerId: student.id,
+          idempotencyKey: idempotencyKey.slice(0, 8) + '...',
+        }),
+      );
       return { ok: true, status: 'duplicate', customerId: student.id };
     }
     throw error;
   }
 
-  const lesson = await resolveLesson(tenantId, student.id, eventDate);
+  // Finalize WebhookEvent with the processing result (best-effort)
+  const finalizeEvent = async (result: FaceIdWebhookResult): Promise<void> => {
+    await prisma.webhookEvent
+      .update({
+        where: { id: webhookEventId },
+        data: {
+          processed: true,
+          processedAt: new Date(),
+          rawPayload: { ...parsed.rawPayload, _faceid_meta: buildMeta(parsed, result) } as object,
+        },
+      })
+      .catch(() => undefined);
+  };
 
-  let result: FaceIdWebhookResult;
+  // 5. Validate date
+  if (!parsed.localDate) {
+    const result: FaceIdWebhookResult = { ok: true, status: 'invalid_payload', customerId: student.id };
+    console.log(
+      JSON.stringify({
+        level: 'warn',
+        event: 'faceid_webhook',
+        status: 'invalid_payload',
+        reason: 'missing_local_date',
+        customerId: student.id,
+      }),
+    );
+    await finalizeEvent(result);
+    return result;
+  }
+
+  const eventDate = parseLocalDateKey(parsed.localDate);
+  if (!eventDate) {
+    const result: FaceIdWebhookResult = { ok: true, status: 'invalid_payload', customerId: student.id };
+    console.log(
+      JSON.stringify({
+        level: 'warn',
+        event: 'faceid_webhook',
+        status: 'invalid_payload',
+        reason: 'unparseable_date',
+        localDate: parsed.localDate,
+        customerId: student.id,
+      }),
+    );
+    await finalizeEvent(result);
+    return result;
+  }
+
+  if (!isClassDay(eventDate)) {
+    const result: FaceIdWebhookResult = { ok: true, status: 'not_class_day', customerId: student.id };
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'faceid_webhook',
+        status: 'not_class_day',
+        localDate: parsed.localDate,
+        weekday: eventDate.getDay(),
+        customerId: student.id,
+      }),
+    );
+    await finalizeEvent(result);
+    return result;
+  }
+
+  // 6. Resolve lesson
+  const lesson = await resolveLesson(tenantId, student.id, eventDate);
   if (lesson.status === 'no_lesson') {
-    result = { ok: true, status: 'no_lesson', customerId: student.id };
-  } else {
-    const markStatus = await markAttendance({
-      tenantId,
-      customerId: student.id,
-      courseRunId: lesson.courseRunId,
-      lessonDate: lesson.lessonDate,
-    });
-    result = {
-      ok: true,
+    const result: FaceIdWebhookResult = { ok: true, status: 'no_lesson', customerId: student.id };
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'faceid_webhook',
+        status: 'no_lesson',
+        reason: 'no_active_course_run_with_base_lesson_on_date',
+        localDate: parsed.localDate,
+        customerId: student.id,
+      }),
+    );
+    await finalizeEvent(result);
+    return result;
+  }
+
+  // 7. Mark attendance
+  const markStatus = await markAttendance({
+    tenantId,
+    customerId: student.id,
+    courseRunId: lesson.courseRunId,
+    lessonDate: lesson.lessonDate,
+  });
+
+  const result: FaceIdWebhookResult = {
+    ok: true,
+    status: markStatus,
+    customerId: student.id,
+    courseRunId: lesson.courseRunId,
+    lessonDate: toDateKeyLocal(lesson.lessonDate),
+    candidateRunIds: lesson.candidateRunIds,
+  };
+
+  console.log(
+    JSON.stringify({
+      level: markStatus === 'marked' ? 'info' : 'debug',
+      event: 'faceid_webhook',
       status: markStatus,
       customerId: student.id,
       courseRunId: lesson.courseRunId,
       lessonDate: toDateKeyLocal(lesson.lessonDate),
-      // When >1, courseRunId is the most recently started run (tie-break).
-      candidateRunIds: lesson.candidateRunIds,
-    };
-  }
+      branchName: parsed.branchName,
+      candidateRunCount: lesson.candidateRunIds.length,
+    }),
+  );
 
-  // Close out the webhook event + audit trail (best-effort).
-  await prisma.webhookEvent
-    .updateMany({
-      where: { tenantId, source: 'faceid', idempotencyKey },
-      data: { processed: true, processedAt: new Date() },
-    })
-    .catch(() => undefined);
+  // 8. Finalize WebhookEvent + audit log
+  await finalizeEvent(result);
 
   await prisma.auditLog
     .create({
@@ -443,13 +734,4 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
     .catch(() => undefined);
 
   return result;
-}
-
-// ---------------------------------------------------------------------------
-// Prisma error helpers
-// ---------------------------------------------------------------------------
-
-function isUniqueViolation(error: unknown): boolean {
-  const code = String((error as any)?.code || '').toUpperCase();
-  return code === 'P2002';
 }

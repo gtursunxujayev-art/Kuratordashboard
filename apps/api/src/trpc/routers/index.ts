@@ -5,6 +5,7 @@ import { studentsRouter } from './students';
 import { amaliyRouter } from './amaliy';
 import { settingsRouter } from './settings';
 import { kuratorsRouter } from './kurators';
+import { faceidRouter } from './faceid';
 
 export const appRouter = router({
   auth: authRouter,
@@ -13,6 +14,7 @@ export const appRouter = router({
   amaliy: amaliyRouter,
   settings: settingsRouter,
   kurators: kuratorsRouter,
+  faceid: faceidRouter,
 });
 
 export type AppRouter = typeof appRouter;
