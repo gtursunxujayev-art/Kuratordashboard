@@ -9,6 +9,14 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isAdminOrManager(roles: string[]): boolean {
+  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
+}
+
+function hasKuratorRole(roles: string[]): boolean {
+  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
+}
+
 function isMissingCustomerTelegramColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -199,6 +207,7 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
     return await prisma.courseRun.findFirst({
       where: {
         tenantId,
+        isHidden: false,
         ...(courseRunId ? { id: courseRunId } : {}),
         ...(courseRunId
           ? {}
@@ -243,9 +252,8 @@ export const amaliyRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       let customerIds: string[] | undefined;
 
@@ -331,12 +339,9 @@ export const amaliyRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const kuratorOnly =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
-      const isManagerOrAdmin =
-        user.roles.includes('Admin') ||
-        user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
+      const isManagerOrAdmin = isAdminOrManager(user.roles);
 
       if (input.includeCompleted && !isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
@@ -350,6 +355,7 @@ export const amaliyRouter = router({
           id: input.exerciseDefinitionId,
           tenantId,
           isActive: true,
+          isHidden: false,
         },
         select: {
           id: true,
@@ -623,9 +629,7 @@ export const amaliyRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isManagerOrAdmin =
-        user.roles.includes('Admin') ||
-        user.roles.includes('Manager');
+      const isManagerOrAdmin = isAdminOrManager(user.roles);
       if (!isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
       }
@@ -943,9 +947,7 @@ export const amaliyRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isManagerOrAdmin =
-        user.roles.includes('Admin') ||
-        user.roles.includes('Manager');
+      const isManagerOrAdmin = isAdminOrManager(user.roles);
       if (!isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
       }
@@ -1106,12 +1108,9 @@ export const amaliyRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
-      const isManagerOrAdmin =
-        user.roles.includes('Admin') ||
-        user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
+      const isManagerOrAdmin = isAdminOrManager(user.roles);
 
       if (input.mode === 'all' && !isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
@@ -1129,6 +1128,19 @@ export const amaliyRouter = router({
         if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
+      }
+
+      const enrollment = await prisma.income.findFirst({
+        where: {
+          tenantId,
+          customerId: input.customerId,
+          courseId: definition.courseId,
+          ...ACTIVE_ENROLLMENT_FILTER,
+        },
+        select: { id: true },
+      });
+      if (!enrollment) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu mashq kursiga biriktirilmagan" });
       }
 
       const date = parseDateInput(input.date);
@@ -1159,6 +1171,7 @@ export const amaliyRouter = router({
         tenantId,
         courseId: courseRun.courseId,
         isActive: true,
+        isHidden: false,
       };
       if (input.mode === 'day') {
         whereDefinitions.type = classDay ? 'class' : { in: ['homework', 'extra'] };
@@ -1361,13 +1374,12 @@ export const amaliyRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       const definition = await prisma.exerciseDefinition.findFirst({
-        where: { id: input.exerciseDefinitionId, tenantId },
-        select: { id: true, type: true, targetCount: true },
+        where: { id: input.exerciseDefinitionId, tenantId, isActive: true, isHidden: false },
+        select: { id: true, courseId: true, type: true, targetCount: true },
       });
       if (!definition) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
@@ -1418,6 +1430,19 @@ export const amaliyRouter = router({
           code: 'BAD_REQUEST',
           message: "Tanlangan sana ushbu mashq turi uchun mos emas",
         });
+      }
+
+      const enrollment = await prisma.income.findFirst({
+        where: {
+          tenantId,
+          customerId: input.customerId,
+          courseId: definition.courseId,
+          ...ACTIVE_ENROLLMENT_FILTER,
+        },
+        select: { id: true },
+      });
+      if (!enrollment) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu mashq kursiga biriktirilmagan" });
       }
 
       try {
@@ -1513,20 +1538,18 @@ export const amaliyRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isManagerOrAdmin =
-        user.roles.includes('Admin') ||
-        user.roles.includes('Manager');
+      const isManagerOrAdmin = isAdminOrManager(user.roles);
       if (!isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
       }
 
       const [definition, courseRun] = await Promise.all([
         prisma.exerciseDefinition.findFirst({
-          where: { id: input.exerciseDefinitionId, tenantId, isActive: true },
+          where: { id: input.exerciseDefinitionId, tenantId, isActive: true, isHidden: false },
           select: { id: true, courseId: true, type: true, targetCount: true },
         }),
         prisma.courseRun.findFirst({
-          where: { id: input.courseRunId, tenantId },
+          where: { id: input.courseRunId, tenantId, isHidden: false },
           select: { id: true, courseId: true, startDate: true, endDate: true },
         }).catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -1678,9 +1701,8 @@ export const amaliyRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKuratorOnly =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       const log = await prisma.studentExerciseLog.findFirst({
         where: { id: input.logId, tenantId },
@@ -1709,9 +1731,8 @@ export const amaliyRouter = router({
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       if (isKurator) {
         const allowed = await kuratorCanAccessCustomer({
@@ -1797,17 +1818,17 @@ export const amaliyRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       const courseRun = await prisma.courseRun
         .findFirst({
           where: {
             id: input.courseRunId,
             tenantId,
+            isHidden: false,
           },
-          select: { id: true },
+          select: { id: true, courseId: true },
         })
         .catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -1818,6 +1839,15 @@ export const amaliyRouter = router({
 
       if (!courseRun) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      const runCustomerIds = await resolveCourseRunCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
+      });
+      if (!runCustomerIds.includes(input.customerId)) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi oqimda topilmadi" });
       }
 
       if (isKurator) {
