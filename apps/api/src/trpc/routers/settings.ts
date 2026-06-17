@@ -1327,7 +1327,6 @@ export const settingsRouter = router({
             isActive: true,
             ...(withVisibilityColumns ? { startDate: true, isHidden: true } : {}),
             createdAt: true,
-            updatedAt: true,
             colorPoints: {
               select: {
                 id: true,
