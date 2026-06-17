@@ -126,7 +126,7 @@ export const managerProcedure = protectedProcedure.use(async (opts) => {
   const { ctx } = opts;
   const roles = ctx.user.roles;
 
-  if (!roles.includes('Admin') && !roles.includes('Manager')) {
+  if (!roles.includes('Admin') && !roles.includes('Manager') && !roles.includes('Bosh Kurator')) {
     throw new TRPCError({
       code: 'FORBIDDEN',
       message: 'Faqat menejer yoki adminlar uchun',
