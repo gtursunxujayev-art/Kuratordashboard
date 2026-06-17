@@ -30,6 +30,7 @@ export async function getCustomersScopedToKurator(params: {
         tenantId,
         kuratorUserId,
         isActive: true,
+        courseRun: { isHidden: false },
         ...(courseRunId ? { courseRunId } : {}),
       },
       select: { customerId: true },
@@ -38,6 +39,7 @@ export async function getCustomersScopedToKurator(params: {
       where: {
         tenantId,
         kuratorUserId,
+        isHidden: false,
         ...(courseRunId ? { id: courseRunId } : {}),
       },
       select: { id: true, courseId: true },
@@ -112,6 +114,7 @@ export async function kuratorCanAccessCustomer(params: {
       kuratorUserId,
       customerId,
       isActive: true,
+      courseRun: { isHidden: false },
       ...(courseRunId ? { courseRunId } : {}),
     },
     select: { id: true },
@@ -122,6 +125,7 @@ export async function kuratorCanAccessCustomer(params: {
     where: {
       tenantId,
       kuratorUserId,
+      isHidden: false,
       ...(courseRunId ? { id: courseRunId } : {}),
     },
     select: { id: true, courseId: true },
