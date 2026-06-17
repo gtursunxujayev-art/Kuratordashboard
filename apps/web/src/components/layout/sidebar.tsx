@@ -24,6 +24,13 @@ const managerNavItems = [
   { href: '/settings', label: 'Sozlamalar', icon: 'SZ' },
 ];
 
+function getRoleLabel(roles: string[]): string {
+  if (roles.includes('Admin')) return 'Admin';
+  if (roles.includes('Bosh Kurator')) return 'Bosh Kurator';
+  if (roles.includes('Manager')) return 'Menejer';
+  return 'Kurator';
+}
+
 export function Sidebar({
   theme,
   onToggleTheme,
@@ -69,7 +76,7 @@ export function Sidebar({
               color: '#ffffff',
             }}
           >
-            {user.roles.includes('Admin') ? 'Admin' : user.roles.includes('Manager') ? 'Menejer' : 'Kurator'}
+            {getRoleLabel(user.roles)}
           </span>
         )}
 
