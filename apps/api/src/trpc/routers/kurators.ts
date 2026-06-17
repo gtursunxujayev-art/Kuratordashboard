@@ -4,14 +4,14 @@ import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 
 function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager');
+  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
 }
 
 export const kuratorsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     return prisma.user.findMany({
-      where: { tenantId: ctx.tenantId, roles: { has: 'Kurator' }, isActive: true },
-      select: { id: true, name: true, username: true, phone: true },
+      where: { tenantId: ctx.tenantId, roles: { hasSome: ['Kurator', 'Bosh Kurator'] }, isActive: true },
+      select: { id: true, name: true, username: true, phone: true, roles: true },
       orderBy: [{ name: 'asc' }, { username: 'asc' }],
     });
   }),
@@ -96,7 +96,7 @@ export const kuratorsRouter = router({
         where: {
           id: input.kuratorUserId,
           tenantId,
-          roles: { has: 'Kurator' },
+          roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
           isActive: true,
         },
         select: { id: true },
