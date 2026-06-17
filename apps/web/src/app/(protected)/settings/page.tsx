@@ -76,10 +76,11 @@ export default function SettingsPage() {
         <CourseRunsTab
           selectedRunId={selectedCourseRunIdInTab}
           onSelectRun={setSelectedCourseRunIdInTab}
+          isAdmin={isAdmin}
         />
       )}
       {activeTab === 'exercises' && (
-        <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} />
+        <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} isAdmin={isAdmin} />
       )}
       {activeTab === 'regions' && <RegionsTab />}
       {activeTab === 'courseVisibility' && <CourseVisibilityTab />}
@@ -517,9 +518,11 @@ function ScheduleTemplatesTab() {
 function CourseRunsTab({
   selectedRunId,
   onSelectRun,
+  isAdmin,
 }: {
   selectedRunId: string;
   onSelectRun: (id: string) => void;
+  isAdmin: boolean;
 }) {
   const toDateInputValue = (value: Date | string | null | undefined) => {
     if (!value) return '';
@@ -598,6 +601,18 @@ function CourseRunsTab({
   const createMutation = trpc.settings.createCourseRun.useMutation();
   const updateMutation = trpc.settings.updateCourseRun.useMutation();
   const deleteCourseRunMutation = trpc.settings.deleteCourseRun.useMutation();
+  const setHiddenMutation = trpc.settings.setCourseRunHidden.useMutation({
+    onSuccess: async () => {
+      await utils.settings.listCourseRuns.invalidate();
+      await utils.dashboard.courseRuns.invalidate();
+      setDeleteError('');
+      setDeleteSuccess('Oqim holati yangilandi.');
+    },
+    onError: (err) => {
+      setDeleteSuccess('');
+      setDeleteError(err.message);
+    },
+  });
 
   const resetForm = () => {
     setForm({
@@ -630,6 +645,7 @@ function CourseRunsTab({
     durationWeeks: number;
     baseLessons: number;
     premiumExtraLessons: number;
+    isHidden?: boolean;
   }) => {
     setEditingRunId(run.id);
     setForm({
@@ -756,6 +772,8 @@ function CourseRunsTab({
       setDeletingRunId(null);
     }
   };
+
+  const canHideRun = (endDate: string | Date) => new Date(endDate).getTime() < Date.now();
 
   return (
     <div className="space-y-4">
@@ -1034,13 +1052,18 @@ function CourseRunsTab({
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchi</th>
+                <th className="text-left px-4 py-3 font-medium text-gray-600">Holat</th>
                 <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {courseRuns.map((run) => (
-                <tr key={run.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{run.name}</td>
+                <tr key={run.id} className={`hover:bg-gray-50 ${run.isHidden ? 'bg-gray-50/70' : ''}`}>
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    {run.name}
+                    {run.isHidden && <span className="ml-2 text-xs text-gray-500">(yashirilgan)</span>}
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{run.course.name}</td>
                   <td className="px-4 py-3 text-gray-600">{new Date(run.startDate).toLocaleDateString('uz-UZ')}</td>
                   <td className="px-4 py-3 text-gray-600">{new Date(run.endDate).toLocaleDateString('uz-UZ')}</td>
@@ -1048,6 +1071,15 @@ function CourseRunsTab({
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.studentCount ?? 0}</td>
+                  <td className="px-4 py-3">
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                        run.isHidden ? 'bg-gray-100 text-gray-500' : 'bg-green-100 text-green-700'
+                      }`}
+                    >
+                      {run.isHidden ? 'Yashirilgan' : "Ko'rinadi"}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
                       <button
@@ -1062,12 +1094,26 @@ function CourseRunsTab({
                             durationWeeks: run.durationWeeks,
                             baseLessons: run.baseLessons,
                             premiumExtraLessons: run.premiumExtraLessons,
+                            isHidden: run.isHidden,
                           })
                         }
                         className="text-blue-600 text-xs hover:underline"
                       >
                         {editingRunId === run.id ? 'Tahrirlanmoqda' : 'Tahrirlash'}
                       </button>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setHiddenMutation.mutate({ courseRunId: run.id, isHidden: !run.isHidden })
+                          }
+                          disabled={setHiddenMutation.isLoading || (!run.isHidden && !canHideRun(run.endDate))}
+                          className="text-amber-700 text-xs hover:underline disabled:opacity-50"
+                          title={!run.isHidden && !canHideRun(run.endDate) ? 'Faqat tugagan oqim yashiriladi' : undefined}
+                        >
+                          {run.isHidden ? "Ko'rsatish" : 'Yashirish'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => void handleDeleteCourseRun(run.id, run.name)}
@@ -1093,10 +1139,19 @@ function CourseRunsTab({
 function ExercisesTab({
   courseId,
   onSelectCourse,
+  isAdmin,
 }: {
   courseId: string;
   onSelectCourse: (id: string) => void;
+  isAdmin: boolean;
 }) {
+  const toDateInputValue = (value: Date | string | null | undefined) => {
+    if (!value) return '';
+    const parsed = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return parsed.toISOString().slice(0, 10);
+  };
+
   type ExerciseColorOption = {
     id: string;
     label: string;
@@ -1118,6 +1173,7 @@ function ExercisesTab({
     name: '',
     type: 'class' as ExerciseType,
     targetCount: 1,
+    startDate: '',
     orderIndex: 0,
   });
   const [exerciseColorPoints, setExerciseColorPoints] = useState<Record<string, number>>({});
@@ -1133,8 +1189,12 @@ function ExercisesTab({
   });
 
   const { data: courses } = trpc.settings.listCourses.useQuery();
+  const selectedCourse = useMemo(
+    () => (courses ?? []).find((course) => course.id === courseId),
+    [courses, courseId],
+  );
   const { data: exercises, isLoading } = trpc.settings.listExerciseDefinitions.useQuery(
-    { courseId },
+    { courseId, includeHidden: true },
     { enabled: !!courseId },
   );
   const { data: colorOptions, isLoading: colorOptionsLoading } = trpc.settings.listExerciseColorOptions.useQuery();
@@ -1161,7 +1221,7 @@ function ExercisesTab({
       await utils.settings.listExerciseDefinitions.invalidate();
       setShowForm(false);
       setEditingExerciseId(null);
-      setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
+      setForm({ name: '', type: 'class', targetCount: 1, startDate: '', orderIndex: 0 });
       setError('');
     },
     onError: (err) => setError(err.message),
@@ -1172,7 +1232,7 @@ function ExercisesTab({
       await utils.settings.listExerciseDefinitions.invalidate();
       setShowForm(false);
       setEditingExerciseId(null);
-      setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
+      setForm({ name: '', type: 'class', targetCount: 1, startDate: '', orderIndex: 0 });
       setError('');
     },
     onError: (err) => setError(err.message),
@@ -1205,13 +1265,27 @@ function ExercisesTab({
     },
   });
 
+  const setExerciseHiddenMutation = trpc.settings.setExerciseDefinitionHidden.useMutation({
+    onSuccess: async () => {
+      await utils.settings.listExerciseDefinitions.invalidate();
+      setError('');
+    },
+    onError: (err) => setError(err.message),
+  });
+
   const openCreateForm = () => {
     const nextPoints: Record<string, number> = {};
     for (const option of activeColorOptions) {
       nextPoints[option.id] = 0;
     }
     setEditingExerciseId(null);
-    setForm({ name: '', type: 'class', targetCount: 1, orderIndex: 0 });
+    setForm({
+      name: '',
+      type: 'class',
+      targetCount: 1,
+      startDate: toDateInputValue(selectedCourse?.startDate),
+      orderIndex: 0,
+    });
     setExerciseColorPoints(nextPoints);
     setError('');
     setShowForm(true);
@@ -1229,6 +1303,7 @@ function ExercisesTab({
       name: exercise.name,
       type: exercise.type,
       targetCount: exercise.targetCount,
+      startDate: toDateInputValue(exercise.startDate),
       orderIndex: exercise.orderIndex,
     });
     setExerciseColorPoints(nextPoints);
@@ -1261,6 +1336,7 @@ function ExercisesTab({
         name: form.name,
         type: form.type,
         targetCount: form.targetCount,
+        startDate: form.startDate || null,
         orderIndex: form.orderIndex,
         colorPoints: colorPointsPayload,
       });
@@ -1272,6 +1348,7 @@ function ExercisesTab({
       name: form.name,
       type: form.type,
       targetCount: form.targetCount,
+      startDate: form.startDate || undefined,
       orderIndex: form.orderIndex,
       colorPoints: colorPointsPayload,
     });
@@ -1493,6 +1570,15 @@ function ExercisesTab({
                   />
                 </div>
                 <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Boshlanish sanasi</label>
+                  <input
+                    type="date"
+                    value={form.startDate}
+                    onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
+                  />
+                </div>
+                <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">Tartib</label>
                   <input
                     type="number"
@@ -1570,8 +1656,10 @@ function ExercisesTab({
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Nomi</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Turi</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Maqsad</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Boshlanish</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Maks. ball</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Holati</th>
+                    <th className="text-left px-4 py-3 font-medium text-gray-600">Ko'rinish</th>
                     <th className="text-left px-4 py-3 font-medium text-gray-600">Amal</th>
                   </tr>
                 </thead>
@@ -1584,10 +1672,16 @@ function ExercisesTab({
                     const maxTotalPoints = maxColorPoint * exercise.targetCount;
 
                     return (
-                      <tr key={exercise.id}>
-                        <td className="px-4 py-3 font-medium text-gray-900">{exercise.name}</td>
+                      <tr key={exercise.id} className={exercise.isHidden ? 'bg-gray-50/70' : ''}>
+                        <td className="px-4 py-3 font-medium text-gray-900">
+                          {exercise.name}
+                          {exercise.isHidden && <span className="ml-2 text-xs text-gray-500">(yashirilgan)</span>}
+                        </td>
                         <td className="px-4 py-3 text-gray-600">{getExerciseTypeLabel(exercise.type as ExerciseType)}</td>
                         <td className="px-4 py-3 text-gray-600">{exercise.targetCount} marta</td>
+                        <td className="px-4 py-3 text-gray-600">
+                          {exercise.startDate ? new Date(exercise.startDate).toLocaleDateString('uz-UZ') : '-'}
+                        </td>
                         <td className="px-4 py-3 text-gray-600">{maxTotalPoints}</td>
                         <td className="px-4 py-3">
                           <button
@@ -1602,12 +1696,35 @@ function ExercisesTab({
                           </button>
                         </td>
                         <td className="px-4 py-3">
-                          <button
-                            onClick={() => openEditForm(exercise)}
-                            className="text-blue-600 text-xs hover:underline"
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                              exercise.isHidden ? 'bg-gray-100 text-gray-500' : 'bg-green-100 text-green-700'
+                            }`}
                           >
-                            Tahrirlash
-                          </button>
+                            {exercise.isHidden ? 'Yashirilgan' : "Ko'rinadi"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={() => openEditForm(exercise)}
+                              className="text-blue-600 text-xs hover:underline"
+                            >
+                              Tahrirlash
+                            </button>
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExerciseHiddenMutation.mutate({ id: exercise.id, isHidden: !exercise.isHidden })
+                                }
+                                disabled={setExerciseHiddenMutation.isLoading}
+                                className="text-amber-700 text-xs hover:underline disabled:opacity-50"
+                              >
+                                {exercise.isHidden ? "Ko'rsatish" : 'Yashirish'}
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     );
@@ -1708,8 +1825,14 @@ function UsersTab() {
   const [updateError, setUpdateError] = useState('');
   const [updateSuccess, setUpdateSuccess] = useState('');
   const [nameDraftByUserId, setNameDraftByUserId] = useState<Record<string, string>>({});
+  type StaffRole = 'Kurator' | 'Manager' | 'Bosh Kurator';
+  const getStaffRoleLabel = (roles: string[]) => {
+    if (roles.includes('Bosh Kurator')) return 'Bosh Kurator';
+    if (roles.includes('Manager')) return 'Menejer';
+    return 'Kurator';
+  };
   const [form, setForm] = useState({
-    role: 'Kurator' as 'Kurator' | 'Manager',
+    role: 'Kurator' as StaffRole,
     name: '',
     username: '',
     email: '',
@@ -1800,10 +1923,11 @@ function UsersTab() {
             <label className="block text-xs font-medium text-gray-500 mb-1">Rol</label>
             <select
               value={form.role}
-              onChange={(e) => setForm({ ...form, role: e.target.value as 'Kurator' | 'Manager' })}
+              onChange={(e) => setForm({ ...form, role: e.target.value as StaffRole })}
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
             >
               <option value="Kurator">Kurator</option>
+              <option value="Bosh Kurator">Bosh Kurator</option>
               <option value="Manager">Menejer</option>
             </select>
           </div>
@@ -1903,7 +2027,7 @@ function UsersTab() {
                       placeholder="Ism kiriting"
                     />
                   </td>
-                  <td className="px-4 py-3 text-gray-700">{user.roles.includes('Manager') ? 'Menejer' : 'Kurator'}</td>
+                  <td className="px-4 py-3 text-gray-700">{getStaffRoleLabel(user.roles)}</td>
                   <td className="px-4 py-3 text-gray-700">{user.username ?? '-'}</td>
                   <td className="px-4 py-3 text-gray-700">{user.email ?? '-'}</td>
                   <td className="px-4 py-3 text-gray-700">{user.phone ?? '-'}</td>
@@ -1947,6 +2071,10 @@ function AssignmentsTab() {
   const { data: courses } = trpc.settings.listCourses.useQuery();
   const { data: courseRuns, isLoading: courseRunsLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: kurators } = trpc.settings.listKurators.useQuery();
+  const getKuratorLabel = (kurator: { name?: string | null; username?: string | null; roles?: string[] }) => {
+    const name = kurator.name ?? kurator.username ?? 'Kurator';
+    return kurator.roles?.includes('Bosh Kurator') ? `${name} (Bosh Kurator)` : name;
+  };
 
   const filteredRuns = useMemo(
     () => (courseRuns ?? []).filter((run) => !selectedCourseId || run.courseId === selectedCourseId),
@@ -2057,7 +2185,7 @@ function AssignmentsTab() {
             <option value="">Kuratorni tanlang...</option>
             {kurators?.map((kurator) => (
               <option key={kurator.id} value={kurator.id}>
-                {kurator.name ?? kurator.username}
+                {getKuratorLabel(kurator)}
               </option>
             ))}
           </select>
