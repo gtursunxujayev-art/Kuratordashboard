@@ -1327,7 +1327,6 @@ export const settingsRouter = router({
             isActive: true,
             ...(withVisibilityColumns ? { startDate: true, isHidden: true } : {}),
             createdAt: true,
-            updatedAt: true,
             colorPoints: {
               select: {
                 id: true,
@@ -1353,7 +1352,7 @@ export const settingsRouter = router({
         });
 
       let supportsVisibilityColumns = true;
-      let rows: Awaited<ReturnType<typeof loadDefinitions>>;
+      let rows: any[];
 
       try {
         rows = await loadDefinitions(true);
@@ -1369,7 +1368,7 @@ export const settingsRouter = router({
         ...row,
         startDate: supportsVisibilityColumns ? (row as any).startDate : null,
         isHidden: supportsVisibilityColumns ? Boolean((row as any).isHidden) : false,
-        colorPoints: row.colorPoints.sort((left, right) => {
+        colorPoints: row.colorPoints.sort((left: any, right: any) => {
           const leftOrder = left.colorOption.orderIndex ?? 0;
           const rightOrder = right.colorOption.orderIndex ?? 0;
           if (leftOrder !== rightOrder) return leftOrder - rightOrder;
