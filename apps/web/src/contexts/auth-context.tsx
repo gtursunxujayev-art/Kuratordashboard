@@ -4,7 +4,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { useRouter } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 
-export type UserRole = 'Admin' | 'Manager' | 'Kurator' | 'Agent' | 'Finance' | 'Tashkiliy';
+export type UserRole = 'Admin' | 'Manager' | 'Kurator' | 'Bosh Kurator' | 'Agent' | 'Finance' | 'Tashkiliy';
 
 export interface AuthUser {
   userId: string;
@@ -121,8 +121,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         logout,
         isAdmin: user?.roles.includes('Admin') ?? false,
-        isManager: user?.roles.some((r) => r === 'Admin' || r === 'Manager') ?? false,
-        isKurator: user?.roles.includes('Kurator') ?? false,
+        isManager: user?.roles.some((r) => r === 'Admin' || r === 'Manager' || r === 'Bosh Kurator') ?? false,
+        isKurator: user?.roles.some((r) => r === 'Kurator' || r === 'Bosh Kurator') ?? false,
       }}
     >
       {children}
