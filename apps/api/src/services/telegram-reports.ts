@@ -56,9 +56,9 @@ export type TenantReport = {
   courseSections: CourseMatrixSection[];
 };
 
-type AllowedLinkRole = 'Admin' | 'Manager' | 'Kurator';
-const ALLOWED_LINK_ROLES: AllowedLinkRole[] = ['Admin', 'Manager', 'Kurator'];
-const ADMIN_MANAGER_ROLES: Array<'Admin' | 'Manager'> = ['Admin', 'Manager'];
+type AllowedLinkRole = 'Admin' | 'Manager' | 'Kurator' | 'Bosh Kurator';
+const ALLOWED_LINK_ROLES: AllowedLinkRole[] = ['Admin', 'Manager', 'Kurator', 'Bosh Kurator'];
+const ADMIN_MANAGER_ROLES: Array<'Admin' | 'Manager' | 'Bosh Kurator'> = ['Admin', 'Manager', 'Bosh Kurator'];
 
 function hasAllowedLinkRole(roles: string[]): boolean {
   return roles.some((role) => ALLOWED_LINK_ROLES.includes(role as AllowedLinkRole));
@@ -305,7 +305,7 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
       : { isActive: true, startDate: { lte: period.to } };
     const [kurators, assignments] = await Promise.all([
       prisma.user.findMany({
-        where: { tenantId, roles: { has: 'Kurator' }, isActive: true },
+        where: { tenantId, roles: { hasSome: ['Kurator', 'Bosh Kurator'] }, isActive: true },
         select: { id: true, name: true, username: true },
         orderBy: [{ name: 'asc' }, { username: 'asc' }],
       }),
@@ -542,7 +542,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
   for (const course of eligibleCourses) {
     const [practices, activeRuns] = await Promise.all([
       prisma.exerciseDefinition.findMany({
-        where: { tenantId, courseId: course.id, isActive: true },
+        where: { tenantId, courseId: course.id, isActive: true, isHidden: false },
         select: { id: true, name: true, type: true },
         orderBy: [{ orderIndex: 'asc' }, { name: 'asc' }],
       }),
@@ -550,6 +550,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
         where: {
           tenantId,
           courseId: course.id,
+          isHidden: false,
           startDate: { lte: period.to },
           endDate: { gte: period.from },
         },
@@ -1677,7 +1678,7 @@ export async function sendTelegramTestReport(
     },
     select: { id: true, roles: true },
   });
-  if (!user || !user.roles.some((role) => role === 'Admin' || role === 'Manager')) {
+  if (!user || !user.roles.some((role) => role === 'Admin' || role === 'Manager' || role === 'Bosh Kurator')) {
     throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat faol admin yoki menejer test yubora oladi" });
   }
 
