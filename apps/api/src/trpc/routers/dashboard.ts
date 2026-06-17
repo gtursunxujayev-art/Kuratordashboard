@@ -33,6 +33,18 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseRunHiddenColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return (
+      (message.includes('course_runs.ishidden') || message.includes('courserun.ishidden'))
+      && message.includes('does not exist')
+    );
+  }
+  return message.includes('course_runs.ishidden') || message.includes('courserun.ishidden');
+}
+
 function isMissingCourseEndDateColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1906,12 +1918,42 @@ export const dashboardRouter = router({
     }),
 
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
-    try {
-      return await prisma.courseRun.findMany({
-        where: { tenantId: ctx.tenantId, isHidden: false, course: { isActive: true } },
-        include: { course: { select: { name: true, category: true, isActive: true } } },
+    const loadRuns = (withHiddenColumn: boolean) =>
+      prisma.courseRun.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          ...(withHiddenColumn ? { isHidden: false } : {}),
+          course: { isActive: true },
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          courseId: true,
+          name: true,
+          startDate: true,
+          endDate: true,
+          durationWeeks: true,
+          baseLessons: true,
+          premiumExtraLessons: true,
+          kuratorUserId: true,
+          ...(withHiddenColumn ? { isHidden: true } : {}),
+          createdAt: true,
+          updatedAt: true,
+          course: { select: { name: true, category: true, isActive: true } },
+        },
         orderBy: { startDate: 'desc' },
       });
+
+    try {
+      try {
+        return await loadRuns(true);
+      } catch (error) {
+        if (!isMissingCourseRunHiddenColumnError(error)) {
+          throw error;
+        }
+        const runs = await loadRuns(false);
+        return runs.map((run) => ({ ...run, isHidden: false }));
+      }
     } catch (error) {
       if (!isMissingCourseRunsTableError(error)) {
         throw error;
