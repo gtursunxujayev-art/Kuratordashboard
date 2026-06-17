@@ -5,7 +5,7 @@ import { TRPCError } from '@trpc/server';
 import { verifyPassword } from '../../services/auth/password';
 import { signJWT } from '../../services/auth/jwt';
 
-const KD_ALLOWED_ROLES = ['Admin', 'Manager', 'Kurator'] as const;
+const KD_ALLOWED_ROLES = ['Admin', 'Manager', 'Kurator', 'Bosh Kurator'] as const;
 
 type LoginUserCandidate = {
   id: string;
