@@ -20,6 +20,8 @@ const scheduleTemplateSchema = z.object({
 });
 
 const SCHEDULE_TEMPLATES_SETTINGS_KEY = 'scheduleTemplates';
+const KURATOR_ASSIGNABLE_ROLES = ['Kurator', 'Bosh Kurator'] as const;
+const STAFF_MANAGED_ROLES = ['Manager', 'Kurator', 'Bosh Kurator'] as const;
 
 type ScheduleTemplateFallbackRow = {
   id: string;
@@ -43,6 +45,23 @@ function toIntOrDefault(value: unknown, fallback: number): number {
 function toDateOrNow(value: unknown): Date {
   const d = value instanceof Date ? value : new Date(String(value || ''));
   return Number.isNaN(d.getTime()) ? new Date() : d;
+}
+
+function isAssignableKuratorWhere() {
+  return { hasSome: [...KURATOR_ASSIGNABLE_ROLES] };
+}
+
+function isManagedStaffWhere() {
+  return { hasSome: [...STAFF_MANAGED_ROLES] };
+}
+
+function ensureEndedForHide(endDate: Date): void {
+  if (endDate.getTime() >= Date.now()) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Faqat tugagan oqimni yashirish mumkin',
+    });
+  }
 }
 
 function readScheduleTemplatesFromSettings(
@@ -399,7 +418,7 @@ export const settingsRouter = router({
     return prisma.user.findMany({
       where: {
         tenantId: ctx.tenantId,
-        roles: { hasSome: ['Manager', 'Kurator'] },
+        roles: isManagedStaffWhere(),
       },
       select: {
         id: true,
@@ -419,7 +438,7 @@ export const settingsRouter = router({
   createStaffUser: adminProcedure
     .input(
       z.object({
-        role: z.enum(['Manager', 'Kurator']),
+        role: z.enum(['Manager', 'Kurator', 'Bosh Kurator']),
         name: z.string().max(160).optional(),
         username: z.string().max(80).optional(),
         email: z.string().email().max(160).optional(),
@@ -492,7 +511,7 @@ export const settingsRouter = router({
         where: {
           id: input.userId,
           tenantId: ctx.tenantId,
-          roles: { hasSome: ['Manager', 'Kurator'] },
+          roles: isManagedStaffWhere(),
         },
         select: { id: true },
       });
@@ -1061,6 +1080,33 @@ export const settingsRouter = router({
       }
     }),
 
+  setCourseRunHidden: adminProcedure
+    .input(
+      z.object({
+        courseRunId: z.string(),
+        isHidden: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.courseRun.findFirst({
+        where: { id: input.courseRunId, tenantId: ctx.tenantId },
+        select: { id: true, endDate: true },
+      });
+
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+
+      if (input.isHidden) {
+        ensureEndedForHide(existing.endDate);
+      }
+
+      return prisma.courseRun.update({
+        where: { id: existing.id },
+        data: { isHidden: input.isHidden, updatedAt: new Date() },
+      });
+    }),
+
   deleteCourseRun: managerProcedure
     .input(z.object({ courseRunId: z.string() }))
     .mutation(async ({ ctx, input }) => {
@@ -1191,7 +1237,7 @@ export const settingsRouter = router({
     }),
 
   listExerciseDefinitions: protectedProcedure
-    .input(z.object({ courseId: z.string() }))
+    .input(z.object({ courseId: z.string(), includeHidden: z.boolean().optional().default(false) }))
     .query(async ({ ctx, input }) => {
       const course = await prisma.course.findFirst({
         where: { id: input.courseId, tenantId: ctx.tenantId },
@@ -1202,7 +1248,11 @@ export const settingsRouter = router({
       }
 
       return prisma.exerciseDefinition.findMany({
-        where: { tenantId: ctx.tenantId, courseId: input.courseId },
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: input.courseId,
+          ...(input.includeHidden ? {} : { isHidden: false }),
+        },
         include: {
           colorPoints: {
             include: {
@@ -1239,6 +1289,7 @@ export const settingsRouter = router({
         name: z.string().min(1).max(200),
         type: z.enum(['class', 'homework', 'extra']),
         targetCount: z.number().int().min(1).max(100),
+        startDate: z.string().optional(),
         orderIndex: z.number().int().min(0).default(0),
         colorPoints: z.array(
           z.object({
@@ -1299,6 +1350,7 @@ export const settingsRouter = router({
               name: input.name,
               type: input.type,
               targetCount: input.targetCount,
+              startDate: input.startDate ? parseLocalDateInput(input.startDate, "Mashq boshlanish sanasi") : null,
               orderIndex: input.orderIndex,
             },
           });
@@ -1331,6 +1383,7 @@ export const settingsRouter = router({
         name: z.string().min(1).max(200).optional(),
         type: z.enum(['class', 'homework', 'extra']).optional(),
         targetCount: z.number().int().min(1).max(100).optional(),
+        startDate: z.string().nullable().optional(),
         orderIndex: z.number().int().min(0).optional(),
         isActive: z.boolean().optional(),
         colorPoints: z.array(
@@ -1358,10 +1411,16 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
       }
 
-      const { id, colorPoints, ...data } = input;
+      const { id, colorPoints, startDate, ...data } = input;
+      const updateData = {
+        ...data,
+        ...(startDate !== undefined
+          ? { startDate: startDate ? parseLocalDateInput(startDate, "Mashq boshlanish sanasi") : null }
+          : {}),
+      };
 
       if (!colorPoints) {
-        return prisma.exerciseDefinition.update({ where: { id }, data });
+        return prisma.exerciseDefinition.update({ where: { id }, data: updateData });
       }
 
       const existingPointMap = new Map(existing.colorPoints.map((row) => [row.colorOptionId, row.points]));
@@ -1374,7 +1433,7 @@ export const settingsRouter = router({
 
       // Avoid unnecessary rewrite of mapping rows when only metadata (e.g. orderIndex) changes.
       if (colorPointsUnchanged) {
-        return prisma.exerciseDefinition.update({ where: { id }, data });
+        return prisma.exerciseDefinition.update({ where: { id }, data: updateData });
       }
 
       const activeColorOptions = await prisma.exerciseColorOption.findMany({
@@ -1404,7 +1463,7 @@ export const settingsRouter = router({
 
       try {
         await prisma.$transaction(async (tx) => {
-          await tx.exerciseDefinition.update({ where: { id }, data });
+          await tx.exerciseDefinition.update({ where: { id }, data: updateData });
           await tx.exerciseDefinitionColorPoint.deleteMany({
             where: { tenantId: ctx.tenantId, exerciseDefinitionId: id },
           });
@@ -1427,10 +1486,51 @@ export const settingsRouter = router({
       return prisma.exerciseDefinition.findUniqueOrThrow({ where: { id } });
     }),
 
+  setExerciseDefinitionHidden: adminProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        isHidden: z.boolean(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.exerciseDefinition.findFirst({
+        where: { id: input.id, tenantId: ctx.tenantId },
+        select: { id: true, courseId: true },
+      });
+
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
+      if (input.isHidden) {
+        const activeRun = await prisma.courseRun.findFirst({
+          where: {
+            tenantId: ctx.tenantId,
+            courseId: existing.courseId,
+            isHidden: false,
+            endDate: { gte: new Date() },
+          },
+          select: { id: true },
+        });
+        if (activeRun) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Faol yoki kelajakdagi oqim bor kurs mashqini yashirib bo\'lmaydi',
+          });
+        }
+      }
+
+      return prisma.exerciseDefinition.update({
+        where: { id: existing.id },
+        data: { isHidden: input.isHidden },
+      });
+    }),
+
   listKurators: protectedProcedure.query(async ({ ctx }) => {
     return prisma.user.findMany({
-      where: { tenantId: ctx.tenantId, roles: { has: 'Kurator' }, isActive: true },
-      select: { id: true, name: true, username: true, email: true, phone: true },
+      where: { tenantId: ctx.tenantId, roles: isAssignableKuratorWhere(), isActive: true },
+      select: { id: true, name: true, username: true, email: true, phone: true, roles: true },
       orderBy: [{ name: 'asc' }, { username: 'asc' }],
     });
   }),
@@ -1449,7 +1549,7 @@ export const settingsRouter = router({
           where: {
             id: input.kuratorUserId,
             tenantId: ctx.tenantId,
-            roles: { has: 'Kurator' },
+            roles: isAssignableKuratorWhere(),
             isActive: true,
           },
           select: { id: true },
@@ -1543,7 +1643,7 @@ export const settingsRouter = router({
         where: {
           id: input.kuratorUserId,
           tenantId: ctx.tenantId,
-          roles: { has: 'Kurator' },
+          roles: isAssignableKuratorWhere(),
           isActive: true,
         },
         select: { id: true },
@@ -1828,7 +1928,7 @@ export const settingsRouter = router({
           where: {
             id: input.kuratorUserId,
             tenantId: ctx.tenantId,
-            roles: { has: 'Kurator' },
+            roles: isAssignableKuratorWhere(),
             isActive: true,
           },
           select: { id: true },
