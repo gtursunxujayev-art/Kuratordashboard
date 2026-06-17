@@ -76,7 +76,11 @@ function isMissingOptionalPerformanceSchemaError(error: unknown): boolean {
 }
 
 function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager');
+  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
+}
+
+function hasKuratorRole(roles: string[]): boolean {
+  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
 }
 
 function getDatePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
@@ -156,7 +160,7 @@ async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Pro
 
     const selectedRun = courseRunId
       ? await prisma.courseRun.findFirst({
-          where: { id: courseRunId, tenantId },
+          where: { id: courseRunId, tenantId, isHidden: false },
           select: { startDate: true, endDate: true },
         })
       : null;
@@ -166,6 +170,7 @@ async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Pro
       : await prisma.courseRun.findFirst({
           where: {
             tenantId,
+            isHidden: false,
             startDate: { lte: now },
             endDate: { gte: now },
           },
@@ -175,7 +180,7 @@ async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Pro
 
     const latestRun = selectedRun || fallbackRun ||
       (await prisma.courseRun.findFirst({
-        where: { tenantId },
+        where: { tenantId, isHidden: false },
         orderBy: { startDate: 'desc' },
         select: { startDate: true, endDate: true },
       }));
@@ -313,7 +318,7 @@ async function getRoleScopedCustomerIds(
   user: { userId: string; roles: string[] },
   courseRunId?: string,
 ): Promise<string[] | undefined> {
-  const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
+  const kuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
   if (!kuratorOnly && !courseRunId) return undefined;
 
   if (kuratorOnly) {
@@ -330,11 +335,11 @@ async function getRoleScopedCustomerIds(
   // happened after the kurator attached).
   const [assignments, run] = await Promise.all([
     prisma.kuratorAssignment.findMany({
-      where: { tenantId, isActive: true, courseRunId },
+      where: { tenantId, isActive: true, courseRunId, courseRun: { isHidden: false } },
       select: { customerId: true },
     }),
     prisma.courseRun.findFirst({
-      where: { tenantId, id: courseRunId },
+      where: { tenantId, id: courseRunId, isHidden: false },
       select: { courseId: true, kuratorUserId: true },
     }),
   ]);
@@ -773,7 +778,7 @@ export const dashboardRouter = router({
         prisma.user.findMany({
           where: {
             tenantId,
-            roles: { has: 'Kurator' },
+            roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
             isActive: true,
             ...(!adminOrManager ? { id: user.userId } : {}),
           },
@@ -787,6 +792,7 @@ export const dashboardRouter = router({
           where: {
             tenantId,
             isActive: true,
+            courseRun: { isHidden: false },
             ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
             ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
             ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
@@ -800,6 +806,7 @@ export const dashboardRouter = router({
       const ownedRuns = await prisma.courseRun.findMany({
         where: {
           tenantId,
+          isHidden: false,
           kuratorUserId: { not: null },
           ...(input.courseRunId ? { id: input.courseRunId } : {}),
           ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
@@ -1001,7 +1008,7 @@ export const dashboardRouter = router({
     )
     .query(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const kuratorOnly = user.roles.includes('Kurator') && !isAdminOrManager(user.roles);
+      const kuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
       if (kuratorOnly) {
         const assignment = await prisma.kuratorAssignment.findFirst({
           where: {
@@ -1168,6 +1175,7 @@ export const dashboardRouter = router({
             where: {
               tenantId,
               customerId: input.customerId,
+              exerciseDefinition: { isHidden: false },
               ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
             },
             select: {
@@ -1196,9 +1204,9 @@ export const dashboardRouter = router({
         }
       }
 
-      const [homeworkDefinitions, completedHomeworkCount] = await Promise.all([
+        const [homeworkDefinitions, completedHomeworkCount] = await Promise.all([
         prisma.exerciseDefinition.findMany({
-          where: homeworkDefinitionsWhere as any,
+          where: { ...(homeworkDefinitionsWhere as any), isHidden: false },
           select: { targetCount: true },
         }),
         prisma.studentExerciseLog.count({
@@ -1259,7 +1267,7 @@ export const dashboardRouter = router({
         where: {
           id: input.kuratorUserId,
           tenantId,
-          roles: { has: 'Kurator' },
+          roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
           isActive: true,
         },
         select: { id: true, name: true, username: true, phone: true, email: true },
@@ -1389,6 +1397,7 @@ export const dashboardRouter = router({
         : await prisma.courseRun.findFirst({
             where: {
               tenantId,
+              isHidden: false,
               courseId: input.courseId,
             },
             select: {
@@ -1552,6 +1561,7 @@ export const dashboardRouter = router({
           tenantId,
           courseId: input.courseId,
           isActive: true,
+          isHidden: false,
         },
         select: {
           id: true,
@@ -1898,7 +1908,7 @@ export const dashboardRouter = router({
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
     try {
       return await prisma.courseRun.findMany({
-        where: { tenantId: ctx.tenantId, course: { isActive: true } },
+        where: { tenantId: ctx.tenantId, isHidden: false, course: { isActive: true } },
         include: { course: { select: { name: true, category: true, isActive: true } } },
         orderBy: { startDate: 'desc' },
       });
