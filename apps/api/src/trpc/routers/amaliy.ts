@@ -1130,19 +1130,6 @@ export const amaliyRouter = router({
         }
       }
 
-      const enrollment = await prisma.income.findFirst({
-        where: {
-          tenantId,
-          customerId: input.customerId,
-          courseId: definition.courseId,
-          ...ACTIVE_ENROLLMENT_FILTER,
-        },
-        select: { id: true },
-      });
-      if (!enrollment) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu mashq kursiga biriktirilmagan" });
-      }
-
       const date = parseDateInput(input.date);
       const classDay = isClassDay(date);
       const courseRun = await getCourseRunForDate(tenantId, date, input.courseRunId);
@@ -1160,6 +1147,19 @@ export const amaliyRouter = router({
             isPremiumEligible: false,
           },
         };
+      }
+
+      const enrollment = await prisma.income.findFirst({
+        where: {
+          tenantId,
+          customerId: input.customerId,
+          courseId: courseRun.courseId,
+          ...ACTIVE_ENROLLMENT_FILTER,
+        },
+        select: { id: true },
+      });
+      if (!enrollment) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu mashq kursiga biriktirilmagan" });
       }
 
       const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId);
