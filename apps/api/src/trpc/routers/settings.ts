@@ -169,6 +169,40 @@ function isMissingCourseStartDateColumnError(error: unknown): boolean {
   return message.includes('courses.startdate');
 }
 
+function isMissingCourseRunHiddenColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return (
+      (message.includes('course_runs.ishidden') || message.includes('courserun.ishidden'))
+      && message.includes('does not exist')
+    );
+  }
+  return message.includes('course_runs.ishidden') || message.includes('courserun.ishidden');
+}
+
+function isMissingExerciseDefinitionVisibilityColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return (
+      (
+        message.includes('exercise_definitions.ishidden')
+        || message.includes('exercisedefinition.ishidden')
+        || message.includes('exercise_definitions.startdate')
+        || message.includes('exercisedefinition.startdate')
+      )
+      && message.includes('does not exist')
+    );
+  }
+  return (
+    message.includes('exercise_definitions.ishidden')
+    || message.includes('exercisedefinition.ishidden')
+    || message.includes('exercise_definitions.startdate')
+    || message.includes('exercisedefinition.startdate')
+  );
+}
+
 function isMissingCourseScheduleTemplatesTableError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -754,15 +788,42 @@ export const settingsRouter = router({
     }),
 
   listCourseRuns: protectedProcedure.query(async ({ ctx }) => {
-    try {
-      const runs = await prisma.courseRun.findMany({
+    const loadRuns = (withHiddenColumn: boolean) =>
+      prisma.courseRun.findMany({
         where: { tenantId: ctx.tenantId },
-        include: {
+        select: {
+          id: true,
+          tenantId: true,
+          courseId: true,
+          name: true,
+          startDate: true,
+          endDate: true,
+          durationWeeks: true,
+          baseLessons: true,
+          premiumExtraLessons: true,
+          kuratorUserId: true,
+          ...(withHiddenColumn ? { isHidden: true } : {}),
+          createdAt: true,
+          updatedAt: true,
           course: { select: { name: true, category: true } },
           kurator: { select: { id: true, name: true, username: true } },
         },
         orderBy: { startDate: 'desc' },
       });
+
+    try {
+      let supportsHiddenColumn = true;
+      let runs: Awaited<ReturnType<typeof loadRuns>>;
+
+      try {
+        runs = await loadRuns(true);
+      } catch (error) {
+        if (!isMissingCourseRunHiddenColumnError(error)) {
+          throw error;
+        }
+        supportsHiddenColumn = false;
+        runs = await loadRuns(false);
+      }
 
       return Promise.all(
         runs.map(async (run) => {
@@ -776,6 +837,7 @@ export const settingsRouter = router({
 
           return {
             ...run,
+            isHidden: supportsHiddenColumn ? Boolean((run as any).isHidden) : false,
             studentCount,
           };
         }),
@@ -1247,39 +1309,73 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
       }
 
-      return prisma.exerciseDefinition.findMany({
-        where: {
-          tenantId: ctx.tenantId,
-          courseId: input.courseId,
-          ...(input.includeHidden ? {} : { isHidden: false }),
-        },
-        include: {
-          colorPoints: {
-            include: {
-              colorOption: {
-                select: {
-                  id: true,
-                  label: true,
-                  colorHex: true,
-                  isActive: true,
-                  orderIndex: true,
+      const loadDefinitions = (withVisibilityColumns: boolean) =>
+        prisma.exerciseDefinition.findMany({
+          where: {
+            tenantId: ctx.tenantId,
+            courseId: input.courseId,
+            ...(withVisibilityColumns && !input.includeHidden ? { isHidden: false } : {}),
+          },
+          select: {
+            id: true,
+            tenantId: true,
+            courseId: true,
+            name: true,
+            type: true,
+            targetCount: true,
+            orderIndex: true,
+            isActive: true,
+            ...(withVisibilityColumns ? { startDate: true, isHidden: true } : {}),
+            createdAt: true,
+            updatedAt: true,
+            colorPoints: {
+              select: {
+                id: true,
+                tenantId: true,
+                exerciseDefinitionId: true,
+                colorOptionId: true,
+                points: true,
+                createdAt: true,
+                updatedAt: true,
+                colorOption: {
+                  select: {
+                    id: true,
+                    label: true,
+                    colorHex: true,
+                    isActive: true,
+                    orderIndex: true,
+                  },
                 },
               },
             },
           },
-        },
-        orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }],
-      }).then((rows) =>
-        rows.map((row) => ({
-          ...row,
-          colorPoints: row.colorPoints.sort((left, right) => {
-            const leftOrder = left.colorOption.orderIndex ?? 0;
-            const rightOrder = right.colorOption.orderIndex ?? 0;
-            if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-            return left.colorOption.label.localeCompare(right.colorOption.label);
-          }),
-        })),
-      );
+          orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }],
+        });
+
+      let supportsVisibilityColumns = true;
+      let rows: Awaited<ReturnType<typeof loadDefinitions>>;
+
+      try {
+        rows = await loadDefinitions(true);
+      } catch (error) {
+        if (!isMissingExerciseDefinitionVisibilityColumnError(error)) {
+          throw error;
+        }
+        supportsVisibilityColumns = false;
+        rows = await loadDefinitions(false);
+      }
+
+      return rows.map((row) => ({
+        ...row,
+        startDate: supportsVisibilityColumns ? (row as any).startDate : null,
+        isHidden: supportsVisibilityColumns ? Boolean((row as any).isHidden) : false,
+        colorPoints: row.colorPoints.sort((left, right) => {
+          const leftOrder = left.colorOption.orderIndex ?? 0;
+          const rightOrder = right.colorOption.orderIndex ?? 0;
+          if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+          return left.colorOption.label.localeCompare(right.colorOption.label);
+        }),
+      }));
     }),
 
   addExerciseDefinition: managerProcedure
