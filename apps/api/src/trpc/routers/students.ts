@@ -9,6 +9,14 @@ const ACTIVE_ENROLLMENT_FILTER = {
   lifecycleStatus: 'active' as const,
 };
 
+function isAdminOrManager(roles: string[]): boolean {
+  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
+}
+
+function hasKuratorRole(roles: string[]): boolean {
+  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
+}
+
 type CustomerColumnSupport = {
   telegramUsername: boolean;
   gender: boolean;
@@ -181,9 +189,8 @@ export const studentsRouter = router({
       const { tenantId, user } = ctx;
       let columnSupport = await getCustomerColumnSupport();
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       let scopedCustomerIds: string[] | undefined;
       let courseRunCourseId: string | undefined;
@@ -191,7 +198,7 @@ export const studentsRouter = router({
       if (input.courseRunId) {
         const selectedRun = await prisma.courseRun
           .findFirst({
-            where: { id: input.courseRunId, tenantId },
+            where: { id: input.courseRunId, tenantId, isHidden: false },
             select: { courseId: true },
           })
           .catch((error) => {
@@ -279,7 +286,7 @@ export const studentsRouter = router({
           input.courseRunId
             ? prisma.courseRun
                 .findFirst({
-                  where: { id: input.courseRunId, tenantId },
+                  where: { id: input.courseRunId, tenantId, isHidden: false },
                   select: { id: true, baseLessons: true, premiumExtraLessons: true },
                 })
                 .catch((error) => {
@@ -348,7 +355,7 @@ export const studentsRouter = router({
         let exerciseDefs: Array<{ id: string; name: string; targetCount: number }> = [];
         try {
           exerciseDefs = await prisma.exerciseDefinition.findMany({
-            where: { tenantId, courseId: courseRunCourseId, isActive: true },
+            where: { tenantId, courseId: courseRunCourseId, isActive: true, isHidden: false },
             select: { id: true, name: true, targetCount: true },
             orderBy: { orderIndex: 'asc' },
           });
@@ -489,9 +496,8 @@ export const studentsRouter = router({
       const { tenantId, user } = ctx;
       let columnSupport = await getCustomerColumnSupport();
       const isKurator =
-        user.roles.includes('Kurator') &&
-        !user.roles.includes('Admin') &&
-        !user.roles.includes('Manager');
+        hasKuratorRole(user.roles) &&
+        !isAdminOrManager(user.roles);
 
       if (isKurator) {
         const allowed = await kuratorCanAccessCustomer({
@@ -627,7 +633,7 @@ export const studentsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const canEdit = user.roles.includes('Admin') || user.roles.includes('Manager');
+      const canEdit = isAdminOrManager(user.roles);
       if (!canEdit) {
         throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
       }
