@@ -45,6 +45,18 @@ function isMissingCourseRunHiddenColumnError(error: unknown): boolean {
   return message.includes('course_runs.ishidden') || message.includes('courserun.ishidden');
 }
 
+function isMissingExerciseDefinitionHiddenColumnError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return (
+      (message.includes('exercise_definitions.ishidden') || message.includes('exercisedefinition.ishidden'))
+      && message.includes('does not exist')
+    );
+  }
+  return message.includes('exercise_definitions.ishidden') || message.includes('exercisedefinition.ishidden');
+}
+
 function isMissingCourseEndDateColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -1568,21 +1580,32 @@ export const dashboardRouter = router({
         ? assignedStudentIds.filter((customerId) => latestTariffByStudent.get(customerId)?.tariffId === input.tariffId)
         : assignedStudentIds;
 
-      const practices = await prisma.exerciseDefinition.findMany({
-        where: {
-          tenantId,
-          courseId: input.courseId,
-          isActive: true,
-          isHidden: false,
-        },
-        select: {
-          id: true,
-          name: true,
-          type: true,
-          orderIndex: true,
-        },
-        orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
-      });
+      const loadPractices = (withHiddenFilter: boolean) =>
+        prisma.exerciseDefinition.findMany({
+          where: {
+            tenantId,
+            courseId: input.courseId,
+            isActive: true,
+            ...(withHiddenFilter ? { isHidden: false } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            orderIndex: true,
+          },
+          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+        });
+
+      let practices: Awaited<ReturnType<typeof loadPractices>>;
+      try {
+        practices = await loadPractices(true);
+      } catch (error) {
+        if (!isMissingExerciseDefinitionHiddenColumnError(error)) {
+          throw error;
+        }
+        practices = await loadPractices(false);
+      }
 
       const students = filteredStudentIds.length
         ? await prisma.customer.findMany({
