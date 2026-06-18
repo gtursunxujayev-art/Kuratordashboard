@@ -172,12 +172,21 @@ async function resolveCourseRunCustomerIds(params: {
   const { tenantId, courseRunId, courseId } = params;
 
   try {
-    const explicitMembers = await prisma.courseRunMember.findMany({
-      where: { tenantId, courseRunId },
-      select: { customerId: true },
-    });
-    if (explicitMembers.length > 0) {
-      return explicitMembers.map((row) => row.customerId);
+    const [explicitMembers, legacyAssignments] = await Promise.all([
+      prisma.courseRunMember.findMany({
+        where: { tenantId, courseRunId },
+        select: { customerId: true },
+      }),
+      prisma.kuratorAssignment.findMany({
+        where: { tenantId, courseRunId, isActive: true },
+        select: { customerId: true },
+      }),
+    ]);
+    const attachedCustomerIds = new Set<string>();
+    for (const row of explicitMembers) attachedCustomerIds.add(row.customerId);
+    for (const row of legacyAssignments) attachedCustomerIds.add(row.customerId);
+    if (attachedCustomerIds.size > 0) {
+      return Array.from(attachedCustomerIds);
     }
   } catch (error) {
     if (!isMissingCourseRunMembersTableError(error)) {
