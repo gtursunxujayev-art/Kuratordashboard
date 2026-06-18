@@ -1416,24 +1416,35 @@ export const dashboardRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
       }
 
-      const latestRunForCourse = selectedRun
-        ? selectedRun
-        : await prisma.courseRun.findFirst({
-            where: {
-              tenantId,
-              isHidden: false,
-              courseId: input.courseId,
-            },
-            select: {
-              id: true,
-              name: true,
-              courseId: true,
-              startDate: true,
-              endDate: true,
-              kuratorUserId: true,
-            },
-            orderBy: { startDate: 'desc' },
-          });
+      const loadLatestRunForCourse = (withHiddenFilter: boolean) =>
+        prisma.courseRun.findFirst({
+          where: {
+            tenantId,
+            courseId: input.courseId,
+            ...(withHiddenFilter ? { isHidden: false } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            kuratorUserId: true,
+          },
+          orderBy: { startDate: 'desc' },
+        });
+
+      let latestRunForCourse = selectedRun;
+      if (!latestRunForCourse) {
+        try {
+          latestRunForCourse = await loadLatestRunForCourse(true);
+        } catch (error) {
+          if (!isMissingCourseRunHiddenColumnError(error)) {
+            throw error;
+          }
+          latestRunForCourse = await loadLatestRunForCourse(false);
+        }
+      }
 
       const todayStart = startOfDayLocal(new Date());
       const courseStart = course.startDate ? startOfDayLocal(course.startDate) : null;
