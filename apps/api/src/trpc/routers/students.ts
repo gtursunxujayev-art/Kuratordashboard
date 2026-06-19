@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import {
+  visibleCourseRunWhere,
+  visibleExerciseDefinitionWhere,
+  withCourseRunVisibilityFallback,
+  withExerciseDefinitionVisibilityFallback,
+} from '../../utils/prisma-visibility';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -196,11 +202,16 @@ export const studentsRouter = router({
       let courseRunCourseId: string | undefined;
 
       if (input.courseRunId) {
-        const selectedRun = await prisma.courseRun
-          .findFirst({
-            where: { id: input.courseRunId, tenantId, isHidden: false },
+        const selectedRun = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+          prisma.courseRun.findFirst({
+            where: {
+              id: input.courseRunId,
+              tenantId,
+              ...visibleCourseRunWhere(withHiddenColumn),
+            },
             select: { courseId: true },
-          })
+          }),
+        )
           .catch((error) => {
             if (isMissingCourseRunsTableError(error)) {
               return null;
@@ -284,11 +295,16 @@ export const studentsRouter = router({
           }),
           prisma.customer.count({ where: effectiveWhere }),
           input.courseRunId
-            ? prisma.courseRun
-                .findFirst({
-                  where: { id: input.courseRunId, tenantId, isHidden: false },
+            ? withCourseRunVisibilityFallback((withHiddenColumn) =>
+                prisma.courseRun.findFirst({
+                  where: {
+                    id: input.courseRunId,
+                    tenantId,
+                    ...visibleCourseRunWhere(withHiddenColumn),
+                  },
                   select: { id: true, baseLessons: true, premiumExtraLessons: true },
-                })
+                }),
+              )
                 .catch((error) => {
                   if (isMissingCourseRunsTableError(error)) {
                     return null;
@@ -354,11 +370,18 @@ export const studentsRouter = router({
       if (input.courseRunId && courseRun && courseRunCourseId && customerIds.length > 0) {
         let exerciseDefs: Array<{ id: string; name: string; targetCount: number }> = [];
         try {
-          exerciseDefs = await prisma.exerciseDefinition.findMany({
-            where: { tenantId, courseId: courseRunCourseId, isActive: true, isHidden: false },
-            select: { id: true, name: true, targetCount: true },
-            orderBy: { orderIndex: 'asc' },
-          });
+          exerciseDefs = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+            prisma.exerciseDefinition.findMany({
+              where: {
+                tenantId,
+                courseId: courseRunCourseId,
+                isActive: true,
+                ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+              },
+              select: { id: true, name: true, targetCount: true },
+              orderBy: { orderIndex: 'asc' },
+            }),
+          );
         } catch (error) {
           if (!isMissingExerciseDefinitionCourseIdColumnError(error)) {
             throw error;
