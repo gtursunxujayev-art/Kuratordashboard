@@ -2,6 +2,12 @@ import crypto from 'crypto';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { renderReportPdf } from './telegram-report-pdf';
+import {
+  visibleCourseRunWhere,
+  visibleExerciseDefinitionWhere,
+  withCourseRunVisibilityFallback,
+  withExerciseDefinitionVisibilityFallback,
+} from '../utils/prisma-visibility';
 
 const TASHKENT_OFFSET_MINUTES = 5 * 60;
 const DEFAULT_TIMEZONE = 'Asia/Tashkent';
@@ -541,21 +547,30 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
 
   for (const course of eligibleCourses) {
     const [practices, activeRuns] = await Promise.all([
-      prisma.exerciseDefinition.findMany({
-        where: { tenantId, courseId: course.id, isActive: true, isHidden: false },
-        select: { id: true, name: true, type: true },
-        orderBy: [{ orderIndex: 'asc' }, { name: 'asc' }],
-      }),
-      prisma.courseRun.findMany({
-        where: {
-          tenantId,
-          courseId: course.id,
-          isHidden: false,
-          startDate: { lte: period.to },
-          endDate: { gte: period.from },
-        },
-        select: { id: true },
-      }),
+      withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+        prisma.exerciseDefinition.findMany({
+          where: {
+            tenantId,
+            courseId: course.id,
+            isActive: true,
+            ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+          },
+          select: { id: true, name: true, type: true },
+          orderBy: [{ orderIndex: 'asc' }, { name: 'asc' }],
+        }),
+      ),
+      withCourseRunVisibilityFallback((withHiddenColumn) =>
+        prisma.courseRun.findMany({
+          where: {
+            tenantId,
+            courseId: course.id,
+            ...visibleCourseRunWhere(withHiddenColumn),
+            startDate: { lte: period.to },
+            endDate: { gte: period.from },
+          },
+          select: { id: true },
+        }),
+      ),
     ]);
 
     const runIds = activeRuns.map((run) => run.id);
