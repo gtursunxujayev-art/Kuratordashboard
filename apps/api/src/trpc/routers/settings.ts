@@ -267,6 +267,14 @@ function throwMissingVisibilityMigrationError(): never {
   });
 }
 
+function throwMissingExerciseStartDateMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Mashq boshlanish sanasi uchun DB migratsiya qo'llanmagan (`exercise_definitions.startDate`). Avval migration deploy qiling.",
+  });
+}
+
 function throwMissingRegionsMigrationError(): never {
   throw new TRPCError({
     code: 'PRECONDITION_FAILED',
@@ -1519,17 +1527,78 @@ export const settingsRouter = router({
       let created;
       try {
         created = await prisma.$transaction(async (tx) => {
-          const definition = await tx.exerciseDefinition.create({
-            data: {
-              tenantId: ctx.tenantId,
-              courseId: course.id,
-              name: input.name,
-              type: input.type,
-              targetCount: input.targetCount,
-              startDate: input.startDate ? parseLocalDateInput(input.startDate, "Mashq boshlanish sanasi") : null,
-              orderIndex: input.orderIndex,
-            },
-          });
+          let supportsVisibilityColumns = true;
+          let definition: {
+            id: string;
+            tenantId: string;
+            courseId: string;
+            name: string;
+            type: string;
+            targetCount: number;
+            orderIndex: number;
+            isActive: boolean;
+            createdAt: Date;
+            startDate?: Date | null;
+            isHidden?: boolean;
+          };
+
+          try {
+            definition = await tx.exerciseDefinition.create({
+              data: {
+                tenantId: ctx.tenantId,
+                courseId: course.id,
+                name: input.name,
+                type: input.type,
+                targetCount: input.targetCount,
+                ...(input.startDate
+                  ? { startDate: parseLocalDateInput(input.startDate, "Mashq boshlanish sanasi") }
+                  : {}),
+                orderIndex: input.orderIndex,
+              },
+              select: {
+                id: true,
+                tenantId: true,
+                courseId: true,
+                name: true,
+                type: true,
+                targetCount: true,
+                orderIndex: true,
+                isActive: true,
+                startDate: true,
+                isHidden: true,
+                createdAt: true,
+              },
+            });
+          } catch (error) {
+            if (!isMissingExerciseDefinitionVisibilityColumnError(error)) {
+              throw error;
+            }
+            if (input.startDate) {
+              throwMissingExerciseStartDateMigrationError();
+            }
+            supportsVisibilityColumns = false;
+            definition = await tx.exerciseDefinition.create({
+              data: {
+                tenantId: ctx.tenantId,
+                courseId: course.id,
+                name: input.name,
+                type: input.type,
+                targetCount: input.targetCount,
+                orderIndex: input.orderIndex,
+              },
+              select: {
+                id: true,
+                tenantId: true,
+                courseId: true,
+                name: true,
+                type: true,
+                targetCount: true,
+                orderIndex: true,
+                isActive: true,
+                createdAt: true,
+              },
+            });
+          }
 
           await tx.exerciseDefinitionColorPoint.createMany({
             data: input.colorPoints.map((row) => ({
@@ -1540,7 +1609,11 @@ export const settingsRouter = router({
             })),
           });
 
-          return definition;
+          return {
+            ...definition,
+            startDate: supportsVisibilityColumns ? (definition.startDate ?? null) : null,
+            isHidden: supportsVisibilityColumns ? Boolean(definition.isHidden) : false,
+          };
         });
       } catch (error) {
         if (isIncorrectBinaryBindParameterError(error)) {
@@ -1588,15 +1661,51 @@ export const settingsRouter = router({
       }
 
       const { id, colorPoints, startDate, ...data } = input;
+      const hasStartDateInput = startDate !== undefined;
+      const updateDataWithoutStartDate = { ...data };
       const updateData = {
         ...data,
-        ...(startDate !== undefined
+        ...(hasStartDateInput
           ? { startDate: startDate ? parseLocalDateInput(startDate, "Mashq boshlanish sanasi") : null }
           : {}),
       };
+      const mutationSelect = (withVisibilityColumns: boolean) => ({
+        id: true,
+        tenantId: true,
+        courseId: true,
+        name: true,
+        type: true,
+        targetCount: true,
+        orderIndex: true,
+        isActive: true,
+        ...(withVisibilityColumns ? { startDate: true, isHidden: true } : {}),
+        createdAt: true,
+      });
+      const updateExerciseDefinitionMetadata = async (tx: any) => {
+        try {
+          return await tx.exerciseDefinition.update({
+            where: { id },
+            data: updateData,
+            select: mutationSelect(true),
+          });
+        } catch (error) {
+          if (!isMissingExerciseDefinitionVisibilityColumnError(error)) {
+            throw error;
+          }
+          if (hasStartDateInput) {
+            throwMissingExerciseStartDateMigrationError();
+          }
+          const updated = await tx.exerciseDefinition.update({
+            where: { id },
+            data: updateDataWithoutStartDate,
+            select: mutationSelect(false),
+          });
+          return { ...updated, startDate: null, isHidden: false };
+        }
+      };
 
       if (!colorPoints) {
-        return prisma.exerciseDefinition.update({ where: { id }, data: updateData });
+        return updateExerciseDefinitionMetadata(prisma);
       }
 
       const existingPointMap = new Map(existing.colorPoints.map((row) => [row.colorOptionId, row.points]));
@@ -1609,7 +1718,7 @@ export const settingsRouter = router({
 
       // Avoid unnecessary rewrite of mapping rows when only metadata (e.g. orderIndex) changes.
       if (colorPointsUnchanged) {
-        return prisma.exerciseDefinition.update({ where: { id }, data: updateData });
+        return updateExerciseDefinitionMetadata(prisma);
       }
 
       const activeColorOptions = await prisma.exerciseColorOption.findMany({
@@ -1638,8 +1747,8 @@ export const settingsRouter = router({
       }
 
       try {
-        await prisma.$transaction(async (tx) => {
-          await tx.exerciseDefinition.update({ where: { id }, data: updateData });
+        return await prisma.$transaction(async (tx) => {
+          const updatedDefinition = await updateExerciseDefinitionMetadata(tx);
           await tx.exerciseDefinitionColorPoint.deleteMany({
             where: { tenantId: ctx.tenantId, exerciseDefinitionId: id },
           });
@@ -1651,6 +1760,7 @@ export const settingsRouter = router({
               points: row.points,
             })),
           });
+          return updatedDefinition;
         });
       } catch (error) {
         if (isIncorrectBinaryBindParameterError(error)) {
@@ -1658,8 +1768,6 @@ export const settingsRouter = router({
         }
         throw error;
       }
-
-      return prisma.exerciseDefinition.findUniqueOrThrow({ where: { id } });
     }),
 
   setExerciseDefinitionHidden: adminProcedure
@@ -1715,6 +1823,7 @@ export const settingsRouter = router({
       return prisma.exerciseDefinition.update({
         where: { id: existing.id },
         data: { isHidden: input.isHidden },
+        select: { id: true },
       }).catch((error) => {
         if (isMissingExerciseDefinitionVisibilityColumnError(error)) {
           throwMissingVisibilityMigrationError();
