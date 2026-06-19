@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import {
+  visibleCourseRunWhere,
+  visibleExerciseDefinitionWhere,
+  withCourseRunVisibilityFallback,
+  withExerciseDefinitionVisibilityFallback,
+} from '../../utils/prisma-visibility';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -213,19 +219,33 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
   dayEnd.setDate(dayEnd.getDate() + 1);
 
   try {
-    return await prisma.courseRun.findFirst({
-      where: {
-        tenantId,
-        isHidden: false,
-        ...(courseRunId ? { id: courseRunId } : {}),
-        ...(courseRunId
-          ? {}
-          : {
-              startDate: { lte: dayEnd },
-              endDate: { gte: dayStart },
-            }),
-      },
-    });
+    return await withCourseRunVisibilityFallback((withHiddenColumn) =>
+      prisma.courseRun.findFirst({
+        where: {
+          tenantId,
+          ...visibleCourseRunWhere(withHiddenColumn),
+          ...(courseRunId ? { id: courseRunId } : {}),
+          ...(courseRunId
+            ? {}
+            : {
+                startDate: { lte: dayEnd },
+                endDate: { gte: dayStart },
+              }),
+        },
+        select: {
+          id: true,
+          tenantId: true,
+          courseId: true,
+          name: true,
+          startDate: true,
+          endDate: true,
+          durationWeeks: true,
+          baseLessons: true,
+          premiumExtraLessons: true,
+          kuratorUserId: true,
+        },
+      }),
+    );
   } catch (error) {
     if (!isMissingCourseRunsTableError(error)) {
       throw error;
@@ -359,20 +379,22 @@ export const amaliyRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Hammasi uchun oqim tanlang' });
       }
 
-      const exercise = await prisma.exerciseDefinition.findFirst({
-        where: {
-          id: input.exerciseDefinitionId,
-          tenantId,
-          isActive: true,
-          isHidden: false,
-        },
-        select: {
-          id: true,
-          courseId: true,
-          type: true,
-          targetCount: true,
-        },
-      });
+      const exercise = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+        prisma.exerciseDefinition.findFirst({
+          where: {
+            id: input.exerciseDefinitionId,
+            tenantId,
+            isActive: true,
+            ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+          },
+          select: {
+            id: true,
+            courseId: true,
+            type: true,
+            targetCount: true,
+          },
+        }),
+      );
 
       if (!exercise) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
@@ -1180,31 +1202,35 @@ export const amaliyRouter = router({
         tenantId,
         courseId: courseRun.courseId,
         isActive: true,
-        isHidden: false,
       };
       if (input.mode === 'day') {
         whereDefinitions.type = classDay ? 'class' : { in: ['homework', 'extra'] };
       }
 
-      const definitions = await prisma.exerciseDefinition.findMany({
-        where: whereDefinitions,
-        include: {
-          colorPoints: {
-            where: { colorOption: { isActive: true } },
-            include: {
-              colorOption: {
-                select: {
-                  id: true,
-                  label: true,
-                  colorHex: true,
-                  orderIndex: true,
+      const definitions = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+        prisma.exerciseDefinition.findMany({
+          where: {
+            ...whereDefinitions,
+            ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+          },
+          include: {
+            colorPoints: {
+              where: { colorOption: { isActive: true } },
+              include: {
+                colorOption: {
+                  select: {
+                    id: true,
+                    label: true,
+                    colorHex: true,
+                    orderIndex: true,
+                  },
                 },
               },
             },
           },
-        },
-        orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
-      });
+          orderBy: [{ type: 'asc' }, { orderIndex: 'asc' }, { createdAt: 'asc' }],
+        }),
+      );
 
       const definitionIds = definitions.map((d) => d.id);
       const runStart = startOfDayLocal(courseRun.startDate);
@@ -1386,10 +1412,17 @@ export const amaliyRouter = router({
         hasKuratorRole(user.roles) &&
         !isAdminOrManager(user.roles);
 
-      const definition = await prisma.exerciseDefinition.findFirst({
-        where: { id: input.exerciseDefinitionId, tenantId, isActive: true, isHidden: false },
-        select: { id: true, courseId: true, type: true, targetCount: true },
-      });
+      const definition = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+        prisma.exerciseDefinition.findFirst({
+          where: {
+            id: input.exerciseDefinitionId,
+            tenantId,
+            isActive: true,
+            ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+          },
+          select: { id: true, courseId: true, type: true, targetCount: true },
+        }),
+      );
       if (!definition) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
       }
@@ -1553,14 +1586,23 @@ export const amaliyRouter = router({
       }
 
       const [definition, courseRun] = await Promise.all([
-        prisma.exerciseDefinition.findFirst({
-          where: { id: input.exerciseDefinitionId, tenantId, isActive: true, isHidden: false },
-          select: { id: true, courseId: true, type: true, targetCount: true },
-        }),
-        prisma.courseRun.findFirst({
-          where: { id: input.courseRunId, tenantId, isHidden: false },
-          select: { id: true, courseId: true, startDate: true, endDate: true },
-        }).catch((error) => {
+        withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+          prisma.exerciseDefinition.findFirst({
+            where: {
+              id: input.exerciseDefinitionId,
+              tenantId,
+              isActive: true,
+              ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+            },
+            select: { id: true, courseId: true, type: true, targetCount: true },
+          }),
+        ),
+        withCourseRunVisibilityFallback((withHiddenColumn) =>
+          prisma.courseRun.findFirst({
+            where: { id: input.courseRunId, tenantId, ...visibleCourseRunWhere(withHiddenColumn) },
+            select: { id: true, courseId: true, startDate: true, endDate: true },
+          }),
+        ).catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
             return null;
           }
@@ -1830,15 +1872,16 @@ export const amaliyRouter = router({
         hasKuratorRole(user.roles) &&
         !isAdminOrManager(user.roles);
 
-      const courseRun = await prisma.courseRun
-        .findFirst({
+      const courseRun = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+        prisma.courseRun.findFirst({
           where: {
             id: input.courseRunId,
             tenantId,
-            isHidden: false,
+            ...visibleCourseRunWhere(withHiddenColumn),
           },
           select: { id: true, courseId: true },
-        })
+        }),
+      )
         .catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
             return null;
