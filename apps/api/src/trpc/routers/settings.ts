@@ -160,6 +160,15 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
   return message.includes('course_runs');
 }
 
+function isMissingCourseRunMembersTableError(error: unknown): boolean {
+  const code = String((error as any)?.code || '');
+  const message = String((error as any)?.message || '').toLowerCase();
+  if (code !== 'P2021' && code !== 'P2022') {
+    return message.includes('course_run_members') && message.includes('does not exist');
+  }
+  return message.includes('course_run_members');
+}
+
 function isMissingCourseStartDateColumnError(error: unknown): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -247,6 +256,14 @@ function throwMissingCourseStartDateMigrationError(): never {
     code: 'PRECONDITION_FAILED',
     message:
       "Kurs boshlanish sanasi ustuni topilmadi (`courses.startDate`). Avval migration deploy qiling.",
+  });
+}
+
+function throwMissingVisibilityMigrationError(): never {
+  throw new TRPCError({
+    code: 'PRECONDITION_FAILED',
+    message:
+      "Yashirish funksiyasi uchun DB migratsiya qo'llanmagan (`isHidden`). Avval migration deploy qiling.",
   });
 }
 
@@ -392,6 +409,72 @@ async function resolveRunMemberCustomerIds(params: {
     distinct: ['customerId'],
   });
   return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
+}
+
+async function resolveRunMemberCounts(params: {
+  tenantId: string;
+  runs: Array<{ id: string; courseId: string }>;
+}): Promise<Map<string, number>> {
+  const { tenantId, runs } = params;
+  const counts = new Map<string, number>();
+  if (runs.length === 0) return counts;
+
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const membersByRun = new Map<string, Set<string>>();
+
+  try {
+    const memberRows = await prisma.courseRunMember.findMany({
+      where: { tenantId, courseRunId: { in: runs.map((run) => run.id) } },
+      select: { courseRunId: true, customerId: true },
+    });
+
+    for (const row of memberRows) {
+      const set = membersByRun.get(row.courseRunId) ?? new Set<string>();
+      set.add(row.customerId);
+      membersByRun.set(row.courseRunId, set);
+    }
+  } catch (error) {
+    if (!isMissingCourseRunMembersTableError(error)) {
+      throw error;
+    }
+  }
+
+  for (const [runId, members] of membersByRun) {
+    counts.set(runId, members.size);
+  }
+
+  const fallbackRuns = runs.filter((run) => !membersByRun.has(run.id));
+  if (fallbackRuns.length === 0) return counts;
+
+  const fallbackCourseIds = Array.from(new Set(fallbackRuns.map((run) => run.courseId)));
+  const enrolledRows = await prisma.income.findMany({
+    where: {
+      tenantId,
+      courseId: { in: fallbackCourseIds },
+      type: 'new_sale',
+      lifecycleStatus: 'active',
+    },
+    select: { courseId: true, customerId: true },
+    distinct: ['courseId', 'customerId'],
+  });
+
+  const enrolledByCourse = new Map<string, Set<string>>();
+  for (const row of enrolledRows) {
+    if (!row.courseId || !row.customerId) continue;
+    const set = enrolledByCourse.get(row.courseId) ?? new Set<string>();
+    set.add(row.customerId);
+    enrolledByCourse.set(row.courseId, set);
+  }
+
+  for (const run of fallbackRuns) {
+    counts.set(run.id, enrolledByCourse.get(run.courseId)?.size ?? 0);
+  }
+
+  for (const runId of runById.keys()) {
+    if (!counts.has(runId)) counts.set(runId, 0);
+  }
+
+  return counts;
 }
 
 /**
@@ -825,23 +908,16 @@ export const settingsRouter = router({
         runs = await loadRuns(false);
       }
 
-      return Promise.all(
-        runs.map(async (run) => {
-          const studentCount = (
-            await resolveRunMemberCustomerIds({
-              tenantId: ctx.tenantId,
-              courseRunId: run.id,
-              courseId: run.courseId,
-            })
-          ).length;
+      const memberCounts = await resolveRunMemberCounts({
+        tenantId: ctx.tenantId,
+        runs: runs.map((run) => ({ id: run.id, courseId: run.courseId })),
+      });
 
-          return {
-            ...run,
-            isHidden: supportsHiddenColumn ? Boolean((run as any).isHidden) : false,
-            studentCount,
-          };
-        }),
-      );
+      return runs.map((run) => ({
+        ...run,
+        isHidden: supportsHiddenColumn ? Boolean((run as any).isHidden) : false,
+        studentCount: memberCounts.get(run.id) ?? 0,
+      }));
     } catch (error) {
       if (!isMissingCourseRunsTableError(error)) {
         throw error;
@@ -1166,6 +1242,11 @@ export const settingsRouter = router({
       return prisma.courseRun.update({
         where: { id: existing.id },
         data: { isHidden: input.isHidden, updatedAt: new Date() },
+      }).catch((error) => {
+        if (isMissingCourseRunHiddenColumnError(error)) {
+          throwMissingVisibilityMigrationError();
+        }
+        throw error;
       });
     }),
 
@@ -1599,15 +1680,30 @@ export const settingsRouter = router({
       }
 
       if (input.isHidden) {
-        const activeRun = await prisma.courseRun.findFirst({
-          where: {
-            tenantId: ctx.tenantId,
-            courseId: existing.courseId,
-            isHidden: false,
-            endDate: { gte: new Date() },
-          },
-          select: { id: true },
-        });
+        let activeRun: { id: string } | null = null;
+        try {
+          activeRun = await prisma.courseRun.findFirst({
+            where: {
+              tenantId: ctx.tenantId,
+              courseId: existing.courseId,
+              isHidden: false,
+              endDate: { gte: new Date() },
+            },
+            select: { id: true },
+          });
+        } catch (error) {
+          if (!isMissingCourseRunHiddenColumnError(error)) {
+            throw error;
+          }
+          activeRun = await prisma.courseRun.findFirst({
+            where: {
+              tenantId: ctx.tenantId,
+              courseId: existing.courseId,
+              endDate: { gte: new Date() },
+            },
+            select: { id: true },
+          });
+        }
         if (activeRun) {
           throw new TRPCError({
             code: 'BAD_REQUEST',
@@ -1619,6 +1715,11 @@ export const settingsRouter = router({
       return prisma.exerciseDefinition.update({
         where: { id: existing.id },
         data: { isHidden: input.isHidden },
+      }).catch((error) => {
+        if (isMissingExerciseDefinitionVisibilityColumnError(error)) {
+          throwMissingVisibilityMigrationError();
+        }
+        throw error;
       });
     }),
 
