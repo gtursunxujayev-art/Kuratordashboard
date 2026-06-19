@@ -13,6 +13,14 @@ type ColorPointOption = {
   colorHex: string;
   points: number;
 };
+type ExerciseColorPointRow = {
+  colorOptionId: string;
+  points: number;
+  colorOption: {
+    label: string;
+    colorHex: string;
+  };
+};
 type CourseType = 'online' | 'offline';
 type SlotItem = {
   date: string;
@@ -388,7 +396,7 @@ export default function AmaliyPage() {
 
   const completePracticeStudent = async (studentId: string) => {
     if (!selectedPracticeId) return;
-    const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row) => ({
+    const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row: ExerciseColorPointRow) => ({
       id: row.colorOptionId,
       label: row.colorOption.label,
       colorHex: row.colorOption.colorHex,
@@ -900,7 +908,7 @@ export default function AmaliyPage() {
                 <div className="space-y-2">
                   {visiblePracticeStudents.map((student) => {
                     const rowKey = keyForPracticeStudent(selectedPracticeId, selectedDate, student.id);
-                    const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row) => ({
+                    const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row: ExerciseColorPointRow) => ({
                       id: row.colorOptionId,
                       label: row.colorOption.label,
                       colorHex: row.colorOption.colorHex,
