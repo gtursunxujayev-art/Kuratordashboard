@@ -1336,7 +1336,7 @@ function ExercisesTab({
         name: form.name,
         type: form.type,
         targetCount: form.targetCount,
-        startDate: form.startDate || null,
+        ...(form.startDate ? { startDate: form.startDate } : {}),
         orderIndex: form.orderIndex,
         colorPoints: colorPointsPayload,
       });
