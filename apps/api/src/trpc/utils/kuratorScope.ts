@@ -1,4 +1,8 @@
 import { prisma } from '@kuratordashboard/db';
+import {
+  visibleCourseRunWhere,
+  withCourseRunVisibilityFallback,
+} from '../../utils/prisma-visibility';
 
 /**
  * "Who is in this run?" resolution rule used by every kurator-scoped query:
@@ -24,27 +28,29 @@ export async function getCustomersScopedToKurator(params: {
 }): Promise<string[]> {
   const { tenantId, kuratorUserId, courseRunId } = params;
 
-  const [perCustomerRows, ownedRuns] = await Promise.all([
-    prisma.kuratorAssignment.findMany({
-      where: {
-        tenantId,
-        kuratorUserId,
-        isActive: true,
-        courseRun: { isHidden: false },
-        ...(courseRunId ? { courseRunId } : {}),
-      },
-      select: { customerId: true },
-    }),
-    prisma.courseRun.findMany({
-      where: {
-        tenantId,
-        kuratorUserId,
-        isHidden: false,
-        ...(courseRunId ? { id: courseRunId } : {}),
-      },
-      select: { id: true, courseId: true },
-    }),
-  ]);
+  const [perCustomerRows, ownedRuns] = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+    Promise.all([
+      prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          kuratorUserId,
+          isActive: true,
+          ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
+          ...(courseRunId ? { courseRunId } : {}),
+        },
+        select: { customerId: true },
+      }),
+      prisma.courseRun.findMany({
+        where: {
+          tenantId,
+          kuratorUserId,
+          ...visibleCourseRunWhere(withHiddenColumn),
+          ...(courseRunId ? { id: courseRunId } : {}),
+        },
+        select: { id: true, courseId: true },
+      }),
+    ]),
+  );
 
   const result = new Set<string>(perCustomerRows.map((row) => row.customerId));
 
@@ -108,28 +114,32 @@ export async function kuratorCanAccessCustomer(params: {
 }): Promise<boolean> {
   const { tenantId, kuratorUserId, customerId, courseRunId } = params;
 
-  const directHit = await prisma.kuratorAssignment.findFirst({
-    where: {
-      tenantId,
-      kuratorUserId,
-      customerId,
-      isActive: true,
-      courseRun: { isHidden: false },
-      ...(courseRunId ? { courseRunId } : {}),
-    },
-    select: { id: true },
-  });
+  const directHit = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+    prisma.kuratorAssignment.findFirst({
+      where: {
+        tenantId,
+        kuratorUserId,
+        customerId,
+        isActive: true,
+        ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
+        ...(courseRunId ? { courseRunId } : {}),
+      },
+      select: { id: true },
+    }),
+  );
   if (directHit) return true;
 
-  const ownedRuns = await prisma.courseRun.findMany({
-    where: {
-      tenantId,
-      kuratorUserId,
-      isHidden: false,
-      ...(courseRunId ? { id: courseRunId } : {}),
-    },
-    select: { id: true, courseId: true },
-  });
+  const ownedRuns = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+    prisma.courseRun.findMany({
+      where: {
+        tenantId,
+        kuratorUserId,
+        ...visibleCourseRunWhere(withHiddenColumn),
+        ...(courseRunId ? { id: courseRunId } : {}),
+      },
+      select: { id: true, courseId: true },
+    }),
+  );
   if (ownedRuns.length === 0) return false;
 
   const ownedRunIds = ownedRuns.map((row) => row.id);
