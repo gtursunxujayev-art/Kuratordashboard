@@ -487,6 +487,8 @@ model Income {
   @@index([remainingDebtAmount])
   @@index([lifecycleStatus])
   @@index([tenantId, type, lifecycleStatus, entryDate])
+  @@index([tenantId, courseId, type, lifecycleStatus, customerId])
+  @@index([tenantId, customerId, type, lifecycleStatus, entryDate])
   @@index([relatedDebtIncomeId])
   @@index([historicalImportSessionId])
   @@unique([tenantId, legacyImportKey])
@@ -594,6 +596,7 @@ model CourseRun {
   @@index([courseId])
   @@index([startDate])
   @@index([tenantId, kuratorUserId])
+  @@index([tenantId, courseId, isHidden, startDate, endDate])
   @@map("course_runs")
 }
 
@@ -668,6 +671,7 @@ model StudentExerciseLog {
   @@index([completedAt])
   @@index([tenantId, exerciseDefinitionId, completedAt])
   @@index([tenantId, customerId, exerciseDefinitionId])
+  @@index([tenantId, customerId, completedAt])
   @@map("student_exercise_logs")
 }
 
@@ -737,6 +741,7 @@ model ClassAttendance {
   @@index([lessonDate])
   @@index([tenantId, courseRunId, customerId, attended])
   @@index([tenantId, courseRunId, lessonDate, lessonType])
+  @@index([tenantId, customerId, courseRunId, lessonDate])
   @@map("class_attendances")
 }
 
@@ -785,6 +790,8 @@ model KuratorTask {
   @@index([kuratorUserId])
   @@index([customerId])
   @@index([dueDate])
+  @@index([tenantId, customerId, completedAt])
+  @@index([tenantId, customerId, createdAt])
   @@map("kurator_tasks")
 }
 
