@@ -1159,6 +1159,10 @@ function ExercisesTab({
     orderIndex: number;
     isActive: boolean;
   };
+  type ExerciseColorPointRow = {
+    points: number;
+    colorOption: { isActive: boolean };
+  };
   type ExerciseType = 'class' | 'homework' | 'extra';
   const getExerciseTypeLabel = (type: ExerciseType) => {
     if (type === 'class') return 'Dars mashqi';
@@ -1666,8 +1670,8 @@ function ExercisesTab({
                 <tbody className="divide-y divide-gray-100">
                   {exercises.map((exercise) => {
                     const activePoints = exercise.colorPoints
-                      .filter((row) => row.colorOption.isActive)
-                      .map((row) => row.points);
+                      .filter((row: ExerciseColorPointRow) => row.colorOption.isActive)
+                      .map((row: ExerciseColorPointRow) => row.points);
                     const maxColorPoint = activePoints.length > 0 ? Math.max(...activePoints) : 0;
                     const maxTotalPoints = maxColorPoint * exercise.targetCount;
 
