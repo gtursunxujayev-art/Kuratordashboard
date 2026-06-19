@@ -10,8 +10,7 @@
   "scripts": {
     "dev": "node --env-file=.env --require tsx/cjs --watch --watch-preserve-output src/index.ts",
     "build": "tsc",
-    "prestart": "npm run migrate:deploy --workspace @kuratordashboard/db",
-    "start": "node dist/index.js",
+    "start": "npm run migrate:deploy --workspace @kuratordashboard/db && node dist/index.js",
     "type-check": "tsc --noEmit",
     "db:generate": "npm run generate --workspace @kuratordashboard/db",
     "db:migrate": "npm run migrate --workspace @kuratordashboard/db",
