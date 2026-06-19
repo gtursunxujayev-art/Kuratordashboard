@@ -3,6 +3,14 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator } from '../utils/kuratorScope';
+import {
+  isMissingCourseRunHiddenColumnError,
+  isMissingExerciseDefinitionHiddenColumnError,
+  visibleCourseRunWhere,
+  visibleExerciseDefinitionWhere,
+  withCourseRunVisibilityFallback,
+  withExerciseDefinitionVisibilityFallback,
+} from '../../utils/prisma-visibility';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -31,30 +39,6 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
     return message.includes('course_runs') && message.includes('does not exist');
   }
   return message.includes('course_runs');
-}
-
-function isMissingCourseRunHiddenColumnError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return (
-      (message.includes('course_runs.ishidden') || message.includes('courserun.ishidden'))
-      && message.includes('does not exist')
-    );
-  }
-  return message.includes('course_runs.ishidden') || message.includes('courserun.ishidden');
-}
-
-function isMissingExerciseDefinitionHiddenColumnError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return (
-      (message.includes('exercise_definitions.ishidden') || message.includes('exercisedefinition.ishidden'))
-      && message.includes('does not exist')
-    );
-  }
-  return message.includes('exercise_definitions.ishidden') || message.includes('exercisedefinition.ishidden');
 }
 
 function isMissingCourseEndDateColumnError(error: unknown): boolean {
@@ -183,31 +167,37 @@ async function getCoursePeriodRange(tenantId: string, courseRunId?: string): Pro
     const now = new Date();
 
     const selectedRun = courseRunId
-      ? await prisma.courseRun.findFirst({
-          where: { id: courseRunId, tenantId, isHidden: false },
-          select: { startDate: true, endDate: true },
-        })
+      ? await withCourseRunVisibilityFallback((withHiddenColumn) =>
+          prisma.courseRun.findFirst({
+            where: { id: courseRunId, tenantId, ...visibleCourseRunWhere(withHiddenColumn) },
+            select: { startDate: true, endDate: true },
+          }),
+        )
       : null;
 
     const fallbackRun = selectedRun
       ? null
-      : await prisma.courseRun.findFirst({
-          where: {
-            tenantId,
-            isHidden: false,
-            startDate: { lte: now },
-            endDate: { gte: now },
-          },
-          orderBy: { startDate: 'desc' },
-          select: { startDate: true, endDate: true },
-        });
+      : await withCourseRunVisibilityFallback((withHiddenColumn) =>
+          prisma.courseRun.findFirst({
+            where: {
+              tenantId,
+              ...visibleCourseRunWhere(withHiddenColumn),
+              startDate: { lte: now },
+              endDate: { gte: now },
+            },
+            orderBy: { startDate: 'desc' },
+            select: { startDate: true, endDate: true },
+          }),
+        );
 
     const latestRun = selectedRun || fallbackRun ||
-      (await prisma.courseRun.findFirst({
-        where: { tenantId, isHidden: false },
-        orderBy: { startDate: 'desc' },
-        select: { startDate: true, endDate: true },
-      }));
+      (await withCourseRunVisibilityFallback((withHiddenColumn) =>
+        prisma.courseRun.findFirst({
+          where: { tenantId, ...visibleCourseRunWhere(withHiddenColumn) },
+          orderBy: { startDate: 'desc' },
+          select: { startDate: true, endDate: true },
+        }),
+      ));
 
     if (!latestRun) return null;
 
@@ -357,16 +347,23 @@ async function getRoleScopedCustomerIds(
   // assignments, plus — if the run has been claimed by a kurator — any
   // currently-enrolled customer in that course (handles enrollments that
   // happened after the kurator attached).
-  const [assignments, run] = await Promise.all([
-    prisma.kuratorAssignment.findMany({
-      where: { tenantId, isActive: true, courseRunId, courseRun: { isHidden: false } },
-      select: { customerId: true },
-    }),
-    prisma.courseRun.findFirst({
-      where: { tenantId, id: courseRunId, isHidden: false },
-      select: { courseId: true, kuratorUserId: true },
-    }),
-  ]);
+  const [assignments, run] = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+    Promise.all([
+      prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          isActive: true,
+          courseRunId,
+          ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
+        },
+        select: { customerId: true },
+      }),
+      prisma.courseRun.findFirst({
+        where: { tenantId, id: courseRunId, ...visibleCourseRunWhere(withHiddenColumn) },
+        select: { courseId: true, kuratorUserId: true },
+      }),
+    ]),
+  );
   const ids = new Set<string>(assignments.map((row) => row.customerId));
   if (run?.kuratorUserId) {
     const enrolled = await prisma.income.findMany({
@@ -798,45 +795,49 @@ export const dashboardRouter = router({
       const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
       const adminOrManager = isAdminOrManager(user.roles);
 
-      const [kurators, assignments] = await Promise.all([
-        prisma.user.findMany({
-          where: {
-            tenantId,
-            roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
-            isActive: true,
-            ...(!adminOrManager ? { id: user.userId } : {}),
-          },
-          select: {
-            id: true,
-            name: true,
-            username: true,
-          },
-        }),
-        prisma.kuratorAssignment.findMany({
-          where: {
-            tenantId,
-            isActive: true,
-            courseRun: { isHidden: false },
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
-            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
-          },
-          select: { kuratorUserId: true, customerId: true },
-        }),
-      ]);
+      const [kurators, assignments] = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+        Promise.all([
+          prisma.user.findMany({
+            where: {
+              tenantId,
+              roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
+              isActive: true,
+              ...(!adminOrManager ? { id: user.userId } : {}),
+            },
+            select: {
+              id: true,
+              name: true,
+              username: true,
+            },
+          }),
+          prisma.kuratorAssignment.findMany({
+            where: {
+              tenantId,
+              isActive: true,
+              ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
+              ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
+              ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
+              ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
+            },
+            select: { kuratorUserId: true, customerId: true },
+          }),
+        ]),
+      );
 
       // Derive (kurator, customer) pairs from run-level kurator links so that
       // future enrollments not yet in the per-customer table are still counted.
-      const ownedRuns = await prisma.courseRun.findMany({
-        where: {
-          tenantId,
-          isHidden: false,
-          kuratorUserId: { not: null },
-          ...(input.courseRunId ? { id: input.courseRunId } : {}),
-          ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
-        },
-        select: { id: true, courseId: true, kuratorUserId: true },
-      });
+      const ownedRuns = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+        prisma.courseRun.findMany({
+          where: {
+            tenantId,
+            ...visibleCourseRunWhere(withHiddenColumn),
+            kuratorUserId: { not: null },
+            ...(input.courseRunId ? { id: input.courseRunId } : {}),
+            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
+          },
+          select: { id: true, courseId: true, kuratorUserId: true },
+        }),
+      );
 
       const runDerivedPairs: Array<{ kuratorUserId: string; customerId: string }> = [];
       if (ownedRuns.length > 0) {
@@ -881,36 +882,40 @@ export const dashboardRouter = router({
 
       const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
       const effectiveExerciseCourseId = input.courseId ?? runCourseId;
-      const perfByKurator = new Map<string, AggregatedPerformance>();
-      await Promise.all(
-        kurators.map(async (kurator) => {
-          const studentIds = Array.from(studentIdsByKurator.get(kurator.id) ?? []);
-          if (studentIds.length === 0) {
-            perfByKurator.set(kurator.id, {
-              completedTasks: 0,
-              pendingTasks: 0,
-              attendedLessons: 0,
-              totalLessons: 0,
-              exerciseLogs: 0,
-              missedStudents: 0,
-              performancePercent: 0,
-            });
-            return;
-          }
-
-          const perfMap = await buildStudentPerformanceMap({
-            tenantId,
-            customerIds: studentIds,
-            dateRange,
-            exerciseCourseId: effectiveExerciseCourseId,
-            courseRunId: input.courseRunId,
-          });
-          const rows = studentIds
-            .map((studentId) => perfMap.get(studentId))
-            .filter((row): row is StudentPerformance => Boolean(row));
-          perfByKurator.set(kurator.id, aggregateStudentPerformanceRows(rows));
-        }),
+      const allStudentIds = Array.from(
+        new Set(
+          Array.from(studentIdsByKurator.values()).flatMap((studentSet) => Array.from(studentSet)),
+        ),
       );
+      const allPerfMap = await buildStudentPerformanceMap({
+        tenantId,
+        customerIds: allStudentIds,
+        dateRange,
+        exerciseCourseId: effectiveExerciseCourseId,
+        courseRunId: input.courseRunId,
+      });
+      const emptyPerformance: AggregatedPerformance = {
+        completedTasks: 0,
+        pendingTasks: 0,
+        attendedLessons: 0,
+        totalLessons: 0,
+        exerciseLogs: 0,
+        missedStudents: 0,
+        performancePercent: 0,
+      };
+      const perfByKurator = new Map<string, AggregatedPerformance>();
+      for (const kurator of kurators) {
+        const studentIds = Array.from(studentIdsByKurator.get(kurator.id) ?? []);
+        if (studentIds.length === 0) {
+          perfByKurator.set(kurator.id, emptyPerformance);
+          continue;
+        }
+
+        const rows = studentIds
+          .map((studentId) => allPerfMap.get(studentId))
+          .filter((row): row is StudentPerformance => Boolean(row));
+        perfByKurator.set(kurator.id, aggregateStudentPerformanceRows(rows));
+      }
 
       return kurators.map((kurator) => {
         const studentCount = studentIdsByKurator.get(kurator.id)?.size ?? 0;
@@ -951,34 +956,39 @@ export const dashboardRouter = router({
       const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
       const scopedCustomerIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
 
-      const enrolledRows = await prisma.income.findMany({
-        where: {
-          tenantId,
-          ...ACTIVE_ENROLLMENT_FILTER,
-          ...(input.courseId ? { courseId: input.courseId } : {}),
-          ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+      const enrolledIncomeWhere = {
+        tenantId,
+        ...ACTIVE_ENROLLMENT_FILTER,
+        ...(input.courseId ? { courseId: input.courseId } : {}),
+        ...(scopedCustomerIds ? { customerId: { in: scopedCustomerIds } } : {}),
+      };
+      const customerWhere = {
+        tenantId,
+        ...(scopedCustomerIds ? { id: { in: scopedCustomerIds } } : {}),
+        incomes: {
+          some: enrolledIncomeWhere,
         },
-        select: { customerId: true },
-        distinct: ['customerId'],
-      });
+      };
 
-      const enrolledIds = enrolledRows.map((row) => row.customerId);
-      if (enrolledIds.length === 0) {
+      const [customers, total] = await Promise.all([
+        prisma.customer.findMany({
+          where: customerWhere,
+          select: { id: true, name: true, customerNumber: true },
+          orderBy: { name: 'asc' },
+          skip: (input.page - 1) * input.limit,
+          take: input.limit,
+        }),
+        prisma.customer.count({ where: customerWhere }),
+      ]);
+
+      if (customers.length === 0) {
         return {
           data: [],
-          pagination: { page: input.page, limit: input.limit, total: 0 },
+          pagination: { page: input.page, limit: input.limit, total },
         };
       }
 
-      const customers = await prisma.customer.findMany({
-        where: { tenantId, id: { in: enrolledIds } },
-        select: { id: true, name: true, customerNumber: true },
-        orderBy: { name: 'asc' },
-      });
-
-      const total = customers.length;
-      const start = (input.page - 1) * input.limit;
-      const pageCustomers = customers.slice(start, start + input.limit);
+      const pageCustomers = customers;
       const pageIds = pageCustomers.map((c) => c.id);
       const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
       const effectiveExerciseCourseId = input.courseId ?? runCourseId;
@@ -1195,22 +1205,24 @@ export const dashboardRouter = router({
         if (!(input.courseId && !input.courseRunId && isMissingCourseRunsTableError(error))) {
           throw error;
         } else {
-          recentExercises = await prisma.studentExerciseLog.findMany({
-            where: {
-              tenantId,
-              customerId: input.customerId,
-              exerciseDefinition: { isHidden: false },
-              ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
-            },
-            select: {
-              id: true,
-              completedAt: true,
-              note: true,
-              exerciseDefinition: { select: { id: true, name: true, type: true } },
-            },
-            orderBy: { completedAt: 'desc' },
-            take: 50,
-          });
+          recentExercises = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+            prisma.studentExerciseLog.findMany({
+              where: {
+                tenantId,
+                customerId: input.customerId,
+                ...(withVisibilityColumns ? { exerciseDefinition: { isHidden: false } } : {}),
+                ...(dateRange ? { completedAt: { gte: dateRange.from, lt: dateRange.to } } : {}),
+              },
+              select: {
+                id: true,
+                completedAt: true,
+                note: true,
+                exerciseDefinition: { select: { id: true, name: true, type: true } },
+              },
+              orderBy: { completedAt: 'desc' },
+              take: 50,
+            }),
+          );
         }
       }
 
@@ -1229,10 +1241,15 @@ export const dashboardRouter = router({
       }
 
         const [homeworkDefinitions, completedHomeworkCount] = await Promise.all([
-        prisma.exerciseDefinition.findMany({
-          where: { ...(homeworkDefinitionsWhere as any), isHidden: false },
-          select: { targetCount: true },
-        }),
+        withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
+          prisma.exerciseDefinition.findMany({
+            where: {
+              ...(homeworkDefinitionsWhere as any),
+              ...visibleExerciseDefinitionWhere(withVisibilityColumns),
+            },
+            select: { targetCount: true },
+          }),
+        ),
         prisma.studentExerciseLog.count({
           where: {
             tenantId,
