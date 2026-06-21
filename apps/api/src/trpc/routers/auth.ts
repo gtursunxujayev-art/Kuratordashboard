@@ -20,6 +20,37 @@ type LoginUserCandidate = {
   createdAt: Date;
 };
 
+function isTransientDatabaseConnectionError(error: unknown): boolean {
+  const code = String((error as { code?: string })?.code || '').toUpperCase();
+  if (code === 'P1001' || code === 'P1002' || code === 'P1017') return true;
+
+  const message = String((error as { message?: string })?.message || '').toLowerCase();
+  return (
+    message.includes("can't reach database server")
+    || message.includes('timed out fetching a new connection')
+    || message.includes('server has closed the connection')
+  );
+}
+
+async function withDatabaseWakeRetry<T>(query: () => Promise<T>): Promise<T> {
+  const delaysMs = [0, 1500, 3000];
+  let lastError: unknown;
+
+  for (const delayMs of delaysMs) {
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+    try {
+      return await query();
+    } catch (error) {
+      lastError = error;
+      if (!isTransientDatabaseConnectionError(error)) throw error;
+    }
+  }
+
+  throw lastError;
+}
+
 function hasKDAccess(roles: string[]): boolean {
   return roles.some((role) => KD_ALLOWED_ROLES.includes(role as (typeof KD_ALLOWED_ROLES)[number]));
 }
@@ -132,32 +163,34 @@ export const authRouter = router({
         ),
       );
 
-      const candidates = await prisma.user.findMany({
-        where: {
-          OR: [
-            { username: rawLogin },
-            { username: normalizedLogin },
-            { email: rawLogin },
-            { email: normalizedLogin },
-            ...phoneCandidates.map((phone) => ({ phone })),
-          ],
-          isActive: true,
-        },
-        select: {
-          id: true,
-          tenantId: true,
-          username: true,
-          name: true,
-          email: true,
-          phone: true,
-          roles: true,
-          passwordHash: true,
-          lastLoginAt: true,
-          createdAt: true,
-        },
-        orderBy: [{ lastLoginAt: 'desc' }, { createdAt: 'desc' }],
-        take: 50,
-      });
+      const candidates = await withDatabaseWakeRetry(() =>
+        prisma.user.findMany({
+          where: {
+            OR: [
+              { username: rawLogin },
+              { username: normalizedLogin },
+              { email: rawLogin },
+              { email: normalizedLogin },
+              ...phoneCandidates.map((phone) => ({ phone })),
+            ],
+            isActive: true,
+          },
+          select: {
+            id: true,
+            tenantId: true,
+            username: true,
+            name: true,
+            email: true,
+            phone: true,
+            roles: true,
+            passwordHash: true,
+            lastLoginAt: true,
+            createdAt: true,
+          },
+          orderBy: [{ lastLoginAt: 'desc' }, { createdAt: 'desc' }],
+          take: 50,
+        }),
+      );
 
       const user = await chooseLoginCandidate(candidates, input.password);
       if (!user) {
