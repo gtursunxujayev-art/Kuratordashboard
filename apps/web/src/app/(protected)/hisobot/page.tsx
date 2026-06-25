@@ -99,13 +99,17 @@ function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean
 
 export default function HisobotPage() {
   const router = useRouter();
-  const { isManager, isLoading } = useAuth();
+  const { user, isAdmin, isManager, isLoading } = useAuth();
 
   const [courseId, setCourseId] = useState('');
   const [courseRunId, setCourseRunId] = useState('');
   const [tariffId, setTariffId] = useState('');
   const [kuratorUserId, setKuratorUserId] = useState('');
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
+  const [shareToken, setShareToken] = useState<string | null>(null);
+  const [shareLinkCopied, setShareLinkCopied] = useState(false);
+
+  const generateShareToken = trpc.settings.generateReportShareToken.useMutation();
 
   useEffect(() => {
     if (!isLoading && !isManager) {
@@ -199,12 +203,12 @@ export default function HisobotPage() {
         ? dayColumns
         : WEEK_KEYS.map((weekKey) => ({ key: weekKey, label: DATE_PRESET_LABELS[weekKey] }));
   const perPracticeColumnCount = isTodayPreset ? 1 : Math.max(subColumns.length, 1);
-  const tableMinWidth = isTodayPreset ? 'min-w-[640px] md:min-w-[860px]' : 'min-w-[760px] md:min-w-[980px]';
-  const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 4 : 4;
+  const tableMinWidth = isTodayPreset ? 'min-w-[720px] md:min-w-[960px]' : 'min-w-[840px] md:min-w-[1080px]';
+  const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 5 : 5;
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      <div className="kd-card p-4 md:p-5 space-y-3">
+    <div className="px-5 md:px-10 lg:px-14 py-4 md:py-6 space-y-4">
+      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-2 z-30 shadow-sm">
         <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
         <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
@@ -307,6 +311,68 @@ export default function HisobotPage() {
             Davr: {report.meta.dateFrom} - {report.meta.dateToInclusive ?? report.meta.dateFrom}
           </p>
         )}
+
+        {isAdmin && datePreset === 'all' && report && (
+          <div className="border-t border-gray-200 pt-3 mt-1">
+            {shareToken ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={`${typeof window !== 'undefined' ? window.location.origin : ''}/shared/report/${shareToken}`}
+                  className="flex-1 px-3 py-1.5 border border-gray-200 rounded-lg text-xs bg-gray-50 select-all"
+                  onClick={(e) => (e.target as HTMLInputElement).select()}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = `${window.location.origin}/shared/report/${shareToken}`;
+                    navigator.clipboard.writeText(url).then(() => {
+                      setShareLinkCopied(true);
+                      setTimeout(() => setShareLinkCopied(false), 2000);
+                    }).catch(() => {
+                      // Fallback
+                      const input = document.querySelector<HTMLInputElement>('[data-share-link]');
+                      if (input) { input.select(); document.execCommand('copy'); }
+                    });
+                  }}
+                  className="px-3 py-1.5 rounded-md text-xs font-medium kd-chip-active whitespace-nowrap"
+                >
+                  {shareLinkCopied ? 'Nusxalandi ✓' : 'Nusxalash'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setShareToken(null); setShareLinkCopied(false); }}
+                  className="px-2 py-1.5 rounded-md text-xs kd-chip whitespace-nowrap"
+                >
+                  Yopish
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const result = await generateShareToken.mutateAsync({
+                      courseId,
+                      courseRunId: courseRunId || undefined,
+                      tariffId: tariffId || undefined,
+                      kuratorUserId: kuratorUserId || undefined,
+                    });
+                    setShareToken(result.token);
+                    setShareLinkCopied(false);
+                  } catch {
+                    // Error handled by tRPC
+                  }
+                }}
+                disabled={generateShareToken.isPending}
+                className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {generateShareToken.isPending ? 'Yaratilmoqda...' : "🔗 Umumiy havola olish"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {!courseId ? (
@@ -325,7 +391,13 @@ export default function HisobotPage() {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky left-0 z-20 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[148px] md:min-w-[200px]"
+                    className="sticky left-0 z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
+                  >
+                    №
+                  </th>
+                  <th
+                    rowSpan={hasSubColumns ? 2 : 1}
+                    className="sticky left-[32px] md:left-[40px] z-20 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]"
                   >
                     O&apos;quvchi
                   </th>
@@ -398,9 +470,12 @@ export default function HisobotPage() {
                     </td>
                   </tr>
                 ) : (
-                  report.students.map((student) => (
+                  report.students.map((student, idx) => (
                     <tr key={student.id} className="border-b border-gray-100">
-                      <td className="sticky left-0 z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-top">
+                      <td className="sticky left-0 z-10 bg-white text-center px-1 md:px-2 py-1.5 md:py-2 border-r border-gray-100 align-top text-xs md:text-sm text-gray-500 font-medium">
+                        {idx + 1}
+                      </td>
+                      <td className="sticky left-[32px] md:left-[40px] z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-top">
                         <p className="font-medium text-gray-900 leading-4 md:leading-5 text-sm md:text-base">{student.name}</p>
                         <p className="text-[10px] md:text-[11px] text-gray-500 leading-3.5 md:leading-4">{student.customerNumber ?? '-'}</p>
                       </td>
