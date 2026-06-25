@@ -72,22 +72,22 @@ export async function getCustomersScopedToKurator(params: {
     else rosterByRun.set(row.courseRunId, [row.customerId]);
   }
 
-  // Runs that need the default-group fallback (no explicit members).
-  const fallbackCourseIds = new Set<string>();
+  // Add explicit roster members for all runs.
   for (const run of ownedRuns) {
     const explicit = rosterByRun.get(run.id);
-    if (explicit && explicit.length > 0) {
+    if (explicit) {
       for (const id of explicit) result.add(id);
-    } else {
-      fallbackCourseIds.add(run.courseId);
     }
   }
 
-  if (fallbackCourseIds.size > 0) {
+  // ALWAYS union active income customers for ALL owned runs (not just fallback ones).
+  // This ensures new Dashboarduz enrollments appear immediately regardless of roster state.
+  const allCourseIds = Array.from(new Set(ownedRuns.map((run) => run.courseId)));
+  if (allCourseIds.length > 0) {
     const enrolled = await prisma.income.findMany({
       where: {
         tenantId,
-        courseId: { in: Array.from(fallbackCourseIds) },
+        courseId: { in: allCourseIds },
         type: 'new_sale',
         lifecycleStatus: 'active',
       },
@@ -144,7 +144,7 @@ export async function kuratorCanAccessCustomer(params: {
 
   const ownedRunIds = ownedRuns.map((row) => row.id);
 
-  // Find which of the owned runs have an explicit roster, and check membership in those first.
+  // Check explicit roster membership.
   const explicitMember = await prisma.courseRunMember.findFirst({
     where: {
       tenantId,
@@ -155,28 +155,22 @@ export async function kuratorCanAccessCustomer(params: {
   });
   if (explicitMember) return true;
 
-  // Otherwise, check the default-group fallback only for runs that have no roster.
-  const runsWithRoster = await prisma.courseRunMember.findMany({
-    where: { tenantId, courseRunId: { in: ownedRunIds } },
-    select: { courseRunId: true },
-    distinct: ['courseRunId'],
-  });
-  const rosterRunSet = new Set(runsWithRoster.map((row) => row.courseRunId));
-  const fallbackCourseIds = ownedRuns
-    .filter((run) => !rosterRunSet.has(run.id))
-    .map((run) => run.courseId);
+  // ALWAYS check active income for ALL owned runs (not just fallback ones).
+  // This ensures newly enrolled customers are accessible immediately.
+  const allCourseIds = Array.from(new Set(ownedRuns.map((run) => run.courseId)));
+  if (allCourseIds.length > 0) {
+    const incomeHit = await prisma.income.findFirst({
+      where: {
+        tenantId,
+        customerId,
+        courseId: { in: allCourseIds },
+        type: 'new_sale',
+        lifecycleStatus: 'active',
+      },
+      select: { id: true },
+    });
+    return Boolean(incomeHit);
+  }
 
-  if (fallbackCourseIds.length === 0) return false;
-
-  const incomeHit = await prisma.income.findFirst({
-    where: {
-      tenantId,
-      customerId,
-      courseId: { in: fallbackCourseIds },
-      type: 'new_sale',
-      lifecycleStatus: 'active',
-    },
-    select: { id: true },
-  });
-  return Boolean(incomeHit);
+  return false;
 }
