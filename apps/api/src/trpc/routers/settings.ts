@@ -1,3 +1,4 @@
+import jwt from 'jsonwebtoken';
 import { router, adminProcedure, managerProcedure, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma, type Prisma } from '@kuratordashboard/db';
@@ -393,19 +394,34 @@ function throwFractionalPointsMigrationError(): never {
  *   - If the run has any explicit `course_run_members` rows, those are the members.
  *   - Otherwise, every customer with an active `new_sale` income on the run's course is a member.
  */
+/**
+ * Resolves the set of customer IDs that belong to a course run.
+ *
+ * ALWAYS combines BOTH sources:
+ *   1. Explicit course_run_members roster (if any)
+ *   2. Active new_sale incomes on the run's course
+ *
+ * This ensures new enrollments from Dashboarduz appear immediately.
+ */
 async function resolveRunMemberCustomerIds(params: {
   tenantId: string;
   courseRunId: string;
   courseId: string;
 }): Promise<string[]> {
   const { tenantId, courseRunId, courseId } = params;
+
+  const idSet = new Set<string>();
+
+  // Source 1: explicit course_run_members
   const explicit = await prisma.courseRunMember.findMany({
     where: { tenantId, courseRunId },
     select: { customerId: true },
   });
-  if (explicit.length > 0) {
-    return explicit.map((row) => row.customerId);
+  for (const row of explicit) {
+    idSet.add(row.customerId);
   }
+
+  // Source 2: active new_sale incomes on the course (always)
   const enrolled = await prisma.income.findMany({
     where: {
       tenantId,
@@ -416,7 +432,11 @@ async function resolveRunMemberCustomerIds(params: {
     select: { customerId: true },
     distinct: ['customerId'],
   });
-  return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
+  for (const row of enrolled) {
+    if (row.customerId) idSet.add(row.customerId);
+  }
+
+  return Array.from(idSet);
 }
 
 async function resolveRunMemberCounts(params: {
@@ -2324,6 +2344,111 @@ export const settingsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       return deleteTelegramReceiver(ctx.tenantId, input.receiverId);
+    }),
+
+  generateReportShareToken: adminProcedure
+    .input(
+      z.object({
+        courseId: z.string(),
+        courseRunId: z.string().optional(),
+        tariffId: z.string().optional(),
+        kuratorUserId: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const jwtSecret = process.env.JWT_SECRET?.trim();
+      if (!jwtSecret) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'JWT sozlanmagan' });
+      }
+
+      const payload = {
+        type: 'report_share',
+        tenantId: ctx.tenantId,
+        courseId: input.courseId,
+        courseRunId: input.courseRunId || null,
+        tariffId: input.tariffId || null,
+        kuratorUserId: input.kuratorUserId || null,
+        generatedBy: ctx.user.userId,
+      };
+
+      const token = jwt.sign(payload, jwtSecret, { expiresIn: '30d' });
+      return { token };
+    }),
+
+  /**
+   * Syncs course_run_members with active incomes.
+   * Add customers newly enrolled (have active income but missing from roster).
+   * Remove stale roster entries (no active income on the run's course).
+   */
+  syncCourseRunMembers: adminProcedure
+    .input(
+      z.object({
+        courseRunId: z.string(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const run = await prisma.courseRun.findFirst({
+        where: { id: input.courseRunId, tenantId: ctx.tenantId },
+        select: { id: true, courseId: true },
+      });
+      if (!run) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
+      }
+
+      // Active income customers for this course
+      const activeIncomeCustomers = await prisma.income.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseId: run.courseId,
+          type: 'new_sale',
+          lifecycleStatus: 'active',
+        },
+        select: { customerId: true },
+        distinct: ['customerId'],
+      });
+      const activeSet = new Set(activeIncomeCustomers.map((r) => r.customerId));
+
+      // Current roster
+      const currentRoster = await prisma.courseRunMember.findMany({
+        where: { tenantId: ctx.tenantId, courseRunId: run.id },
+        select: { customerId: true },
+      });
+      const rosterSet = new Set(currentRoster.map((r) => r.customerId));
+
+      // Customers to add: active income but not in roster
+      const toAdd = Array.from(activeSet).filter((id) => !rosterSet.has(id));
+      // Customers to remove: in roster but no active income
+      const toRemove = Array.from(rosterSet).filter((id) => !activeSet.has(id));
+
+      if (toAdd.length > 0) {
+        await prisma.courseRunMember.createMany({
+          data: toAdd.map((customerId) => ({
+            tenantId: ctx.tenantId,
+            courseRunId: run.id,
+            customerId,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      if (toRemove.length > 0) {
+        await prisma.courseRunMember.deleteMany({
+          where: {
+            tenantId: ctx.tenantId,
+            courseRunId: run.id,
+            customerId: { in: toRemove },
+          },
+        });
+      }
+
+      return {
+        courseRunId: run.id,
+        courseId: run.courseId,
+        added: toAdd.length,
+        removed: toRemove.length,
+        totalActive: activeSet.size,
+        totalRoster: activeSet.size, // After sync, roster matches active
+      };
     }),
 });
 
