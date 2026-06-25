@@ -1,7 +1,8 @@
-import { router, protectedProcedure, adminProcedure, managerProcedure } from '../trpc';
+import { router, protectedProcedure, adminProcedure, managerProcedure, publicProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
+import jwt from 'jsonwebtoken';
 import { getCustomersScopedToKurator } from '../utils/kuratorScope';
 import {
   isMissingCourseRunHiddenColumnError,
@@ -415,6 +416,16 @@ async function getCourseIdFromRun(tenantId: string, courseRunId?: string): Promi
   }
 }
 
+/**
+ * Resolves the set of customer IDs that belong to a course run.
+ *
+ * ALWAYS combines BOTH sources:
+ *   1. Explicit course_run_members roster (if any)
+ *   2. Active new_sale incomes on the run's course
+ *
+ * This ensures new enrollments from Dashboarduz appear immediately,
+ * regardless of whether the run has an explicit roster.
+ */
 async function resolveRunMemberCustomerIds(params: {
   tenantId: string;
   courseRunId: string;
@@ -422,13 +433,16 @@ async function resolveRunMemberCustomerIds(params: {
 }): Promise<string[]> {
   const { tenantId, courseRunId, courseId } = params;
 
+  const idSet = new Set<string>();
+
+  // Source 1: explicit course_run_members (if the table exists)
   try {
     const explicit = await prisma.courseRunMember.findMany({
       where: { tenantId, courseRunId },
       select: { customerId: true },
     });
-    if (explicit.length > 0) {
-      return explicit.map((row) => row.customerId);
+    for (const row of explicit) {
+      idSet.add(row.customerId);
     }
   } catch (error) {
     if (!isMissingCourseRunMembersTableError(error)) {
@@ -436,6 +450,7 @@ async function resolveRunMemberCustomerIds(params: {
     }
   }
 
+  // Source 2: active new_sale incomes on the course (always)
   const enrolled = await prisma.income.findMany({
     where: {
       tenantId,
@@ -446,7 +461,11 @@ async function resolveRunMemberCustomerIds(params: {
     distinct: ['customerId'],
   });
 
-  return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
+  for (const row of enrolled) {
+    if (row.customerId) idSet.add(row.customerId);
+  }
+
+  return Array.from(idSet);
 }
 
 type StudentPerformance = {
@@ -665,6 +684,592 @@ async function buildStudentPerformanceMap(params: {
   }
 
   return map;
+}
+
+
+async function getAmaliyReportMatrixData(params: {
+  tenantId: string;
+  courseId: string;
+  courseRunId?: string;
+  tariffId?: string;
+  kuratorUserId?: string;
+  datePreset: z.infer<typeof amaliyReportDatePresetSchema>;
+}) {
+  const input = params;
+  const { tenantId } = params;
+
+      let course = await prisma.course.findFirst({
+        where: { id: input.courseId, tenantId, isActive: true },
+        select: { id: true, name: true, startDate: true, endDate: true },
+      }).catch(async (error) => {
+        if (!isMissingCourseEndDateColumnError(error)) {
+          throw error;
+        }
+        const fallback = await prisma.course.findFirst({
+          where: { id: input.courseId, tenantId, isActive: true },
+          select: { id: true, name: true, startDate: true },
+        });
+        return fallback ? { ...fallback, endDate: null as Date | null } : null;
+      });
+      if (!course) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+      }
+
+      const selectedRun = input.courseRunId
+        ? await prisma.courseRun.findFirst({
+            where: {
+              id: input.courseRunId,
+              courseId: input.courseId,
+              tenantId,
+            },
+            select: {
+              id: true,
+              name: true,
+              courseId: true,
+              startDate: true,
+              endDate: true,
+              kuratorUserId: true,
+            },
+          })
+        : null;
+
+      if (input.courseRunId && !selectedRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
+      }
+
+      const loadLatestRunForCourse = (withHiddenFilter: boolean) =>
+        prisma.courseRun.findFirst({
+          where: {
+            tenantId,
+            courseId: input.courseId,
+            ...(withHiddenFilter ? { isHidden: false } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            kuratorUserId: true,
+          },
+          orderBy: { startDate: 'desc' },
+        });
+
+      let latestRunForCourse = selectedRun;
+      if (!latestRunForCourse) {
+        try {
+          latestRunForCourse = await loadLatestRunForCourse(true);
+        } catch (error) {
+          if (!isMissingCourseRunHiddenColumnError(error)) {
+            throw error;
+          }
+          latestRunForCourse = await loadLatestRunForCourse(false);
+        }
+      }
+
+      const todayStart = startOfDayLocal(new Date());
+      const courseStart = course.startDate ? startOfDayLocal(course.startDate) : null;
+      const courseEndExclusive = course.endDate ? addDays(startOfDayLocal(course.endDate), 1) : null;
+
+      const latestRunAnchorStart = latestRunForCourse
+        ? startOfDayLocal(latestRunForCourse.startDate)
+        : (courseStart ?? todayStart);
+      const latestRunAnchorEndExclusive = latestRunForCourse
+        ? (
+            selectedRun
+              ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
+              : maxDate(addDays(startOfDayLocal(latestRunForCourse.endDate), 1), addDays(todayStart, 1))
+          )
+        : addDays(latestRunAnchorStart, 42);
+
+      const selectedRunAnchorStart = selectedRun ? startOfDayLocal(selectedRun.startDate) : null;
+      const selectedRunAnchorEndExclusive = selectedRun ? addDays(startOfDayLocal(selectedRun.endDate), 1) : null;
+
+      // Date window source priority:
+      // 1. selected run dates when a run is chosen
+      // 2. course dates for "all runs" report mode
+      // 3. latest run fallback when course endDate is unavailable
+      const anchorRunStart = selectedRunAnchorStart
+        ?? courseStart
+        ?? latestRunAnchorStart;
+      const anchorRunEndExclusive = selectedRunAnchorEndExclusive
+        ?? (
+          courseStart
+            ? (
+                courseEndExclusive && courseEndExclusive.getTime() > anchorRunStart.getTime()
+                  ? courseEndExclusive
+                  : maxDate(latestRunAnchorEndExclusive, addDays(anchorRunStart, 1))
+              )
+            : latestRunAnchorEndExclusive
+        );
+
+      let dateRange: { from: Date; to: Date };
+
+      if (input.datePreset === 'today') {
+        dateRange = { from: todayStart, to: addDays(todayStart, 1) };
+      } else if (selectedRun || courseStart || latestRunForCourse) {
+        dateRange = resolveAmaliyReportDateRange({
+          datePreset: input.datePreset,
+          runStart: anchorRunStart,
+          runEndExclusive: anchorRunEndExclusive,
+        });
+      } else {
+        dateRange =
+          input.datePreset === 'all'
+            ? { from: anchorRunStart, to: addDays(todayStart, 1) }
+            : { from: todayStart, to: addDays(todayStart, 1) };
+      }
+
+      const weekRanges = resolveAmaliyWeekRanges({
+        runStart: anchorRunStart,
+        runEndExclusive: anchorRunEndExclusive,
+      });
+      const activeWeekRange: { from: Date; to: Date } | null =
+        AMALIY_WEEK_KEYS.includes(input.datePreset as AmaliyWeekKey)
+          ? weekRanges[input.datePreset as AmaliyWeekKey]
+          : null;
+      const activeWeekDays = activeWeekRange ? enumerateDateRange(activeWeekRange) : [];
+
+      let assignedStudentIds: string[] = [];
+      if (selectedRun) {
+        assignedStudentIds = await resolveRunMemberCustomerIds({
+          tenantId,
+          courseRunId: selectedRun.id,
+          courseId: selectedRun.courseId,
+        });
+      } else {
+        const enrolled = await prisma.income.findMany({
+          where: {
+            tenantId,
+            courseId: input.courseId,
+            ...ACTIVE_ENROLLMENT_FILTER,
+          },
+          select: { customerId: true },
+          distinct: ['customerId'],
+        });
+        assignedStudentIds = enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
+      }
+
+      if (input.kuratorUserId) {
+        const kuratorScopedIds = await getCustomersScopedToKurator({
+          tenantId,
+          kuratorUserId: input.kuratorUserId,
+          courseRunId: selectedRun?.id,
+        });
+        const scopedSet = new Set(kuratorScopedIds);
+        assignedStudentIds = assignedStudentIds.filter((id) => scopedSet.has(id));
+      }
+
+      const kuratorsByStudent = new Map<string, Set<string>>();
+      const assignments = await prisma.kuratorAssignment.findMany({
+        where: {
+          tenantId,
+          isActive: true,
+          ...(selectedRun ? { courseRunId: selectedRun.id } : { courseRun: { courseId: input.courseId } }),
+        },
+        select: {
+          customerId: true,
+          kurator: { select: { id: true, name: true, username: true } },
+        },
+      });
+
+      for (const row of assignments) {
+        const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
+        const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
+        current.add(kuratorName);
+        kuratorsByStudent.set(row.customerId, current);
+      }
+
+      const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
+      if (assignedStudentIds.length > 0) {
+        const incomes = await prisma.income.findMany({
+          where: {
+            tenantId,
+            customerId: { in: assignedStudentIds },
+            courseId: input.courseId,
+            ...ACTIVE_ENROLLMENT_FILTER,
+          },
+          select: {
+            customerId: true,
+            tariffId: true,
+            tariff: { select: { name: true } },
+            entryDate: true,
+          },
+          orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }],
+        });
+
+        for (const income of incomes) {
+          if (!latestTariffByStudent.has(income.customerId)) {
+            latestTariffByStudent.set(income.customerId, {
+              tariffId: income.tariffId,
+              tariffName: income.tariff?.name ?? null,
+            });
+          }
+        }
+      }
+
+      const filteredStudentIds = input.tariffId
+        ? assignedStudentIds.filter((customerId) => latestTariffByStudent.get(customerId)?.tariffId === input.tariffId)
+        : assignedStudentIds;
+
+      const loadPractices = (withHiddenFilter: boolean) =>
+        prisma.exerciseDefinition.findMany({
+          where: {
+            tenantId,
+            courseId: input.courseId,
+            isActive: true,
+            ...(withHiddenFilter ? { isHidden: false } : {}),
+          },
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            orderIndex: true,
+          },
+          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
+        });
+
+      let practices: Awaited<ReturnType<typeof loadPractices>>;
+      try {
+        practices = await loadPractices(true);
+      } catch (error) {
+        if (!isMissingExerciseDefinitionHiddenColumnError(error)) {
+          throw error;
+        }
+        practices = await loadPractices(false);
+      }
+
+      const students = filteredStudentIds.length
+        ? await prisma.customer.findMany({
+            where: {
+              tenantId,
+              id: { in: filteredStudentIds },
+            },
+            select: {
+              id: true,
+              name: true,
+              customerNumber: true,
+            },
+            orderBy: { name: 'asc' },
+          })
+        : [];
+
+      const practiceIds = practices.map((practice) => practice.id);
+      const shouldLoadLogs =
+        students.length > 0 &&
+        practiceIds.length > 0 &&
+        dateRange.from.getTime() < dateRange.to.getTime();
+
+      const logs = shouldLoadLogs
+        ? await prisma.studentExerciseLog.findMany({
+            where: {
+              tenantId,
+              customerId: { in: students.map((student) => student.id) },
+              exerciseDefinitionId: { in: practiceIds },
+              completedAt: { gte: dateRange.from, lt: dateRange.to },
+            },
+            select: {
+              customerId: true,
+              exerciseDefinitionId: true,
+              points: true,
+              colorHex: true,
+              completedAt: true,
+              createdAt: true,
+            },
+            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+          })
+        : [];
+
+      const sumPointsByCell = new Map<string, number>();
+      const latestColorByCell = new Map<string, string | null>();
+      const seenLogsByCell = new Set<string>();
+      const weekPointsByCell = new Map<string, Record<AmaliyWeekKey, number>>();
+      const weekHasLogsByCell = new Map<string, Record<AmaliyWeekKey, boolean>>();
+      const weekColorStatsByCell = new Map<
+        string,
+        Record<AmaliyWeekKey, Map<string, { count: number; latestRank: number }>>
+      >();
+      const dayPointsByCell = new Map<string, Map<string, number>>();
+      const dayHasLogsByCell = new Map<string, Map<string, boolean>>();
+      const dayColorByCell = new Map<string, Map<string, string | null>>();
+      const practiceTypeById = new Map(practices.map((practice) => [practice.id, practice.type]));
+
+      for (let idx = 0; idx < logs.length; idx += 1) {
+        const log = logs[idx];
+        const practiceType = practiceTypeById.get(log.exerciseDefinitionId);
+        if (!practiceType) continue;
+
+        const completedDay = startOfDayLocal(log.completedAt);
+        if (!isAmaliyPracticeEligibleOnDate(practiceType, completedDay)) {
+          continue;
+        }
+
+        const key = `${log.customerId}:${log.exerciseDefinitionId}`;
+        const pointValue = log.points ?? 0;
+        sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + pointValue);
+        seenLogsByCell.add(key);
+        if (!latestColorByCell.has(key)) {
+          latestColorByCell.set(key, log.colorHex ?? null);
+        }
+
+        const weekPoints = weekPointsByCell.get(key) ?? {
+          week1: 0,
+          week2: 0,
+          week3: 0,
+          week4: 0,
+          week5: 0,
+          week6: 0,
+        };
+        const weekHasLogs = weekHasLogsByCell.get(key) ?? {
+          week1: false,
+          week2: false,
+          week3: false,
+          week4: false,
+          week5: false,
+          week6: false,
+        };
+        const weekColorStats = weekColorStatsByCell.get(key) ?? {
+          week1: new Map<string, { count: number; latestRank: number }>(),
+          week2: new Map<string, { count: number; latestRank: number }>(),
+          week3: new Map<string, { count: number; latestRank: number }>(),
+          week4: new Map<string, { count: number; latestRank: number }>(),
+          week5: new Map<string, { count: number; latestRank: number }>(),
+          week6: new Map<string, { count: number; latestRank: number }>(),
+        };
+        let matchedWeek = false;
+        for (const weekKey of AMALIY_WEEK_KEYS) {
+          if (isDateInRange(completedDay, weekRanges[weekKey])) {
+            weekPoints[weekKey] += pointValue;
+            weekHasLogs[weekKey] = true;
+            matchedWeek = true;
+            if (log.colorHex) {
+              const bucket = weekColorStats[weekKey];
+              const current = bucket.get(log.colorHex);
+              if (current) {
+                current.count += 1;
+              } else {
+                bucket.set(log.colorHex, { count: 1, latestRank: idx });
+              }
+            }
+          }
+        }
+        if (!matchedWeek && input.datePreset === 'all' && isDateInRange(completedDay, dateRange)) {
+          weekPoints.week6 += pointValue;
+          weekHasLogs.week6 = true;
+          if (log.colorHex) {
+            const bucket = weekColorStats.week6;
+            const current = bucket.get(log.colorHex);
+            if (current) {
+              current.count += 1;
+            } else {
+              bucket.set(log.colorHex, { count: 1, latestRank: idx });
+            }
+          }
+        }
+        weekPointsByCell.set(key, weekPoints);
+        weekHasLogsByCell.set(key, weekHasLogs);
+        weekColorStatsByCell.set(key, weekColorStats);
+
+        if (activeWeekRange && isDateInRange(completedDay, activeWeekRange)) {
+          const dayMap = dayPointsByCell.get(key) ?? new Map<string, number>();
+          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
+          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
+          const dayKey = toDayKey(completedDay);
+          dayMap.set(dayKey, (dayMap.get(dayKey) ?? 0) + pointValue);
+          dayHasLogs.set(dayKey, true);
+          if (!dayColors.has(dayKey)) {
+            dayColors.set(dayKey, log.colorHex ?? null);
+          }
+          dayPointsByCell.set(key, dayMap);
+          dayHasLogsByCell.set(key, dayHasLogs);
+          dayColorByCell.set(key, dayColors);
+        }
+      }
+
+      const weekApplicabilityByPracticeId = new Map<string, Record<AmaliyWeekKey, boolean>>();
+      const dayApplicabilityByPracticeId = new Map<string, Map<string, boolean>>();
+      for (const practice of practices) {
+        const weekApplicability: Record<AmaliyWeekKey, boolean> = {
+          week1: false,
+          week2: false,
+          week3: false,
+          week4: false,
+          week5: false,
+          week6: false,
+        };
+        for (const weekKey of AMALIY_WEEK_KEYS) {
+          const weekDays = enumerateDateRange(weekRanges[weekKey]);
+          weekApplicability[weekKey] = weekDays.some((day) =>
+            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+          );
+        }
+        weekApplicabilityByPracticeId.set(practice.id, weekApplicability);
+
+        const dayApplicability = new Map<string, boolean>();
+        for (const day of activeWeekDays) {
+          dayApplicability.set(
+            day.date,
+            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+          );
+        }
+        dayApplicabilityByPracticeId.set(practice.id, dayApplicability);
+      }
+
+      const rows = students.map((student) => {
+        const cells: Record<
+          string,
+          {
+            points: number;
+            totalPoints: number;
+            colorHex: string | null;
+            hasLogs: boolean;
+            weekPoints: Record<AmaliyWeekKey, number>;
+            weekColors: Record<AmaliyWeekKey, string | null>;
+            dayPoints: Array<{ date: string; label: string; points: number }>;
+            dayStats: Array<{
+              date: string;
+              label: string;
+              points: number;
+              hasLog: boolean;
+              colorHex: string | null;
+              isApplicable: boolean;
+            }>;
+            weekStats: Record<
+              AmaliyWeekKey,
+              { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
+            >;
+          }
+        > = {};
+        let totalPoints = 0;
+
+        for (const practice of practices) {
+          const key = `${student.id}:${practice.id}`;
+          const points = sumPointsByCell.get(key) ?? 0;
+          const colorHex = latestColorByCell.get(key) ?? null;
+          const hasLogs = seenLogsByCell.has(key);
+          const weekPoints = weekPointsByCell.get(key) ?? {
+            week1: 0,
+            week2: 0,
+            week3: 0,
+            week4: 0,
+            week5: 0,
+            week6: 0,
+          };
+          const weekHasLogs = weekHasLogsByCell.get(key) ?? {
+            week1: false,
+            week2: false,
+            week3: false,
+            week4: false,
+            week5: false,
+            week6: false,
+          };
+          const weekColorStats = weekColorStatsByCell.get(key) ?? {
+            week1: new Map<string, { count: number; latestRank: number }>(),
+            week2: new Map<string, { count: number; latestRank: number }>(),
+            week3: new Map<string, { count: number; latestRank: number }>(),
+            week4: new Map<string, { count: number; latestRank: number }>(),
+            week5: new Map<string, { count: number; latestRank: number }>(),
+            week6: new Map<string, { count: number; latestRank: number }>(),
+          };
+          const weekColors: Record<AmaliyWeekKey, string | null> = {
+            week1: null,
+            week2: null,
+            week3: null,
+            week4: null,
+            week5: null,
+            week6: null,
+          };
+          const weekStats: Record<
+            AmaliyWeekKey,
+            { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
+          > = {
+            week1: { points: weekPoints.week1, hasLog: weekHasLogs.week1, colorHex: null, isApplicable: false },
+            week2: { points: weekPoints.week2, hasLog: weekHasLogs.week2, colorHex: null, isApplicable: false },
+            week3: { points: weekPoints.week3, hasLog: weekHasLogs.week3, colorHex: null, isApplicable: false },
+            week4: { points: weekPoints.week4, hasLog: weekHasLogs.week4, colorHex: null, isApplicable: false },
+            week5: { points: weekPoints.week5, hasLog: weekHasLogs.week5, colorHex: null, isApplicable: false },
+            week6: { points: weekPoints.week6, hasLog: weekHasLogs.week6, colorHex: null, isApplicable: false },
+          };
+          for (const weekKey of AMALIY_WEEK_KEYS) {
+            let bestColor: string | null = null;
+            let bestCount = -1;
+            let bestRank = Number.POSITIVE_INFINITY;
+            for (const [colorHex, info] of weekColorStats[weekKey]) {
+              if (
+                info.count > bestCount ||
+                (info.count === bestCount && info.latestRank < bestRank)
+              ) {
+                bestColor = colorHex;
+                bestCount = info.count;
+                bestRank = info.latestRank;
+              }
+            }
+            weekColors[weekKey] = bestColor;
+            weekStats[weekKey].colorHex = bestColor;
+            weekStats[weekKey].isApplicable =
+              weekApplicabilityByPracticeId.get(practice.id)?.[weekKey] ?? false;
+          }
+          const dayPointMap = dayPointsByCell.get(key) ?? new Map<string, number>();
+          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
+          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
+          const dayStats = activeWeekDays.map((day) => ({
+            date: day.date,
+            label: day.label,
+            points: dayPointMap.get(day.date) ?? 0,
+            hasLog: dayHasLogs.get(day.date) ?? false,
+            colorHex: dayColors.get(day.date) ?? null,
+            isApplicable: dayApplicabilityByPracticeId.get(practice.id)?.get(day.date) ?? false,
+          }));
+          const dayPoints = dayStats.map((day) => ({
+            date: day.date,
+            label: day.label,
+            points: day.points,
+          }));
+
+          cells[practice.id] = {
+            points,
+            totalPoints: points,
+            colorHex,
+            hasLogs,
+            weekPoints,
+            weekColors,
+            dayPoints,
+            dayStats,
+            weekStats,
+          };
+          // "extra" (Qo'shimcha mashqlar) is displayed in report cells
+          // but excluded from the aggregated Jami ball.
+          if (practice.type !== 'extra') {
+            totalPoints += points;
+          }
+        }
+
+        return {
+          id: student.id,
+          name: student.name,
+          customerNumber: student.customerNumber,
+          tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
+          kuratorNames: Array.from(kuratorsByStudent.get(student.id) ?? []).sort((a, b) => a.localeCompare(b)),
+          cells,
+          totalPoints,
+        };
+      });
+
+      return {
+        meta: {
+          courseId: course.id,
+          courseName: course.name,
+          courseRunId: selectedRun?.id ?? null,
+          courseRunName: selectedRun?.name ?? null,
+          datePreset: input.datePreset,
+          dateFrom: toDateLabel(dateRange.from),
+          dateToExclusive: toDateLabel(dateRange.to),
+          dateToInclusive:
+            dateRange.to.getTime() > dateRange.from.getTime() ? toDateLabel(addDays(dateRange.to, -1)) : null,
+        },
+        practices,
+        students: rows,
+      };
 }
 
 export const dashboardRouter = router({
@@ -1392,582 +1997,44 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { tenantId } = ctx;
-
-      let course = await prisma.course.findFirst({
-        where: { id: input.courseId, tenantId, isActive: true },
-        select: { id: true, name: true, startDate: true, endDate: true },
-      }).catch(async (error) => {
-        if (!isMissingCourseEndDateColumnError(error)) {
-          throw error;
-        }
-        const fallback = await prisma.course.findFirst({
-          where: { id: input.courseId, tenantId, isActive: true },
-          select: { id: true, name: true, startDate: true },
-        });
-        return fallback ? { ...fallback, endDate: null as Date | null } : null;
+      return getAmaliyReportMatrixData({
+        tenantId: ctx.tenantId,
+        courseId: input.courseId,
+        courseRunId: input.courseRunId,
+        tariffId: input.tariffId,
+        kuratorUserId: input.kuratorUserId,
+        datePreset: input.datePreset,
       });
-      if (!course) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
-      }
-
-      const selectedRun = input.courseRunId
-        ? await prisma.courseRun.findFirst({
-            where: {
-              id: input.courseRunId,
-              courseId: input.courseId,
-              tenantId,
-            },
-            select: {
-              id: true,
-              name: true,
-              courseId: true,
-              startDate: true,
-              endDate: true,
-              kuratorUserId: true,
-            },
-          })
-        : null;
-
-      if (input.courseRunId && !selectedRun) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
-      }
-
-      const loadLatestRunForCourse = (withHiddenFilter: boolean) =>
-        prisma.courseRun.findFirst({
-          where: {
-            tenantId,
-            courseId: input.courseId,
-            ...(withHiddenFilter ? { isHidden: false } : {}),
-          },
-          select: {
-            id: true,
-            name: true,
-            courseId: true,
-            startDate: true,
-            endDate: true,
-            kuratorUserId: true,
-          },
-          orderBy: { startDate: 'desc' },
-        });
-
-      let latestRunForCourse = selectedRun;
-      if (!latestRunForCourse) {
-        try {
-          latestRunForCourse = await loadLatestRunForCourse(true);
-        } catch (error) {
-          if (!isMissingCourseRunHiddenColumnError(error)) {
-            throw error;
-          }
-          latestRunForCourse = await loadLatestRunForCourse(false);
-        }
-      }
-
-      const todayStart = startOfDayLocal(new Date());
-      const courseStart = course.startDate ? startOfDayLocal(course.startDate) : null;
-      const courseEndExclusive = course.endDate ? addDays(startOfDayLocal(course.endDate), 1) : null;
-
-      const latestRunAnchorStart = latestRunForCourse
-        ? startOfDayLocal(latestRunForCourse.startDate)
-        : (courseStart ?? todayStart);
-      const latestRunAnchorEndExclusive = latestRunForCourse
-        ? (
-            selectedRun
-              ? addDays(startOfDayLocal(latestRunForCourse.endDate), 1)
-              : maxDate(addDays(startOfDayLocal(latestRunForCourse.endDate), 1), addDays(todayStart, 1))
-          )
-        : addDays(latestRunAnchorStart, 42);
-
-      const selectedRunAnchorStart = selectedRun ? startOfDayLocal(selectedRun.startDate) : null;
-      const selectedRunAnchorEndExclusive = selectedRun ? addDays(startOfDayLocal(selectedRun.endDate), 1) : null;
-
-      // Date window source priority:
-      // 1. selected run dates when a run is chosen
-      // 2. course dates for "all runs" report mode
-      // 3. latest run fallback when course endDate is unavailable
-      const anchorRunStart = selectedRunAnchorStart
-        ?? courseStart
-        ?? latestRunAnchorStart;
-      const anchorRunEndExclusive = selectedRunAnchorEndExclusive
-        ?? (
-          courseStart
-            ? (
-                courseEndExclusive && courseEndExclusive.getTime() > anchorRunStart.getTime()
-                  ? courseEndExclusive
-                  : maxDate(latestRunAnchorEndExclusive, addDays(anchorRunStart, 1))
-              )
-            : latestRunAnchorEndExclusive
-        );
-
-      let dateRange: { from: Date; to: Date };
-
-      if (input.datePreset === 'today') {
-        dateRange = { from: todayStart, to: addDays(todayStart, 1) };
-      } else if (selectedRun || courseStart || latestRunForCourse) {
-        dateRange = resolveAmaliyReportDateRange({
-          datePreset: input.datePreset,
-          runStart: anchorRunStart,
-          runEndExclusive: anchorRunEndExclusive,
-        });
-      } else {
-        dateRange =
-          input.datePreset === 'all'
-            ? { from: anchorRunStart, to: addDays(todayStart, 1) }
-            : { from: todayStart, to: addDays(todayStart, 1) };
-      }
-
-      const weekRanges = resolveAmaliyWeekRanges({
-        runStart: anchorRunStart,
-        runEndExclusive: anchorRunEndExclusive,
-      });
-      const activeWeekRange: { from: Date; to: Date } | null =
-        AMALIY_WEEK_KEYS.includes(input.datePreset as AmaliyWeekKey)
-          ? weekRanges[input.datePreset as AmaliyWeekKey]
-          : null;
-      const activeWeekDays = activeWeekRange ? enumerateDateRange(activeWeekRange) : [];
-
-      let assignedStudentIds: string[] = [];
-      if (selectedRun) {
-        assignedStudentIds = await resolveRunMemberCustomerIds({
-          tenantId,
-          courseRunId: selectedRun.id,
-          courseId: selectedRun.courseId,
-        });
-      } else {
-        const enrolled = await prisma.income.findMany({
-          where: {
-            tenantId,
-            courseId: input.courseId,
-            ...ACTIVE_ENROLLMENT_FILTER,
-          },
-          select: { customerId: true },
-          distinct: ['customerId'],
-        });
-        assignedStudentIds = enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
-      }
-
-      if (input.kuratorUserId) {
-        const kuratorScopedIds = await getCustomersScopedToKurator({
-          tenantId,
-          kuratorUserId: input.kuratorUserId,
-          courseRunId: selectedRun?.id,
-        });
-        const scopedSet = new Set(kuratorScopedIds);
-        assignedStudentIds = assignedStudentIds.filter((id) => scopedSet.has(id));
-      }
-
-      const kuratorsByStudent = new Map<string, Set<string>>();
-      const assignments = await prisma.kuratorAssignment.findMany({
-        where: {
-          tenantId,
-          isActive: true,
-          ...(selectedRun ? { courseRunId: selectedRun.id } : { courseRun: { courseId: input.courseId } }),
-        },
-        select: {
-          customerId: true,
-          kurator: { select: { id: true, name: true, username: true } },
-        },
-      });
-
-      for (const row of assignments) {
-        const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
-        const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
-        current.add(kuratorName);
-        kuratorsByStudent.set(row.customerId, current);
-      }
-
-      const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
-      if (assignedStudentIds.length > 0) {
-        const incomes = await prisma.income.findMany({
-          where: {
-            tenantId,
-            customerId: { in: assignedStudentIds },
-            courseId: input.courseId,
-            ...ACTIVE_ENROLLMENT_FILTER,
-          },
-          select: {
-            customerId: true,
-            tariffId: true,
-            tariff: { select: { name: true } },
-            entryDate: true,
-          },
-          orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }],
-        });
-
-        for (const income of incomes) {
-          if (!latestTariffByStudent.has(income.customerId)) {
-            latestTariffByStudent.set(income.customerId, {
-              tariffId: income.tariffId,
-              tariffName: income.tariff?.name ?? null,
-            });
-          }
-        }
-      }
-
-      const filteredStudentIds = input.tariffId
-        ? assignedStudentIds.filter((customerId) => latestTariffByStudent.get(customerId)?.tariffId === input.tariffId)
-        : assignedStudentIds;
-
-      const loadPractices = (withHiddenFilter: boolean) =>
-        prisma.exerciseDefinition.findMany({
-          where: {
-            tenantId,
-            courseId: input.courseId,
-            isActive: true,
-            ...(withHiddenFilter ? { isHidden: false } : {}),
-          },
-          select: {
-            id: true,
-            name: true,
-            type: true,
-            orderIndex: true,
-          },
-          orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
-        });
-
-      let practices: Awaited<ReturnType<typeof loadPractices>>;
-      try {
-        practices = await loadPractices(true);
-      } catch (error) {
-        if (!isMissingExerciseDefinitionHiddenColumnError(error)) {
-          throw error;
-        }
-        practices = await loadPractices(false);
-      }
-
-      const students = filteredStudentIds.length
-        ? await prisma.customer.findMany({
-            where: {
-              tenantId,
-              id: { in: filteredStudentIds },
-            },
-            select: {
-              id: true,
-              name: true,
-              customerNumber: true,
-            },
-            orderBy: { name: 'asc' },
-          })
-        : [];
-
-      const practiceIds = practices.map((practice) => practice.id);
-      const shouldLoadLogs =
-        students.length > 0 &&
-        practiceIds.length > 0 &&
-        dateRange.from.getTime() < dateRange.to.getTime();
-
-      const logs = shouldLoadLogs
-        ? await prisma.studentExerciseLog.findMany({
-            where: {
-              tenantId,
-              customerId: { in: students.map((student) => student.id) },
-              exerciseDefinitionId: { in: practiceIds },
-              completedAt: { gte: dateRange.from, lt: dateRange.to },
-            },
-            select: {
-              customerId: true,
-              exerciseDefinitionId: true,
-              points: true,
-              colorHex: true,
-              completedAt: true,
-              createdAt: true,
-            },
-            orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
-          })
-        : [];
-
-      const sumPointsByCell = new Map<string, number>();
-      const latestColorByCell = new Map<string, string | null>();
-      const seenLogsByCell = new Set<string>();
-      const weekPointsByCell = new Map<string, Record<AmaliyWeekKey, number>>();
-      const weekHasLogsByCell = new Map<string, Record<AmaliyWeekKey, boolean>>();
-      const weekColorStatsByCell = new Map<
-        string,
-        Record<AmaliyWeekKey, Map<string, { count: number; latestRank: number }>>
-      >();
-      const dayPointsByCell = new Map<string, Map<string, number>>();
-      const dayHasLogsByCell = new Map<string, Map<string, boolean>>();
-      const dayColorByCell = new Map<string, Map<string, string | null>>();
-      const practiceTypeById = new Map(practices.map((practice) => [practice.id, practice.type]));
-
-      for (let idx = 0; idx < logs.length; idx += 1) {
-        const log = logs[idx];
-        const practiceType = practiceTypeById.get(log.exerciseDefinitionId);
-        if (!practiceType) continue;
-
-        const completedDay = startOfDayLocal(log.completedAt);
-        if (!isAmaliyPracticeEligibleOnDate(practiceType, completedDay)) {
-          continue;
-        }
-
-        const key = `${log.customerId}:${log.exerciseDefinitionId}`;
-        const pointValue = log.points ?? 0;
-        sumPointsByCell.set(key, (sumPointsByCell.get(key) ?? 0) + pointValue);
-        seenLogsByCell.add(key);
-        if (!latestColorByCell.has(key)) {
-          latestColorByCell.set(key, log.colorHex ?? null);
-        }
-
-        const weekPoints = weekPointsByCell.get(key) ?? {
-          week1: 0,
-          week2: 0,
-          week3: 0,
-          week4: 0,
-          week5: 0,
-          week6: 0,
-        };
-        const weekHasLogs = weekHasLogsByCell.get(key) ?? {
-          week1: false,
-          week2: false,
-          week3: false,
-          week4: false,
-          week5: false,
-          week6: false,
-        };
-        const weekColorStats = weekColorStatsByCell.get(key) ?? {
-          week1: new Map<string, { count: number; latestRank: number }>(),
-          week2: new Map<string, { count: number; latestRank: number }>(),
-          week3: new Map<string, { count: number; latestRank: number }>(),
-          week4: new Map<string, { count: number; latestRank: number }>(),
-          week5: new Map<string, { count: number; latestRank: number }>(),
-          week6: new Map<string, { count: number; latestRank: number }>(),
-        };
-        let matchedWeek = false;
-        for (const weekKey of AMALIY_WEEK_KEYS) {
-          if (isDateInRange(completedDay, weekRanges[weekKey])) {
-            weekPoints[weekKey] += pointValue;
-            weekHasLogs[weekKey] = true;
-            matchedWeek = true;
-            if (log.colorHex) {
-              const bucket = weekColorStats[weekKey];
-              const current = bucket.get(log.colorHex);
-              if (current) {
-                current.count += 1;
-              } else {
-                bucket.set(log.colorHex, { count: 1, latestRank: idx });
-              }
-            }
-          }
-        }
-        if (!matchedWeek && input.datePreset === 'all' && isDateInRange(completedDay, dateRange)) {
-          weekPoints.week6 += pointValue;
-          weekHasLogs.week6 = true;
-          if (log.colorHex) {
-            const bucket = weekColorStats.week6;
-            const current = bucket.get(log.colorHex);
-            if (current) {
-              current.count += 1;
-            } else {
-              bucket.set(log.colorHex, { count: 1, latestRank: idx });
-            }
-          }
-        }
-        weekPointsByCell.set(key, weekPoints);
-        weekHasLogsByCell.set(key, weekHasLogs);
-        weekColorStatsByCell.set(key, weekColorStats);
-
-        if (activeWeekRange && isDateInRange(completedDay, activeWeekRange)) {
-          const dayMap = dayPointsByCell.get(key) ?? new Map<string, number>();
-          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
-          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
-          const dayKey = toDayKey(completedDay);
-          dayMap.set(dayKey, (dayMap.get(dayKey) ?? 0) + pointValue);
-          dayHasLogs.set(dayKey, true);
-          if (!dayColors.has(dayKey)) {
-            dayColors.set(dayKey, log.colorHex ?? null);
-          }
-          dayPointsByCell.set(key, dayMap);
-          dayHasLogsByCell.set(key, dayHasLogs);
-          dayColorByCell.set(key, dayColors);
-        }
-      }
-
-      const weekApplicabilityByPracticeId = new Map<string, Record<AmaliyWeekKey, boolean>>();
-      const dayApplicabilityByPracticeId = new Map<string, Map<string, boolean>>();
-      for (const practice of practices) {
-        const weekApplicability: Record<AmaliyWeekKey, boolean> = {
-          week1: false,
-          week2: false,
-          week3: false,
-          week4: false,
-          week5: false,
-          week6: false,
-        };
-        for (const weekKey of AMALIY_WEEK_KEYS) {
-          const weekDays = enumerateDateRange(weekRanges[weekKey]);
-          weekApplicability[weekKey] = weekDays.some((day) =>
-            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
-          );
-        }
-        weekApplicabilityByPracticeId.set(practice.id, weekApplicability);
-
-        const dayApplicability = new Map<string, boolean>();
-        for (const day of activeWeekDays) {
-          dayApplicability.set(
-            day.date,
-            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
-          );
-        }
-        dayApplicabilityByPracticeId.set(practice.id, dayApplicability);
-      }
-
-      const rows = students.map((student) => {
-        const cells: Record<
-          string,
-          {
-            points: number;
-            totalPoints: number;
-            colorHex: string | null;
-            hasLogs: boolean;
-            weekPoints: Record<AmaliyWeekKey, number>;
-            weekColors: Record<AmaliyWeekKey, string | null>;
-            dayPoints: Array<{ date: string; label: string; points: number }>;
-            dayStats: Array<{
-              date: string;
-              label: string;
-              points: number;
-              hasLog: boolean;
-              colorHex: string | null;
-              isApplicable: boolean;
-            }>;
-            weekStats: Record<
-              AmaliyWeekKey,
-              { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
-            >;
-          }
-        > = {};
-        let totalPoints = 0;
-
-        for (const practice of practices) {
-          const key = `${student.id}:${practice.id}`;
-          const points = sumPointsByCell.get(key) ?? 0;
-          const colorHex = latestColorByCell.get(key) ?? null;
-          const hasLogs = seenLogsByCell.has(key);
-          const weekPoints = weekPointsByCell.get(key) ?? {
-            week1: 0,
-            week2: 0,
-            week3: 0,
-            week4: 0,
-            week5: 0,
-            week6: 0,
-          };
-          const weekHasLogs = weekHasLogsByCell.get(key) ?? {
-            week1: false,
-            week2: false,
-            week3: false,
-            week4: false,
-            week5: false,
-            week6: false,
-          };
-          const weekColorStats = weekColorStatsByCell.get(key) ?? {
-            week1: new Map<string, { count: number; latestRank: number }>(),
-            week2: new Map<string, { count: number; latestRank: number }>(),
-            week3: new Map<string, { count: number; latestRank: number }>(),
-            week4: new Map<string, { count: number; latestRank: number }>(),
-            week5: new Map<string, { count: number; latestRank: number }>(),
-            week6: new Map<string, { count: number; latestRank: number }>(),
-          };
-          const weekColors: Record<AmaliyWeekKey, string | null> = {
-            week1: null,
-            week2: null,
-            week3: null,
-            week4: null,
-            week5: null,
-            week6: null,
-          };
-          const weekStats: Record<
-            AmaliyWeekKey,
-            { points: number; hasLog: boolean; colorHex: string | null; isApplicable: boolean }
-          > = {
-            week1: { points: weekPoints.week1, hasLog: weekHasLogs.week1, colorHex: null, isApplicable: false },
-            week2: { points: weekPoints.week2, hasLog: weekHasLogs.week2, colorHex: null, isApplicable: false },
-            week3: { points: weekPoints.week3, hasLog: weekHasLogs.week3, colorHex: null, isApplicable: false },
-            week4: { points: weekPoints.week4, hasLog: weekHasLogs.week4, colorHex: null, isApplicable: false },
-            week5: { points: weekPoints.week5, hasLog: weekHasLogs.week5, colorHex: null, isApplicable: false },
-            week6: { points: weekPoints.week6, hasLog: weekHasLogs.week6, colorHex: null, isApplicable: false },
-          };
-          for (const weekKey of AMALIY_WEEK_KEYS) {
-            let bestColor: string | null = null;
-            let bestCount = -1;
-            let bestRank = Number.POSITIVE_INFINITY;
-            for (const [colorHex, info] of weekColorStats[weekKey]) {
-              if (
-                info.count > bestCount ||
-                (info.count === bestCount && info.latestRank < bestRank)
-              ) {
-                bestColor = colorHex;
-                bestCount = info.count;
-                bestRank = info.latestRank;
-              }
-            }
-            weekColors[weekKey] = bestColor;
-            weekStats[weekKey].colorHex = bestColor;
-            weekStats[weekKey].isApplicable =
-              weekApplicabilityByPracticeId.get(practice.id)?.[weekKey] ?? false;
-          }
-          const dayPointMap = dayPointsByCell.get(key) ?? new Map<string, number>();
-          const dayHasLogs = dayHasLogsByCell.get(key) ?? new Map<string, boolean>();
-          const dayColors = dayColorByCell.get(key) ?? new Map<string, string | null>();
-          const dayStats = activeWeekDays.map((day) => ({
-            date: day.date,
-            label: day.label,
-            points: dayPointMap.get(day.date) ?? 0,
-            hasLog: dayHasLogs.get(day.date) ?? false,
-            colorHex: dayColors.get(day.date) ?? null,
-            isApplicable: dayApplicabilityByPracticeId.get(practice.id)?.get(day.date) ?? false,
-          }));
-          const dayPoints = dayStats.map((day) => ({
-            date: day.date,
-            label: day.label,
-            points: day.points,
-          }));
-
-          cells[practice.id] = {
-            points,
-            totalPoints: points,
-            colorHex,
-            hasLogs,
-            weekPoints,
-            weekColors,
-            dayPoints,
-            dayStats,
-            weekStats,
-          };
-          // "extra" (Qo'shimcha mashqlar) is displayed in report cells
-          // but excluded from the aggregated Jami ball.
-          if (practice.type !== 'extra') {
-            totalPoints += points;
-          }
-        }
-
-        return {
-          id: student.id,
-          name: student.name,
-          customerNumber: student.customerNumber,
-          tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
-          kuratorNames: Array.from(kuratorsByStudent.get(student.id) ?? []).sort((a, b) => a.localeCompare(b)),
-          cells,
-          totalPoints,
-        };
-      });
-
-      return {
-        meta: {
-          courseId: course.id,
-          courseName: course.name,
-          courseRunId: selectedRun?.id ?? null,
-          courseRunName: selectedRun?.name ?? null,
-          datePreset: input.datePreset,
-          dateFrom: toDateLabel(dateRange.from),
-          dateToExclusive: toDateLabel(dateRange.to),
-          dateToInclusive:
-            dateRange.to.getTime() > dateRange.from.getTime() ? toDateLabel(addDays(dateRange.to, -1)) : null,
-        },
-        practices,
-        students: rows,
-      };
     }),
 
+  sharedReport: publicProcedure
+    .input(z.object({ token: z.string() }))
+    .query(async ({ input }) => {
+      const jwtSecret = process.env.JWT_SECRET?.trim();
+      if (!jwtSecret) {
+        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'JWT sozlanmagan' });
+      }
+
+      let payload: any;
+      try {
+        payload = jwt.verify(input.token, jwtSecret);
+      } catch {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Havola yaroqsiz yoki muddati tugagan' });
+      }
+
+      if (payload.type !== 'report_share') {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Noto'g'ri havola" });
+      }
+
+      return getAmaliyReportMatrixData({
+        tenantId: payload.tenantId,
+        courseId: payload.courseId,
+        courseRunId: payload.courseRunId || undefined,
+        tariffId: payload.tariffId || undefined,
+        kuratorUserId: payload.kuratorUserId || undefined,
+        datePreset: 'all',
+      });
+    }),
   courseRuns: protectedProcedure.query(async ({ ctx }) => {
     const loadRuns = (withHiddenColumn: boolean) =>
       prisma.courseRun.findMany({
