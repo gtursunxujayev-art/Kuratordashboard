@@ -207,8 +207,8 @@ export default function HisobotPage() {
   const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 5 : 5;
 
   return (
-    <div className="px-5 md:px-10 lg:px-14 py-4 md:py-6 space-y-4">
-      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-2 z-30 shadow-sm">
+    <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
+      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-2 z-40 shadow-sm">
         <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
         <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
@@ -388,7 +388,7 @@ export default function HisobotPage() {
           <div className="overflow-x-auto">
             <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
+                <tr className="bg-gray-50 border-b border-gray-200 sticky top-[190px] z-30">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
                     className="sticky left-0 z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
@@ -414,21 +414,21 @@ export default function HisobotPage() {
                     Kurator
                   </th>
                   {isTodayPreset
-                    ? report.practices.map((practice) => (
+                    ? report.practices.map((practice, pIdx) => (
                         <th
                           key={practice.id}
-                          className="text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[46px] md:min-w-[96px]"
+                          className={`text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[46px] md:min-w-[96px] ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
                             <p className="text-[10px] md:text-xs">{practice.name}</p>
                           </div>
                         </th>
                       ))
-                    : report.practices.map((practice) => (
+                    : report.practices.map((practice, pIdx) => (
                         <th
                           key={practice.id}
                           colSpan={perPracticeColumnCount}
-                          className="text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200"
+                          className={`text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
                             <p className="text-[10px] md:text-xs">{practice.name}</p>
@@ -443,14 +443,18 @@ export default function HisobotPage() {
                   </th>
                 </tr>
                 {!isTodayPreset && (
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    {report.practices.flatMap((practice) =>
-                      subColumns.map((subColumn) => {
+                  <tr className="bg-gray-50 border-b border-gray-200 sticky top-[226px] z-30">
+                    {report.practices.flatMap((practice, pIdx) =>
+                      subColumns.map((subColumn, sIdx) => {
                         const isSelectedWeek = datePreset === subColumn.key;
+                        const isLastCol = sIdx === subColumns.length - 1;
+                        const isPracticeDivider = isLastCol && pIdx < report.practices.length - 1;
                         return (
                           <th
                             key={`${practice.id}-${subColumn.key}`}
-                            className={`text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold border-r border-gray-200 min-w-[36px] md:min-w-[48px] ${
+                            className={`text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold min-w-[36px] md:min-w-[48px] ${
+                              isPracticeDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'
+                            } ${
                               isSelectedWeek ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
                             }`}
                           >
@@ -486,7 +490,7 @@ export default function HisobotPage() {
                         {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
                       </td>
                       {isTodayPreset
-                        ? report.practices.map((practice) => {
+                        ? report.practices.map((practice, pIdx) => {
                             const cell = student.cells[practice.id];
                             const isApplicable = isPracticeEligibleOnDate(practice.type, report.meta.dateFrom);
                             const hasLog = cell?.hasLogs ?? false;
@@ -495,22 +499,23 @@ export default function HisobotPage() {
                             const isColored = Boolean(colorHex) && hasLog && isApplicable;
                             const backgroundColor = isColored ? colorHex! : '#FFFFFF';
                             const color = isColored ? textColorForBackground(colorHex) : '#374151';
+                            const isDivider = pIdx < report.practices.length - 1;
 
                             return (
                               <td
                                 key={`${student.id}-${practice.id}-today`}
-                                className="px-0.5 md:px-2 py-1.5 md:py-2 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
+                                className={`px-0.5 md:px-2 py-1.5 md:py-2 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
                                 style={{ backgroundColor, color }}
                               >
                                 {!isApplicable || !hasLog ? '-' : formatPoint(points)}
                               </td>
                             );
                           })
-                        : report.practices.flatMap((practice) => {
+                        : report.practices.flatMap((practice, pIdx) => {
                             const cell = student.cells[practice.id];
                             if (isWeekPreset) {
                               const dayStatsByDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
-                              return subColumns.map((dayColumn) => {
+                              return subColumns.map((dayColumn, dIdx) => {
                                 const stat = dayStatsByDate.get(dayColumn.key);
                                 const isApplicable = stat?.isApplicable ?? isPracticeEligibleOnDate(practice.type, dayColumn.key);
                                 const hasLog = stat?.hasLog ?? false;
@@ -519,10 +524,12 @@ export default function HisobotPage() {
                                 const isColored = Boolean(dayColor) && hasLog && isApplicable;
                                 const backgroundColor = isColored ? dayColor! : '#FFFFFF';
                                 const color = isColored ? textColorForBackground(dayColor) : '#374151';
+                                const isLastCol = dIdx === subColumns.length - 1;
+                                const isDivider = isLastCol && pIdx < report.practices.length - 1;
                                 return (
                                   <td
                                     key={`${student.id}-${practice.id}-${dayColumn.key}`}
-                                    className="px-0.5 md:px-1 py-1 md:py-1.5 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
+                                    className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
                                     style={{ backgroundColor, color }}
                                   >
                                     {!isApplicable || !hasLog ? '-' : formatPoint(points)}
@@ -531,7 +538,7 @@ export default function HisobotPage() {
                               });
                             }
 
-                            return WEEK_KEYS.map((weekKey) => {
+                            return WEEK_KEYS.map((weekKey, wIdx) => {
                               const weekStat = cell?.weekStats?.[weekKey];
                               const points = weekStat?.points ?? cell?.weekPoints?.[weekKey] ?? 0;
                               const hasLog = weekStat?.hasLog ?? false;
@@ -540,11 +547,13 @@ export default function HisobotPage() {
                               const isColored = Boolean(weekColor) && hasLog && isApplicable;
                               const backgroundColor = isColored ? weekColor! : '#FFFFFF';
                               const color = isColored ? textColorForBackground(weekColor) : '#374151';
+                              const isLastCol = wIdx === WEEK_KEYS.length - 1;
+                              const isDivider = isLastCol && pIdx < report.practices.length - 1;
 
                               return (
                                 <td
                                   key={`${student.id}-${practice.id}-${weekKey}`}
-                                  className="px-0.5 md:px-1 py-1 md:py-1.5 text-center border-r border-gray-100 font-semibold text-sm md:text-base"
+                                  className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
                                   style={{ backgroundColor, color }}
                                 >
                                   {!isApplicable || !hasLog ? '-' : formatPoint(points)}
