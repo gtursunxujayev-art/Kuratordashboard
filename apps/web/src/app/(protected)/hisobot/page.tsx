@@ -208,7 +208,7 @@ export default function HisobotPage() {
 
   return (
     <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
-      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-2 z-40 shadow-sm">
+      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-0 z-40 shadow-md">
         <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
         <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
@@ -388,7 +388,7 @@ export default function HisobotPage() {
           <div className="overflow-x-auto">
             <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200 sticky top-[190px] z-30">
+                <tr className="bg-gray-50 border-b border-gray-200">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
                     className="sticky left-0 z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
@@ -443,7 +443,7 @@ export default function HisobotPage() {
                   </th>
                 </tr>
                 {!isTodayPreset && (
-                  <tr className="bg-gray-50 border-b border-gray-200 sticky top-[226px] z-30">
+                  <tr className="bg-gray-50 border-b border-gray-200">
                     {report.practices.flatMap((practice, pIdx) =>
                       subColumns.map((subColumn, sIdx) => {
                         const isSelectedWeek = datePreset === subColumn.key;
