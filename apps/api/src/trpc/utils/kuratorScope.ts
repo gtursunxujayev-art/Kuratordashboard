@@ -5,6 +5,28 @@ import {
 } from '../../utils/prisma-visibility';
 import { resolveCourseRunMemberCustomerIds } from './runMembership';
 
+type ScopedRun = { id: string; courseId: string };
+
+async function resolveRunMemberSets(params: {
+  tenantId: string;
+  runs: ScopedRun[];
+}): Promise<Map<string, Set<string>>> {
+  const entries = await Promise.all(
+    params.runs.map(async (run) => [
+      run.id,
+      new Set(
+        await resolveCourseRunMemberCustomerIds({
+          tenantId: params.tenantId,
+          courseRunId: run.id,
+          courseId: run.courseId,
+        }),
+      ),
+    ] as const),
+  );
+
+  return new Map(entries);
+}
+
 /**
  * "Who is in this run?" resolution rule used by every kurator-scoped query:
  *   - If a run has any explicit `course_run_members` rows, those — and only those — are members.
@@ -39,7 +61,11 @@ export async function getCustomersScopedToKurator(params: {
           ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
           ...(courseRunId ? { courseRunId } : {}),
         },
-        select: { customerId: true },
+        select: {
+          customerId: true,
+          courseRunId: true,
+          courseRun: { select: { courseId: true } },
+        },
       }),
       prisma.courseRun.findMany({
         where: {
@@ -53,23 +79,30 @@ export async function getCustomersScopedToKurator(params: {
     ]),
   );
 
-  const result = new Set<string>(perCustomerRows.map((row) => row.customerId));
+  const assignmentRuns = Array.from(
+    new Map(
+      perCustomerRows.map((row) => [
+        row.courseRunId,
+        { id: row.courseRunId, courseId: row.courseRun.courseId },
+      ]),
+    ).values(),
+  );
+  const assignmentMemberSets = await resolveRunMemberSets({ tenantId, runs: assignmentRuns });
+  const result = new Set<string>();
+
+  for (const row of perCustomerRows) {
+    if (assignmentMemberSets.get(row.courseRunId)?.has(row.customerId)) {
+      result.add(row.customerId);
+    }
+  }
 
   if (ownedRuns.length === 0) {
     return Array.from(result);
   }
 
-  const ownedRunMembers = await Promise.all(
-    ownedRuns.map((run) =>
-      resolveCourseRunMemberCustomerIds({
-        tenantId,
-        courseRunId: run.id,
-        courseId: run.courseId,
-      }),
-    ),
-  );
+  const ownedRunMemberSets = await resolveRunMemberSets({ tenantId, runs: ownedRuns });
 
-  for (const memberIds of ownedRunMembers) {
+  for (const memberIds of ownedRunMemberSets.values()) {
     for (const customerId of memberIds) {
       result.add(customerId);
     }
@@ -90,8 +123,8 @@ export async function kuratorCanAccessCustomer(params: {
 }): Promise<boolean> {
   const { tenantId, kuratorUserId, customerId, courseRunId } = params;
 
-  const directHit = await withCourseRunVisibilityFallback((withHiddenColumn) =>
-    prisma.kuratorAssignment.findFirst({
+  const directAssignments = await withCourseRunVisibilityFallback((withHiddenColumn) =>
+    prisma.kuratorAssignment.findMany({
       where: {
         tenantId,
         kuratorUserId,
@@ -100,10 +133,25 @@ export async function kuratorCanAccessCustomer(params: {
         ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
         ...(courseRunId ? { courseRunId } : {}),
       },
-      select: { id: true },
+      select: {
+        courseRunId: true,
+        courseRun: { select: { courseId: true } },
+      },
     }),
   );
-  if (directHit) return true;
+
+  const directRuns = Array.from(
+    new Map(
+      directAssignments.map((row) => [
+        row.courseRunId,
+        { id: row.courseRunId, courseId: row.courseRun.courseId },
+      ]),
+    ).values(),
+  );
+  const directMemberSets = await resolveRunMemberSets({ tenantId, runs: directRuns });
+  if (directRuns.some((run) => directMemberSets.get(run.id)?.has(customerId))) {
+    return true;
+  }
 
   const ownedRuns = await withCourseRunVisibilityFallback((withHiddenColumn) =>
     prisma.courseRun.findMany({
@@ -118,35 +166,6 @@ export async function kuratorCanAccessCustomer(params: {
   );
   if (ownedRuns.length === 0) return false;
 
-  const ownedRunIds = ownedRuns.map((row) => row.id);
-
-  // Check explicit roster membership.
-  const explicitMember = await prisma.courseRunMember.findFirst({
-    where: {
-      tenantId,
-      customerId,
-      courseRunId: { in: ownedRunIds },
-    },
-    select: { id: true },
-  });
-  if (explicitMember) return true;
-
-  // ALWAYS check active income for ALL owned runs (not just fallback ones).
-  // This ensures newly enrolled customers are accessible immediately.
-  const allCourseIds = Array.from(new Set(ownedRuns.map((run) => run.courseId)));
-  if (allCourseIds.length > 0) {
-    const incomeHit = await prisma.income.findFirst({
-      where: {
-        tenantId,
-        customerId,
-        courseId: { in: allCourseIds },
-        type: 'new_sale',
-        lifecycleStatus: 'active',
-      },
-      select: { id: true },
-    });
-    return Boolean(incomeHit);
-  }
-
-  return false;
+  const ownedMemberSets = await resolveRunMemberSets({ tenantId, runs: ownedRuns });
+  return ownedRuns.some((run) => ownedMemberSets.get(run.id)?.has(customerId));
 }
