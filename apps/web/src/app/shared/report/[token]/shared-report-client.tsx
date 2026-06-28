@@ -1,20 +1,11 @@
 'use client';
 
-import { useMemo } from 'react';
 import { trpc } from '@/lib/trpc';
-
-type WeekKey = 'week1' | 'week2' | 'week3' | 'week4' | 'week5' | 'week6';
-const WEEK_KEYS: WeekKey[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
-const DATE_PRESET_LABELS: Record<string, string> = {
-  today: 'Bugun',
-  week1: '1-hafta',
-  week2: '2-hafta',
-  week3: '3-hafta',
-  week4: '4-hafta',
-  week5: '5-hafta',
-  week6: '6-hafta',
-  all: 'Hammasi',
-};
+import {
+  WEEK_KEYS,
+  getReportTableLayout,
+  parseDatePreset,
+} from '@/app/shared/report/report-table-layout';
 
 function textColorForBackground(hexColor?: string | null): string {
   if (!hexColor) return '#111827';
@@ -37,31 +28,6 @@ function formatPoint(value: number | null | undefined): string {
   return safe.toFixed(2).replace(/\.?0+$/, '');
 }
 
-function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Array<{ key: string; label: string }> {
-  if (!dateFrom || !dateToInclusive) return [];
-  const from = new Date(dateFrom + 'T00:00:00');
-  const to = new Date(dateToInclusive + 'T00:00:00');
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from.getTime() > to.getTime()) return [];
-  const dayLabels = ['Yak', 'Du', 'Se', 'Chor', 'Pay', 'Ju', 'Shan'] as const;
-  const columns: Array<{ key: string; label: string }> = [];
-  const cursor = new Date(from);
-  while (cursor.getTime() <= to.getTime()) {
-    const y = cursor.getFullYear();
-    const m = String(cursor.getMonth() + 1).padStart(2, '0');
-    const d = String(cursor.getDate()).padStart(2, '0');
-    columns.push({ key: y + '-' + m + '-' + d, label: dayLabels[cursor.getDay()] });
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return columns;
-}
-
-function dayTypeForDateKey(dateKey: string): 'weekday' | 'weekend' | 'unknown' {
-  const date = new Date(dateKey + 'T00:00:00');
-  if (Number.isNaN(date.getTime())) return 'unknown';
-  const day = date.getDay();
-  return day === 0 || day === 6 ? 'weekend' : 'weekday';
-}
-
 function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean {
   const date = new Date(dayKey + 'T00:00:00');
   if (Number.isNaN(date.getTime())) return true;
@@ -81,39 +47,22 @@ export default function SharedReportClient({ token }: { token: string }) {
     { retry: false },
   );
 
-  const isTodayPreset = report?.meta.datePreset === 'today';
-  const isWeekPreset = report?.meta.datePreset
-    ? ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'].includes(report.meta.datePreset)
-    : false;
-  const hasSubColumns = !isTodayPreset;
-  const dayColumnsRaw = buildDayColumns(report?.meta.dateFrom, report?.meta.dateToInclusive);
-  const runDayMode = useMemo<'weekday' | 'weekend' | 'mixed'>(() => {
-    const practiceTypes = new Set((report?.practices ?? []).map((practice) => practice.type));
-    if (practiceTypes.size === 0) return 'mixed';
-    const allWeekday = Array.from(practiceTypes).every((type) => type === 'homework' || type === 'extra');
-    if (allWeekday) return 'weekday';
-    const allWeekend = Array.from(practiceTypes).every((type) => type === 'class');
-    if (allWeekend) return 'weekend';
-    return 'mixed';
-  }, [report?.practices]);
-  const dayColumns = useMemo(() => {
-    if (runDayMode === 'weekday') {
-      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekday');
-    }
-    if (runDayMode === 'weekend') {
-      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekend');
-    }
-    return dayColumnsRaw;
-  }, [dayColumnsRaw, runDayMode]);
-  const subColumns =
-    isTodayPreset
-      ? [] as Array<{ key: string; label: string }>
-      : isWeekPreset
-        ? dayColumns
-        : WEEK_KEYS.map((weekKey) => ({ key: weekKey, label: DATE_PRESET_LABELS[weekKey] }));
-  const perPracticeColumnCount = isTodayPreset ? 1 : Math.max(subColumns.length, 1);
-  const tableMinWidth = isTodayPreset ? 'min-w-[720px] md:min-w-[960px]' : 'min-w-[840px] md:min-w-[1080px]';
-  const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 5 : 5;
+  const {
+    emptyColSpan,
+    hasSubColumns,
+    isEmptyWeek,
+    isTodayPreset,
+    isWeekPreset,
+    perPracticeColumnCount,
+    subColumns,
+    tableMinWidth,
+  } = getReportTableLayout({
+    datePreset: parseDatePreset(report?.meta.datePreset),
+    dateFrom: report?.meta.dateFrom,
+    dateToInclusive: report?.meta.dateToInclusive,
+    practiceTypes: (report?.practices ?? []).map((practice) => practice.type),
+    practiceCount: report?.practices.length ?? 0,
+  });
 
   if (reportLoading) {
     return (
@@ -214,7 +163,7 @@ export default function SharedReportClient({ token }: { token: string }) {
                 Jami ball
               </th>
             </tr>
-            {!isTodayPreset && (
+            {hasSubColumns && (
               <tr className="bg-gray-50 border-b border-gray-200">
                 {report.practices.flatMap((practice, pIdx) =>
                   subColumns.map((subColumn, sIdx) => {
@@ -280,6 +229,18 @@ export default function SharedReportClient({ token }: { token: string }) {
                     : report.practices.flatMap((practice, pIdx) => {
                         const cell = student.cells[practice.id];
                         if (isWeekPreset) {
+                          if (isEmptyWeek) {
+                            const isDivider = pIdx < report.practices.length - 1;
+                            return (
+                              <td
+                                key={student.id + '-' + practice.id + '-empty-week'}
+                                className={'px-0.5 md:px-1 py-1 md:py-1.5 text-center font-medium text-sm md:text-base text-gray-300 ' + (isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100')}
+                              >
+                                -
+                              </td>
+                            );
+                          }
+
                           const dayStatsByDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
                           return subColumns.map((dayColumn, dIdx) => {
                             const stat = dayStatsByDate.get(dayColumn.key);
