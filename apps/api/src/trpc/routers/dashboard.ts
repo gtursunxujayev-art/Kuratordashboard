@@ -4,6 +4,7 @@ import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import jwt from 'jsonwebtoken';
 import { getCustomersScopedToKurator } from '../utils/kuratorScope';
+import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
 import {
   isMissingCourseRunHiddenColumnError,
   isMissingExerciseDefinitionHiddenColumnError,
@@ -426,48 +427,6 @@ async function getCourseIdFromRun(tenantId: string, courseRunId?: string): Promi
  * This ensures new enrollments from Dashboarduz appear immediately,
  * regardless of whether the run has an explicit roster.
  */
-async function resolveRunMemberCustomerIds(params: {
-  tenantId: string;
-  courseRunId: string;
-  courseId: string;
-}): Promise<string[]> {
-  const { tenantId, courseRunId, courseId } = params;
-
-  const idSet = new Set<string>();
-
-  // Source 1: explicit course_run_members (if the table exists)
-  try {
-    const explicit = await prisma.courseRunMember.findMany({
-      where: { tenantId, courseRunId },
-      select: { customerId: true },
-    });
-    for (const row of explicit) {
-      idSet.add(row.customerId);
-    }
-  } catch (error) {
-    if (!isMissingCourseRunMembersTableError(error)) {
-      throw error;
-    }
-  }
-
-  // Source 2: active new_sale incomes on the course (always)
-  const enrolled = await prisma.income.findMany({
-    where: {
-      tenantId,
-      courseId,
-      ...ACTIVE_ENROLLMENT_FILTER,
-    },
-    select: { customerId: true },
-    distinct: ['customerId'],
-  });
-
-  for (const row of enrolled) {
-    if (row.customerId) idSet.add(row.customerId);
-  }
-
-  return Array.from(idSet);
-}
-
 type StudentPerformance = {
   completedTasks: number;
   pendingTasks: number;
@@ -834,7 +793,7 @@ async function getAmaliyReportMatrixData(params: {
 
       let assignedStudentIds: string[] = [];
       if (selectedRun) {
-        assignedStudentIds = await resolveRunMemberCustomerIds({
+        assignedStudentIds = await resolveCourseRunMemberCustomerIds({
           tenantId,
           courseRunId: selectedRun.id,
           courseId: selectedRun.courseId,
@@ -880,15 +839,6 @@ async function getAmaliyReportMatrixData(params: {
         const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
         current.add(kuratorName);
         kuratorsByStudent.set(row.customerId, current);
-      }
-
-      if (selectedRun?.kurator) {
-        const runKuratorName = selectedRun.kurator.name ?? selectedRun.kurator.username ?? 'Kurator';
-        for (const customerId of assignedStudentIds) {
-          const current = kuratorsByStudent.get(customerId) ?? new Set<string>();
-          current.add(runKuratorName);
-          kuratorsByStudent.set(customerId, current);
-        }
       }
 
       const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
