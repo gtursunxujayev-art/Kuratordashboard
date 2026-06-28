@@ -119,22 +119,35 @@ export default function HisobotPage() {
       keepPreviousData: true,
     },
   );
+  const { data: tariffScopeReport } = trpc.dashboard.amaliyReportMatrix.useQuery(
+    {
+      courseId,
+      courseRunId: courseRunId || undefined,
+      kuratorUserId: kuratorUserId || undefined,
+      datePreset,
+    },
+    {
+      enabled: reportEnabled && Boolean(tariffId),
+      keepPreviousData: true,
+    },
+  );
   const filteredTariffs = useMemo(
     () => {
       const courseTariffs = (filterOptions?.tariffs ?? []).filter((tariff) => tariff.courseId === courseId);
-      if (!kuratorUserId || !report) {
+      const tariffSourceReport = tariffId ? tariffScopeReport : report;
+      if (!tariffSourceReport) {
         return courseTariffs;
       }
 
       const visibleTariffNames = new Set(
-        report.students
+        tariffSourceReport.students
           .map((student) => student.tariffName?.trim())
           .filter((tariffName): tariffName is string => Boolean(tariffName)),
       );
 
       return courseTariffs.filter((tariff) => visibleTariffNames.has(tariff.name));
     },
-    [courseId, filterOptions?.tariffs, kuratorUserId, report],
+    [courseId, filterOptions?.tariffs, report, tariffId, tariffScopeReport],
   );
 
   useEffect(() => {
