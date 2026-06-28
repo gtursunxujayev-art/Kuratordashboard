@@ -57,6 +57,10 @@ export default function HisobotPage() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
   const shareLinkInputRef = useRef<HTMLInputElement>(null);
+  const filtersCardRef = useRef<HTMLDivElement>(null);
+  const headerRowRef = useRef<HTMLTableRowElement>(null);
+  const [stickyHeaderTop, setStickyHeaderTop] = useState(0);
+  const [stickySubHeaderTop, setStickySubHeaderTop] = useState(0);
 
   const generateShareToken = trpc.settings.generateReportShareToken.useMutation();
 
@@ -145,16 +149,6 @@ export default function HisobotPage() {
     setTariffId('');
   }, [filteredTariffs, tariffId]);
 
-  if (isLoading) {
-    return (
-      <div className="p-6">
-        <div className="kd-card p-5 text-sm kd-subtle">Yuklanmoqda...</div>
-      </div>
-    );
-  }
-
-  if (!isManager) return null;
-
   const topError =
     coursesError?.message ||
     runsError?.message ||
@@ -178,9 +172,44 @@ export default function HisobotPage() {
     practiceCount: report?.practices.length ?? 0,
   });
 
+  useEffect(() => {
+    const updateStickyOffsets = () => {
+      const nextHeaderTop = filtersCardRef.current?.offsetHeight ?? 0;
+      const nextSubHeaderTop = nextHeaderTop + (headerRowRef.current?.offsetHeight ?? 0);
+      setStickyHeaderTop(nextHeaderTop);
+      setStickySubHeaderTop(nextSubHeaderTop);
+    };
+
+    updateStickyOffsets();
+
+    const resizeObserver = new ResizeObserver(() => updateStickyOffsets());
+    if (filtersCardRef.current) {
+      resizeObserver.observe(filtersCardRef.current);
+    }
+    if (headerRowRef.current) {
+      resizeObserver.observe(headerRowRef.current);
+    }
+
+    window.addEventListener('resize', updateStickyOffsets);
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener('resize', updateStickyOffsets);
+    };
+  }, [hasSubColumns, report?.practices.length, datePreset]);
+
+  if (isLoading) {
+    return (
+      <div className="p-6">
+        <div className="kd-card p-5 text-sm kd-subtle">Yuklanmoqda...</div>
+      </div>
+    );
+  }
+
+  if (!isManager) return null;
+
   return (
     <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
-      <div className="kd-card p-4 md:p-5 space-y-3 sticky top-0 z-40 shadow-md">
+      <div ref={filtersCardRef} className="kd-card p-4 md:p-5 space-y-3 sticky top-0 z-40 shadow-md">
         <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
         <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
@@ -384,28 +413,32 @@ export default function HisobotPage() {
           <div className="overflow-x-auto">
             <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
               <thead>
-                <tr className="bg-gray-50 border-b border-gray-200">
+                <tr ref={headerRowRef} className="bg-gray-50 border-b border-gray-200">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky left-0 z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
+                    style={{ top: stickyHeaderTop }}
+                    className="sticky left-0 z-30 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
                   >
                     №
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky left-[32px] md:left-[40px] z-20 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]"
+                    style={{ top: stickyHeaderTop }}
+                    className="sticky left-[32px] md:left-[40px] z-30 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]"
                   >
                     O&apos;quvchi
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]"
+                    style={{ top: stickyHeaderTop }}
+                    className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]"
                   >
                     Tarif
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[68px] w-[68px] md:min-w-[118px] md:w-[118px]"
+                    style={{ top: stickyHeaderTop }}
+                    className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[68px] w-[68px] md:min-w-[118px] md:w-[118px]"
                   >
                     Kurator
                   </th>
@@ -413,7 +446,8 @@ export default function HisobotPage() {
                     ? report.practices.map((practice, pIdx) => (
                         <th
                           key={practice.id}
-                          className={`text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[46px] md:min-w-[96px] ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
+                          style={{ top: stickyHeaderTop }}
+                          className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[46px] md:min-w-[96px] ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
                             <p className="text-[10px] md:text-xs">{practice.name}</p>
@@ -424,7 +458,8 @@ export default function HisobotPage() {
                         <th
                           key={practice.id}
                           colSpan={perPracticeColumnCount}
-                          className={`text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
+                          style={{ top: stickyHeaderTop }}
+                          className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
                             <p className="text-[10px] md:text-xs">{practice.name}</p>
@@ -433,7 +468,8 @@ export default function HisobotPage() {
                       ))}
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    className="sticky right-0 z-20 bg-gray-50 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]"
+                    style={{ top: stickyHeaderTop }}
+                    className="sticky right-0 z-30 bg-gray-50 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]"
                   >
                     Jami ball
                   </th>
@@ -448,9 +484,10 @@ export default function HisobotPage() {
                         return (
                           <th
                             key={`${practice.id}-${subColumn.key}`}
+                            style={{ top: stickySubHeaderTop }}
                             className={`text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold min-w-[36px] md:min-w-[48px] ${
                               isPracticeDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'
-                            } ${
+                            } sticky z-20 bg-gray-50 ${
                               isSelectedWeek ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
                             }`}
                           >
@@ -472,18 +509,25 @@ export default function HisobotPage() {
                 ) : (
                   report.students.map((student, idx) => (
                     <tr key={student.id} className="border-b border-gray-100">
-                      <td className="sticky left-0 z-10 bg-white text-center px-1 md:px-2 py-1.5 md:py-2 border-r border-gray-100 align-top text-xs md:text-sm text-gray-500 font-medium">
+                      <td className="sticky left-0 z-10 bg-white text-center px-1 md:px-2 py-1.5 md:py-2 border-r border-gray-100 align-middle text-xs md:text-sm text-gray-500 font-medium">
                         {idx + 1}
                       </td>
-                      <td className="sticky left-[32px] md:left-[40px] z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-top">
-                        <p className="font-medium text-gray-900 leading-4 md:leading-5 text-sm md:text-base">{student.name}</p>
-                        <p className="text-[10px] md:text-[11px] text-gray-500 leading-3.5 md:leading-4">{student.customerNumber ?? '-'}</p>
+                      <td className="sticky left-[32px] md:left-[40px] z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-middle whitespace-nowrap">
+                        <div className="flex items-baseline gap-2 whitespace-nowrap">
+                          <p className="font-medium text-gray-900 leading-4 md:leading-5 text-sm md:text-base">{student.name}</p>
+                          <p className="text-[10px] md:text-[11px] text-gray-500 leading-3.5 md:leading-4">{student.customerNumber ?? '-'}</p>
+                        </div>
                       </td>
-                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-top text-[11px] md:text-xs leading-4">
+                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-middle text-[11px] md:text-xs leading-4 whitespace-nowrap">
                         {student.tariffName ?? '-'}
                       </td>
-                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-top text-[11px] md:text-xs leading-4">
-                        {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
+                      <td
+                        title={student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
+                        className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-middle text-[11px] md:text-xs leading-4 whitespace-nowrap"
+                      >
+                        <span className="block truncate">
+                          {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
+                        </span>
                       </td>
                       {isTodayPreset
                         ? report.practices.map((practice, pIdx) => {
@@ -569,7 +613,7 @@ export default function HisobotPage() {
                               );
                             });
                           })}
-                      <td className="sticky right-0 z-10 bg-white px-1.5 md:px-2 py-1.5 md:py-2 text-center font-bold text-gray-900 border-l border-gray-200 text-sm md:text-base">
+                      <td className="sticky right-0 z-10 bg-white px-1.5 md:px-2 py-1.5 md:py-2 text-center font-bold text-gray-900 border-l border-gray-200 text-sm md:text-base align-middle">
                         {formatPoint(student.totalPoints)}
                       </td>
                     </tr>
