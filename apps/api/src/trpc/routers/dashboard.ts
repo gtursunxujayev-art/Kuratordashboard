@@ -729,6 +729,7 @@ async function getAmaliyReportMatrixData(params: {
               startDate: true,
               endDate: true,
               kuratorUserId: true,
+              kurator: { select: { id: true, name: true, username: true } },
             },
           })
         : null;
@@ -751,6 +752,7 @@ async function getAmaliyReportMatrixData(params: {
             startDate: true,
             endDate: true,
             kuratorUserId: true,
+            kurator: { select: { id: true, name: true, username: true } },
           },
           orderBy: { startDate: 'desc' },
         });
@@ -878,6 +880,15 @@ async function getAmaliyReportMatrixData(params: {
         const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
         current.add(kuratorName);
         kuratorsByStudent.set(row.customerId, current);
+      }
+
+      if (selectedRun?.kurator) {
+        const runKuratorName = selectedRun.kurator.name ?? selectedRun.kurator.username ?? 'Kurator';
+        for (const customerId of assignedStudentIds) {
+          const current = kuratorsByStudent.get(customerId) ?? new Set<string>();
+          current.add(runKuratorName);
+          kuratorsByStudent.set(customerId, current);
+        }
       }
 
       const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
