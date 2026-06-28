@@ -1,41 +1,15 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
-
-type DatePreset =
-  | 'today'
-  | 'week1'
-  | 'week2'
-  | 'week3'
-  | 'week4'
-  | 'week5'
-  | 'week6'
-  | 'all';
-
-const DATE_PRESET_LABELS: Record<DatePreset, string> = {
-  today: 'Bugun',
-  week1: '1-hafta',
-  week2: '2-hafta',
-  week3: '3-hafta',
-  week4: '4-hafta',
-  week5: '5-hafta',
-  week6: '6-hafta',
-  all: 'Hammasi',
-};
-const WEEK_PRESETS: DatePreset[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
-const WEEK_KEYS = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'] as const;
-type WeekKey = (typeof WEEK_KEYS)[number];
-const WEEK_COLUMN_LABELS: Record<WeekKey, string> = {
-  week1: 'W1',
-  week2: 'W2',
-  week3: 'W3',
-  week4: 'W4',
-  week5: 'W5',
-  week6: 'W6',
-};
+import {
+  DATE_PRESET_LABELS,
+  WEEK_KEYS,
+  type DatePreset,
+  getReportTableLayout,
+} from '@/app/shared/report/report-table-layout';
 
 function textColorForBackground(hexColor?: string | null): string {
   if (!hexColor) return '#111827';
@@ -62,32 +36,6 @@ function formatPoint(value: number | null | undefined): string {
   return safe.toFixed(2).replace(/\.?0+$/, '');
 }
 
-function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Array<{ key: string; label: string }> {
-  if (!dateFrom || !dateToInclusive) return [];
-  const from = new Date(`${dateFrom}T00:00:00`);
-  const to = new Date(`${dateToInclusive}T00:00:00`);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from.getTime() > to.getTime()) return [];
-
-  const dayLabels = ['Yak', 'Du', 'Se', 'Chor', 'Pay', 'Ju', 'Shan'] as const;
-  const columns: Array<{ key: string; label: string }> = [];
-  const cursor = new Date(from);
-  while (cursor.getTime() <= to.getTime()) {
-    const y = cursor.getFullYear();
-    const m = String(cursor.getMonth() + 1).padStart(2, '0');
-    const d = String(cursor.getDate()).padStart(2, '0');
-    columns.push({ key: `${y}-${m}-${d}`, label: dayLabels[cursor.getDay()] });
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return columns;
-}
-
-function dayTypeForDateKey(dateKey: string): 'weekday' | 'weekend' | 'unknown' {
-  const date = new Date(`${dateKey}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return 'unknown';
-  const day = date.getDay();
-  return day === 0 || day === 6 ? 'weekend' : 'weekday';
-}
-
 function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean {
   const date = new Date(`${dayKey}T00:00:00`);
   if (Number.isNaN(date.getTime())) return true;
@@ -108,8 +56,19 @@ export default function HisobotPage() {
   const [datePreset, setDatePreset] = useState<DatePreset>('today');
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
+  const shareLinkInputRef = useRef<HTMLInputElement>(null);
 
   const generateShareToken = trpc.settings.generateReportShareToken.useMutation();
+
+  const resetShareState = () => {
+    setShareToken(null);
+    setShareLinkCopied(false);
+  };
+
+  const markShareLinkCopied = () => {
+    setShareLinkCopied(true);
+    window.setTimeout(() => setShareLinkCopied(false), 2000);
+  };
 
   useEffect(() => {
     if (!isLoading && !isManager) {
@@ -131,12 +90,11 @@ export default function HisobotPage() {
   });
 
   const filteredRuns = useMemo(
-    () => (courseRuns ?? []).filter((run) => run.courseId === courseId),
-    [courseId, courseRuns],
-  );
-  const filteredTariffs = useMemo(
-    () => (filterOptions?.tariffs ?? []).filter((tariff) => tariff.courseId === courseId),
-    [courseId, filterOptions?.tariffs],
+    () =>
+      (courseRuns ?? []).filter(
+        (run) => run.courseId === courseId && (!kuratorUserId || run.kuratorUserId === kuratorUserId),
+      ),
+    [courseId, courseRuns, kuratorUserId],
   );
 
   const reportEnabled = isManager && Boolean(courseId);
@@ -157,6 +115,35 @@ export default function HisobotPage() {
       keepPreviousData: true,
     },
   );
+  const filteredTariffs = useMemo(
+    () => {
+      const courseTariffs = (filterOptions?.tariffs ?? []).filter((tariff) => tariff.courseId === courseId);
+      if (!kuratorUserId || !report) {
+        return courseTariffs;
+      }
+
+      const visibleTariffNames = new Set(
+        report.students
+          .map((student) => student.tariffName?.trim())
+          .filter((tariffName): tariffName is string => Boolean(tariffName)),
+      );
+
+      return courseTariffs.filter((tariff) => visibleTariffNames.has(tariff.name));
+    },
+    [courseId, filterOptions?.tariffs, kuratorUserId, report],
+  );
+
+  useEffect(() => {
+    if (!courseRunId || filteredRuns.some((run) => run.id === courseRunId)) return;
+    resetShareState();
+    setCourseRunId('');
+  }, [courseRunId, filteredRuns]);
+
+  useEffect(() => {
+    if (!tariffId || filteredTariffs.some((tariff) => tariff.id === tariffId)) return;
+    resetShareState();
+    setTariffId('');
+  }, [filteredTariffs, tariffId]);
 
   if (isLoading) {
     return (
@@ -174,37 +161,22 @@ export default function HisobotPage() {
     filterOptionsError?.message ||
     kuratorsError?.message ||
     reportError?.message;
-  const isTodayPreset = datePreset === 'today';
-  const isWeekPreset = WEEK_PRESETS.includes(datePreset);
-  const hasSubColumns = !isTodayPreset;
-  const dayColumnsRaw = buildDayColumns(report?.meta.dateFrom, report?.meta.dateToInclusive);
-  const runDayMode = useMemo<'weekday' | 'weekend' | 'mixed'>(() => {
-    const practiceTypes = new Set((report?.practices ?? []).map((practice) => practice.type));
-    if (practiceTypes.size === 0) return 'mixed';
-    const allWeekday = Array.from(practiceTypes).every((type) => type === 'homework' || type === 'extra');
-    if (allWeekday) return 'weekday';
-    const allWeekend = Array.from(practiceTypes).every((type) => type === 'class');
-    if (allWeekend) return 'weekend';
-    return 'mixed';
-  }, [report?.practices]);
-  const dayColumns = useMemo(() => {
-    if (runDayMode === 'weekday') {
-      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekday');
-    }
-    if (runDayMode === 'weekend') {
-      return dayColumnsRaw.filter((column) => dayTypeForDateKey(column.key) === 'weekend');
-    }
-    return dayColumnsRaw;
-  }, [dayColumnsRaw, runDayMode]);
-  const subColumns =
-    isTodayPreset
-      ? [] as Array<{ key: string; label: string }>
-      : isWeekPreset
-        ? dayColumns
-        : WEEK_KEYS.map((weekKey) => ({ key: weekKey, label: DATE_PRESET_LABELS[weekKey] }));
-  const perPracticeColumnCount = isTodayPreset ? 1 : Math.max(subColumns.length, 1);
-  const tableMinWidth = isTodayPreset ? 'min-w-[720px] md:min-w-[960px]' : 'min-w-[840px] md:min-w-[1080px]';
-  const emptyColSpan = report ? report.practices.length * perPracticeColumnCount + 5 : 5;
+  const {
+    emptyColSpan,
+    hasSubColumns,
+    isEmptyWeek,
+    isTodayPreset,
+    isWeekPreset,
+    perPracticeColumnCount,
+    subColumns,
+    tableMinWidth,
+  } = getReportTableLayout({
+    datePreset,
+    dateFrom: report?.meta.dateFrom,
+    dateToInclusive: report?.meta.dateToInclusive,
+    practiceTypes: (report?.practices ?? []).map((practice) => practice.type),
+    practiceCount: report?.practices.length ?? 0,
+  });
 
   return (
     <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
@@ -226,6 +198,7 @@ export default function HisobotPage() {
             <select
               value={courseId}
               onChange={(e) => {
+                resetShareState();
                 setCourseId(e.target.value);
                 setCourseRunId('');
                 setTariffId('');
@@ -245,11 +218,17 @@ export default function HisobotPage() {
             <label className="block text-xs kd-subtle mb-1">Oqim</label>
             <select
               value={courseRunId}
-              onChange={(e) => setCourseRunId(e.target.value)}
+              onChange={(e) => {
+                resetShareState();
+                setCourseRunId(e.target.value);
+              }}
               disabled={!courseId}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm disabled:opacity-50"
             >
               <option value="">{courseId ? 'Barcha oqimlar' : 'Avval kurs tanlang'}</option>
+              {!filteredRuns.length && courseId && kuratorUserId ? (
+                <option value="" disabled>Tanlangan kurator uchun oqim topilmadi</option>
+              ) : null}
               {filteredRuns.map((run) => (
                 <option key={run.id} value={run.id}>
                   {run.name}
@@ -262,11 +241,17 @@ export default function HisobotPage() {
             <label className="block text-xs kd-subtle mb-1">Tarif</label>
             <select
               value={tariffId}
-              onChange={(e) => setTariffId(e.target.value)}
+              onChange={(e) => {
+                resetShareState();
+                setTariffId(e.target.value);
+              }}
               disabled={!courseId}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm disabled:opacity-50"
             >
               <option value="">Barcha tariflar</option>
+              {!filteredTariffs.length && courseId && kuratorUserId ? (
+                <option value="" disabled>Tanlangan kurator uchun tarif topilmadi</option>
+              ) : null}
               {filteredTariffs.map((tariff) => (
                 <option key={tariff.id} value={tariff.id}>
                   {tariff.name}
@@ -279,7 +264,10 @@ export default function HisobotPage() {
             <label className="block text-xs kd-subtle mb-1">Kurator</label>
             <select
               value={kuratorUserId}
-              onChange={(e) => setKuratorUserId(e.target.value)}
+              onChange={(e) => {
+                resetShareState();
+                setKuratorUserId(e.target.value);
+              }}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm"
             >
               <option value="">Barcha kuratorlar</option>
@@ -296,7 +284,11 @@ export default function HisobotPage() {
           {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((preset) => (
             <button
               key={preset}
-              onClick={() => setDatePreset(preset)}
+              onClick={() => {
+                if (preset === datePreset) return;
+                resetShareState();
+                setDatePreset(preset);
+              }}
               className={`px-2.5 md:px-3 py-1.5 md:py-2 rounded-md text-xs md:text-sm font-medium transition-colors ${
                 datePreset === preset ? 'kd-chip-active' : 'kd-chip'
               }`}
@@ -317,6 +309,7 @@ export default function HisobotPage() {
             {shareToken ? (
               <div className="flex items-center gap-2">
                 <input
+                  ref={shareLinkInputRef}
                   type="text"
                   readOnly
                   value={`${typeof window !== 'undefined' ? window.location.origin : ''}/shared/report/${shareToken}`}
@@ -328,12 +321,15 @@ export default function HisobotPage() {
                   onClick={() => {
                     const url = `${window.location.origin}/shared/report/${shareToken}`;
                     navigator.clipboard.writeText(url).then(() => {
-                      setShareLinkCopied(true);
-                      setTimeout(() => setShareLinkCopied(false), 2000);
+                      markShareLinkCopied();
                     }).catch(() => {
-                      // Fallback
-                      const input = document.querySelector<HTMLInputElement>('[data-share-link]');
-                      if (input) { input.select(); document.execCommand('copy'); }
+                      const input = shareLinkInputRef.current;
+                      if (!input) return;
+                      input.focus();
+                      input.select();
+                      if (document.execCommand('copy')) {
+                        markShareLinkCopied();
+                      }
                     });
                   }}
                   className="px-3 py-1.5 rounded-md text-xs font-medium kd-chip-active whitespace-nowrap"
@@ -342,7 +338,7 @@ export default function HisobotPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { setShareToken(null); setShareLinkCopied(false); }}
+                  onClick={resetShareState}
                   className="px-2 py-1.5 rounded-md text-xs kd-chip whitespace-nowrap"
                 >
                   Yopish
@@ -442,7 +438,7 @@ export default function HisobotPage() {
                     Jami ball
                   </th>
                 </tr>
-                {!isTodayPreset && (
+                {hasSubColumns && (
                   <tr className="bg-gray-50 border-b border-gray-200">
                     {report.practices.flatMap((practice, pIdx) =>
                       subColumns.map((subColumn, sIdx) => {
@@ -514,6 +510,18 @@ export default function HisobotPage() {
                         : report.practices.flatMap((practice, pIdx) => {
                             const cell = student.cells[practice.id];
                             if (isWeekPreset) {
+                              if (isEmptyWeek) {
+                                const isDivider = pIdx < report.practices.length - 1;
+                                return (
+                                  <td
+                                    key={`${student.id}-${practice.id}-empty-week`}
+                                    className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-medium text-sm md:text-base text-gray-300 ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
+                                  >
+                                    -
+                                  </td>
+                                );
+                              }
+
                               const dayStatsByDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
                               return subColumns.map((dayColumn, dIdx) => {
                                 const stat = dayStatsByDate.get(dayColumn.key);
