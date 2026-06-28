@@ -3,6 +3,7 @@ import {
   visibleCourseRunWhere,
   withCourseRunVisibilityFallback,
 } from '../../utils/prisma-visibility';
+import { resolveCourseRunMemberCustomerIds } from './runMembership';
 
 /**
  * "Who is in this run?" resolution rule used by every kurator-scoped query:
@@ -58,44 +59,19 @@ export async function getCustomersScopedToKurator(params: {
     return Array.from(result);
   }
 
-  const ownedRunIds = ownedRuns.map((row) => row.id);
-
-  // Pull every explicit roster row across owned runs in one query.
-  const rosterRows = await prisma.courseRunMember.findMany({
-    where: { tenantId, courseRunId: { in: ownedRunIds } },
-    select: { courseRunId: true, customerId: true },
-  });
-  const rosterByRun = new Map<string, string[]>();
-  for (const row of rosterRows) {
-    const list = rosterByRun.get(row.courseRunId);
-    if (list) list.push(row.customerId);
-    else rosterByRun.set(row.courseRunId, [row.customerId]);
-  }
-
-  // Add explicit roster members for all runs.
-  for (const run of ownedRuns) {
-    const explicit = rosterByRun.get(run.id);
-    if (explicit) {
-      for (const id of explicit) result.add(id);
-    }
-  }
-
-  // ALWAYS union active income customers for ALL owned runs (not just fallback ones).
-  // This ensures new Dashboarduz enrollments appear immediately regardless of roster state.
-  const allCourseIds = Array.from(new Set(ownedRuns.map((run) => run.courseId)));
-  if (allCourseIds.length > 0) {
-    const enrolled = await prisma.income.findMany({
-      where: {
+  const ownedRunMembers = await Promise.all(
+    ownedRuns.map((run) =>
+      resolveCourseRunMemberCustomerIds({
         tenantId,
-        courseId: { in: allCourseIds },
-        type: 'new_sale',
-        lifecycleStatus: 'active',
-      },
-      select: { customerId: true },
-      distinct: ['customerId'],
-    });
-    for (const row of enrolled) {
-      if (row.customerId) result.add(row.customerId);
+        courseRunId: run.id,
+        courseId: run.courseId,
+      }),
+    ),
+  );
+
+  for (const memberIds of ownedRunMembers) {
+    for (const customerId of memberIds) {
+      result.add(customerId);
     }
   }
 
