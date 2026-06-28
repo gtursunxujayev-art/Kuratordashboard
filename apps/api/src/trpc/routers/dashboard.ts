@@ -831,12 +831,34 @@ async function getAmaliyReportMatrixData(params: {
         orderBy: [{ createdAt: 'desc' }],
         select: {
           customerId: true,
+          courseRunId: true,
           createdAt: true,
           kurator: { select: { id: true, name: true, username: true } },
         },
       });
 
+      const memberIdsByRun = selectedRun
+        ? new Map([[selectedRun.id, new Set(assignedStudentIds)]])
+        : new Map(
+            await Promise.all(
+              Array.from(new Set(assignments.map((row) => row.courseRunId))).map(async (courseRunId) => [
+                courseRunId,
+                new Set(
+                  await resolveCourseRunMemberCustomerIds({
+                    tenantId,
+                    courseRunId,
+                    courseId: input.courseId,
+                  }),
+                ),
+              ] as const),
+            ),
+          );
+
       for (const row of assignments) {
+        if (!memberIdsByRun.get(row.courseRunId)?.has(row.customerId)) {
+          continue;
+        }
+
         const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
         const current = kuratorByStudent.get(row.customerId);
         if (!current || row.createdAt.getTime() > current.createdAt.getTime()) {
