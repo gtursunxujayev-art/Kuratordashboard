@@ -821,24 +821,30 @@ async function getAmaliyReportMatrixData(params: {
         assignedStudentIds = assignedStudentIds.filter((id) => scopedSet.has(id));
       }
 
-      const kuratorsByStudent = new Map<string, Set<string>>();
+      const kuratorByStudent = new Map<string, { name: string; createdAt: Date }>();
       const assignments = await prisma.kuratorAssignment.findMany({
         where: {
           tenantId,
           isActive: true,
           ...(selectedRun ? { courseRunId: selectedRun.id } : { courseRun: { courseId: input.courseId } }),
         },
+        orderBy: [{ createdAt: 'desc' }],
         select: {
           customerId: true,
+          createdAt: true,
           kurator: { select: { id: true, name: true, username: true } },
         },
       });
 
       for (const row of assignments) {
         const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
-        const current = kuratorsByStudent.get(row.customerId) ?? new Set<string>();
-        current.add(kuratorName);
-        kuratorsByStudent.set(row.customerId, current);
+        const current = kuratorByStudent.get(row.customerId);
+        if (!current || row.createdAt.getTime() > current.createdAt.getTime()) {
+          kuratorByStudent.set(row.customerId, {
+            name: kuratorName,
+            createdAt: row.createdAt,
+          });
+        }
       }
 
       const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
@@ -1210,7 +1216,7 @@ async function getAmaliyReportMatrixData(params: {
           name: student.name,
           customerNumber: student.customerNumber,
           tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
-          kuratorNames: Array.from(kuratorsByStudent.get(student.id) ?? []).sort((a, b) => a.localeCompare(b)),
+          kuratorNames: kuratorByStudent.has(student.id) ? [kuratorByStudent.get(student.id)!.name] : [],
           cells,
           totalPoints,
         };
