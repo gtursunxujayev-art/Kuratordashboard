@@ -11,6 +11,7 @@ import {
   getTelegramSelfStatus,
   sendTelegramTestReport,
 } from '../../services/telegram-reports';
+import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
 
 const scheduleTemplateSchema = z.object({
   id: z.string().optional(),
@@ -389,56 +390,6 @@ function throwFractionalPointsMigrationError(): never {
   });
 }
 
-/**
- * Resolve "who belongs to this run" using the roster-then-fallback rule:
- *   - If the run has any explicit `course_run_members` rows, those are the members.
- *   - Otherwise, every customer with an active `new_sale` income on the run's course is a member.
- */
-/**
- * Resolves the set of customer IDs that belong to a course run.
- *
- * ALWAYS combines BOTH sources:
- *   1. Explicit course_run_members roster (if any)
- *   2. Active new_sale incomes on the run's course
- *
- * This ensures new enrollments from Dashboarduz appear immediately.
- */
-async function resolveRunMemberCustomerIds(params: {
-  tenantId: string;
-  courseRunId: string;
-  courseId: string;
-}): Promise<string[]> {
-  const { tenantId, courseRunId, courseId } = params;
-
-  const idSet = new Set<string>();
-
-  // Source 1: explicit course_run_members
-  const explicit = await prisma.courseRunMember.findMany({
-    where: { tenantId, courseRunId },
-    select: { customerId: true },
-  });
-  for (const row of explicit) {
-    idSet.add(row.customerId);
-  }
-
-  // Source 2: active new_sale incomes on the course (always)
-  const enrolled = await prisma.income.findMany({
-    where: {
-      tenantId,
-      courseId,
-      type: 'new_sale',
-      lifecycleStatus: 'active',
-    },
-    select: { customerId: true },
-    distinct: ['customerId'],
-  });
-  for (const row of enrolled) {
-    if (row.customerId) idSet.add(row.customerId);
-  }
-
-  return Array.from(idSet);
-}
-
 async function resolveRunMemberCounts(params: {
   tenantId: string;
   runs: Array<{ id: string; courseId: string }>;
@@ -517,7 +468,7 @@ async function syncKuratorAssignmentsForRun(params: {
   courseId: string;
 }): Promise<number> {
   const { tenantId, courseRunId, kuratorUserId, courseId } = params;
-  const memberCustomerIds = await resolveRunMemberCustomerIds({ tenantId, courseRunId, courseId });
+  const memberCustomerIds = await resolveCourseRunMemberCustomerIds({ tenantId, courseRunId, courseId });
 
   await prisma.$transaction([
     // Deactivate stale rows: rows under any other kurator OR rows for customers no longer in the set.
@@ -1900,24 +1851,38 @@ export const settingsRouter = router({
       if (!customer) throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
       if (!courseRun) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
 
-      return prisma.kuratorAssignment.upsert({
-        where: {
-          tenantId_kuratorUserId_customerId_courseRunId: {
+      const [, assignment] = await prisma.$transaction([
+        prisma.kuratorAssignment.updateMany({
+          where: {
+            tenantId: ctx.tenantId,
+            customerId: input.customerId,
+            courseRunId: input.courseRunId,
+            kuratorUserId: { not: input.kuratorUserId },
+            isActive: true,
+          },
+          data: { isActive: false },
+        }),
+        prisma.kuratorAssignment.upsert({
+          where: {
+            tenantId_kuratorUserId_customerId_courseRunId: {
+              tenantId: ctx.tenantId,
+              kuratorUserId: input.kuratorUserId,
+              customerId: input.customerId,
+              courseRunId: input.courseRunId,
+            },
+          },
+          create: {
             tenantId: ctx.tenantId,
             kuratorUserId: input.kuratorUserId,
             customerId: input.customerId,
             courseRunId: input.courseRunId,
+            isActive: true,
           },
-        },
-        create: {
-          tenantId: ctx.tenantId,
-          kuratorUserId: input.kuratorUserId,
-          customerId: input.customerId,
-          courseRunId: input.courseRunId,
-          isActive: true,
-        },
-        update: { isActive: true },
-      });
+          update: { isActive: true },
+        }),
+      ]);
+
+      return assignment;
     }),
 
   unassignStudent: adminProcedure
@@ -2288,8 +2253,18 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: "Ba'zi o'quvchilar topilmadi" });
       }
 
-      await prisma.$transaction(
-        uniqueCustomerIds.map((customerId) =>
+      await prisma.$transaction([
+        prisma.kuratorAssignment.updateMany({
+          where: {
+            tenantId: ctx.tenantId,
+            customerId: { in: uniqueCustomerIds },
+            courseRunId: input.courseRunId,
+            kuratorUserId: { not: input.kuratorUserId },
+            isActive: true,
+          },
+          data: { isActive: false },
+        }),
+        ...uniqueCustomerIds.map((customerId) =>
           prisma.kuratorAssignment.upsert({
             where: {
               tenantId_kuratorUserId_customerId_courseRunId: {
@@ -2309,7 +2284,7 @@ export const settingsRouter = router({
             update: { isActive: true },
           }),
         ),
-      );
+      ]);
 
       return { assignedCount: uniqueCustomerIds.length };
     }),
