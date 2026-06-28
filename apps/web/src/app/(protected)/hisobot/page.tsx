@@ -57,9 +57,7 @@ export default function HisobotPage() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
   const shareLinkInputRef = useRef<HTMLInputElement>(null);
-  const filtersCardRef = useRef<HTMLDivElement>(null);
   const headerRowRef = useRef<HTMLTableRowElement>(null);
-  const [stickyHeaderTop, setStickyHeaderTop] = useState(0);
   const [stickySubHeaderTop, setStickySubHeaderTop] = useState(0);
 
   const generateShareToken = trpc.settings.generateReportShareToken.useMutation();
@@ -187,18 +185,13 @@ export default function HisobotPage() {
 
   useEffect(() => {
     const updateStickyOffsets = () => {
-      const nextHeaderTop = filtersCardRef.current?.offsetHeight ?? 0;
-      const nextSubHeaderTop = nextHeaderTop + (headerRowRef.current?.offsetHeight ?? 0);
-      setStickyHeaderTop(nextHeaderTop);
+      const nextSubHeaderTop = headerRowRef.current?.offsetHeight ?? 0;
       setStickySubHeaderTop(nextSubHeaderTop);
     };
 
     updateStickyOffsets();
 
     const resizeObserver = new ResizeObserver(() => updateStickyOffsets());
-    if (filtersCardRef.current) {
-      resizeObserver.observe(filtersCardRef.current);
-    }
     if (headerRowRef.current) {
       resizeObserver.observe(headerRowRef.current);
     }
@@ -222,7 +215,7 @@ export default function HisobotPage() {
 
   return (
     <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
-      <div ref={filtersCardRef} className="kd-card p-4 md:p-5 space-y-3 sticky top-0 z-40 shadow-md">
+      <div className="kd-card p-4 md:p-5 space-y-3">
         <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
         <p className="text-xs md:text-sm kd-subtle">
           Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
@@ -422,35 +415,35 @@ export default function HisobotPage() {
       ) : !report ? (
         <div className="kd-card p-6 text-center text-sm kd-subtle">Ma&apos;lumot topilmadi.</div>
       ) : (
-        <div className="kd-card p-0 overflow-hidden">
-          <div className="overflow-x-auto">
+        <div className="kd-card p-0">
+          <div className="overflow-x-auto overflow-y-visible rounded-[inherit]">
             <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
               <thead>
                 <tr ref={headerRowRef} className="bg-gray-50 border-b border-gray-200">
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: stickyHeaderTop }}
+                    style={{ top: 0 }}
                     className="sticky left-0 z-30 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
                   >
                     №
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: stickyHeaderTop }}
+                    style={{ top: 0 }}
                     className="sticky left-[32px] md:left-[40px] z-30 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]"
                   >
                     O&apos;quvchi
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: stickyHeaderTop }}
+                    style={{ top: 0 }}
                     className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]"
                   >
                     Tarif
                   </th>
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: stickyHeaderTop }}
+                    style={{ top: 0 }}
                     className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[68px] w-[68px] md:min-w-[118px] md:w-[118px]"
                   >
                     Kurator
@@ -459,7 +452,7 @@ export default function HisobotPage() {
                     ? report.practices.map((practice, pIdx) => (
                         <th
                           key={practice.id}
-                          style={{ top: stickyHeaderTop }}
+                          style={{ top: 0 }}
                           className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[46px] md:min-w-[96px] ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
@@ -471,7 +464,7 @@ export default function HisobotPage() {
                         <th
                           key={practice.id}
                           colSpan={perPracticeColumnCount}
-                          style={{ top: stickyHeaderTop }}
+                          style={{ top: 0 }}
                           className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
                         >
                           <div className="leading-tight">
@@ -481,7 +474,7 @@ export default function HisobotPage() {
                       ))}
                   <th
                     rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: stickyHeaderTop }}
+                    style={{ top: 0 }}
                     className="sticky right-0 z-30 bg-gray-50 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]"
                   >
                     Jami ball
