@@ -3,25 +3,22 @@ import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
 import {
   visibleCourseRunWhere,
   visibleExerciseDefinitionWhere,
+  isMissingPrismaColumnError,
+  isMissingPrismaTableError,
   withCourseRunVisibilityFallback,
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
+import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
+import { isPremiumTariffName } from '../../utils/tariff';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
   lifecycleStatus: 'active' as const,
 };
-
-function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
-}
-
-function hasKuratorRole(roles: string[]): boolean {
-  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
-}
 
 type CustomerColumnSupport = {
   telegramUsername: boolean;
@@ -34,34 +31,39 @@ type CustomerColumnSupport = {
   socialMediaConsent: boolean;
 };
 
+function removeMissingCustomerColumns(
+  error: unknown,
+  current: CustomerColumnSupport,
+): CustomerColumnSupport | null {
+  const missing = {
+    telegramUsername: isMissingCustomerColumnError(error, 'telegramusername'),
+    gender: isMissingCustomerColumnError(error, 'gender'),
+    region: isMissingCustomerColumnError(error, 'region'),
+    secondaryPhone: isMissingCustomerColumnError(error, 'secondaryphone'),
+    specialty: isMissingCustomerColumnError(error, 'specialty'),
+    address: isMissingCustomerColumnError(error, 'address'),
+    instagramUsername: isMissingCustomerColumnError(error, 'instagramusername'),
+    socialMediaConsent: isMissingCustomerColumnError(error, 'socialmediaconsent'),
+  };
+  if (!Object.values(missing).some(Boolean)) return null;
+  return {
+    telegramUsername: missing.telegramUsername ? false : current.telegramUsername,
+    gender: missing.gender ? false : current.gender,
+    region: missing.region ? false : current.region,
+    secondaryPhone: missing.secondaryPhone ? false : current.secondaryPhone,
+    specialty: missing.specialty ? false : current.specialty,
+    address: missing.address ? false : current.address,
+    instagramUsername: missing.instagramUsername ? false : current.instagramUsername,
+    socialMediaConsent: missing.socialMediaConsent ? false : current.socialMediaConsent,
+  };
+}
+
 let customerColumnSupportPromise: Promise<CustomerColumnSupport> | null = null;
 
-function isMissingRegionConfigsTableError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return message.includes('region_configs') && message.includes('does not exist');
-  }
-  return message.includes('region_configs');
-}
-
-function isMissingCourseRunsTableError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return message.includes('course_runs') && message.includes('does not exist');
-  }
-  return message.includes('course_runs');
-}
-
-function isMissingExerciseDefinitionCourseIdColumnError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return message.includes('exercise_definitions.courseid') && message.includes('does not exist');
-  }
-  return message.includes('exercise_definitions.courseid');
-}
+const isMissingRegionConfigsTableError = (error: unknown) => isMissingPrismaTableError(error, 'region_configs');
+const isMissingCourseRunsTableError = (error: unknown) => isMissingPrismaTableError(error, 'course_runs');
+const isMissingExerciseDefinitionCourseIdColumnError = (error: unknown) =>
+  isMissingPrismaColumnError(error, 'exercise_definitions', 'courseId');
 
 function isMissingCustomerColumnError(
   error: unknown,
@@ -149,11 +151,6 @@ async function getCustomerColumnSupport(forceRefresh = false): Promise<CustomerC
   return customerColumnSupportPromise;
 }
 
-function isPremiumTariffName(name: string | null | undefined): boolean {
-  const value = (name || '').toLowerCase();
-  return value.includes('premium') || value.includes('vip');
-}
-
 function normalizeOptionalText(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -200,6 +197,7 @@ export const studentsRouter = router({
 
       let scopedCustomerIds: string[] | undefined;
       let courseRunCourseId: string | undefined;
+      let selectedRunRange: { startDate: Date; endDate: Date } | null = null;
 
       if (input.courseRunId) {
         const selectedRun = await withCourseRunVisibilityFallback((withHiddenColumn) =>
@@ -209,7 +207,7 @@ export const studentsRouter = router({
               tenantId,
               ...visibleCourseRunWhere(withHiddenColumn),
             },
-            select: { courseId: true },
+            select: { id: true, courseId: true, startDate: true, endDate: true },
           }),
         )
           .catch((error) => {
@@ -218,15 +216,28 @@ export const studentsRouter = router({
             }
             throw error;
           });
-        courseRunCourseId = selectedRun?.courseId;
+        if (!selectedRun) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+        }
+        courseRunCourseId = selectedRun.courseId;
+        selectedRunRange = { startDate: selectedRun.startDate, endDate: selectedRun.endDate };
+        scopedCustomerIds = await resolveCourseRunMemberCustomerIds({
+          tenantId,
+          courseRunId: selectedRun.id,
+          courseId: selectedRun.courseId,
+        });
       }
 
       if (isKurator) {
-        scopedCustomerIds = await getCustomersScopedToKurator({
+        const kuratorCustomerIds = await getCustomersScopedToKurator({
           tenantId,
           kuratorUserId: user.userId,
           courseRunId: input.courseRunId,
         });
+        const kuratorCustomerIdSet = new Set(kuratorCustomerIds);
+        scopedCustomerIds = scopedCustomerIds
+          ? scopedCustomerIds.filter((id) => kuratorCustomerIdSet.has(id))
+          : kuratorCustomerIds;
       }
 
       const incomeFilter: Record<string, unknown> = {
@@ -355,6 +366,13 @@ export const studentsRouter = router({
       }
 
       const customerIds = customers.map((c) => c.id);
+      const selectedRunEndExclusive = selectedRunRange
+        ? new Date(
+            selectedRunRange.endDate.getFullYear(),
+            selectedRunRange.endDate.getMonth(),
+            selectedRunRange.endDate.getDate() + 1,
+          )
+        : null;
       let exerciseStatsByCustomer = new Map<string, Array<{ name: string; done: number; total: number }>>();
       let attendanceByCustomer = new Map<
         string,
@@ -411,6 +429,14 @@ export const studentsRouter = router({
                   tenantId,
                   customerId: { in: customerIds },
                   exerciseDefinitionId: { in: exerciseDefIds },
+                  ...(selectedRunRange
+                    ? {
+                        completedAt: {
+                          gte: selectedRunRange.startDate,
+                          lt: selectedRunEndExclusive!,
+                        },
+                      }
+                    : {}),
                 },
                 _count: { id: true },
               })
@@ -584,36 +610,9 @@ export const studentsRouter = router({
           select: buildDetailSelect(columnSupport),
         });
       } catch (error) {
-        const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
-        const missingRegion = isMissingCustomerColumnError(error, 'region');
-        const missingGender = isMissingCustomerColumnError(error, 'gender');
-        const missingSecondaryPhone = isMissingCustomerColumnError(error, 'secondaryphone');
-        const missingSpecialty = isMissingCustomerColumnError(error, 'specialty');
-        const missingAddress = isMissingCustomerColumnError(error, 'address');
-        const missingInstagramUsername = isMissingCustomerColumnError(error, 'instagramusername');
-        const missingSocialMediaConsent = isMissingCustomerColumnError(error, 'socialmediaconsent');
-        if (
-          !missingTelegram &&
-          !missingRegion &&
-          !missingGender &&
-          !missingSecondaryPhone &&
-          !missingSpecialty &&
-          !missingAddress &&
-          !missingInstagramUsername &&
-          !missingSocialMediaConsent
-        ) {
-          throw error;
-        }
-        columnSupport = {
-          telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
-          gender: missingGender ? false : columnSupport.gender,
-          region: missingRegion ? false : columnSupport.region,
-          secondaryPhone: missingSecondaryPhone ? false : columnSupport.secondaryPhone,
-          specialty: missingSpecialty ? false : columnSupport.specialty,
-          address: missingAddress ? false : columnSupport.address,
-          instagramUsername: missingInstagramUsername ? false : columnSupport.instagramUsername,
-          socialMediaConsent: missingSocialMediaConsent ? false : columnSupport.socialMediaConsent,
-        };
+        const nextColumnSupport = removeMissingCustomerColumns(error, columnSupport);
+        if (!nextColumnSupport) throw error;
+        columnSupport = nextColumnSupport;
         customerColumnSupportPromise = Promise.resolve(columnSupport);
         customer = await prisma.customer.findFirst({
           where: { id: input.customerId, tenantId },
@@ -713,38 +712,9 @@ export const studentsRouter = router({
       try {
         return await applyUpdate(columnSupport);
       } catch (error) {
-        const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
-        const missingRegion = isMissingCustomerColumnError(error, 'region');
-        const missingGender = isMissingCustomerColumnError(error, 'gender');
-        const missingSecondaryPhone = isMissingCustomerColumnError(error, 'secondaryphone');
-        const missingSpecialty = isMissingCustomerColumnError(error, 'specialty');
-        const missingAddress = isMissingCustomerColumnError(error, 'address');
-        const missingInstagramUsername = isMissingCustomerColumnError(error, 'instagramusername');
-        const missingSocialMediaConsent = isMissingCustomerColumnError(error, 'socialmediaconsent');
-
-        if (
-          !missingTelegram &&
-          !missingRegion &&
-          !missingGender &&
-          !missingSecondaryPhone &&
-          !missingSpecialty &&
-          !missingAddress &&
-          !missingInstagramUsername &&
-          !missingSocialMediaConsent
-        ) {
-          throw error;
-        }
-
-        columnSupport = {
-          telegramUsername: missingTelegram ? false : columnSupport.telegramUsername,
-          gender: missingGender ? false : columnSupport.gender,
-          region: missingRegion ? false : columnSupport.region,
-          secondaryPhone: missingSecondaryPhone ? false : columnSupport.secondaryPhone,
-          specialty: missingSpecialty ? false : columnSupport.specialty,
-          address: missingAddress ? false : columnSupport.address,
-          instagramUsername: missingInstagramUsername ? false : columnSupport.instagramUsername,
-          socialMediaConsent: missingSocialMediaConsent ? false : columnSupport.socialMediaConsent,
-        };
+        const nextColumnSupport = removeMissingCustomerColumns(error, columnSupport);
+        if (!nextColumnSupport) throw error;
+        columnSupport = nextColumnSupport;
         customerColumnSupportPromise = Promise.resolve(columnSupport);
         return applyUpdate(columnSupport);
       }

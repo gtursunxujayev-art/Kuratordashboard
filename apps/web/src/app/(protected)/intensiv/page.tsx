@@ -1,5 +1,5 @@
-import DashboardPage from '../dashboard/page';
+import { DashboardContent } from '@/components/dashboard-content';
 
 export default function IntensivPage() {
-  return <DashboardPage forcedCategory="intensiv" />;
+  return <DashboardContent forcedCategory="intensiv" />;
 }

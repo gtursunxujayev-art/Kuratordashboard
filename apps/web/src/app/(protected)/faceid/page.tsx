@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useRouter } from 'next/navigation';
@@ -111,16 +111,19 @@ export default function FaceIdLogsPage() {
       phone: filterPhone || undefined,
       branch: filterBranch || undefined,
     },
-    { refetchInterval: 30_000 },
+    { enabled: isManager, refetchInterval: 30_000 },
   );
 
   const countsQuery = trpc.faceid.getStatusCounts.useQuery(
     { days: 30 },
-    { refetchInterval: 60_000 },
+    { enabled: isManager, refetchInterval: 60_000 },
   );
 
+  useEffect(() => {
+    if (!authLoading && !isManager) router.replace('/dashboard');
+  }, [authLoading, isManager, router]);
+
   if (!authLoading && !isManager) {
-    router.replace('/dashboard');
     return null;
   }
 

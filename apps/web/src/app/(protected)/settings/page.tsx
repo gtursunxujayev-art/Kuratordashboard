@@ -28,8 +28,11 @@ export default function SettingsPage() {
     }
   }, [isAdmin, isManager, isLoading]);
 
+  useEffect(() => {
+    if (!isLoading && !isManager) router.replace('/dashboard');
+  }, [isLoading, isManager, router]);
+
   if (!isLoading && !isManager) {
-    router.replace('/dashboard');
     return null;
   }
 
@@ -560,8 +563,7 @@ function CourseRunsTab({
   const [deleteSuccess, setDeleteSuccess] = useState('');
   const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
 
-  // Roster picker state — explicit hand-picked mini-group of students for this run.
-  // Empty set ⇒ run uses the default-group fallback (every customer enrolled on the course).
+  // Explicit run roster. An empty set means no students are assigned to the run.
   const [tariffFilter, setTariffFilter] = useState('');
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
 

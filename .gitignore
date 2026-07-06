@@ -3,6 +3,9 @@ node_modules/
 # build outputs
 dist/
 .next/
+playwright-report/
+test-results/
+coverage/
 
 # TypeScript
 *.tsbuildinfo

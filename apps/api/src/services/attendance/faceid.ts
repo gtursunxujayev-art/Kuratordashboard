@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '@kuratordashboard/db';
+import { addDaysLocal, startOfDayLocal } from '../../utils/date-local';
 
 /**
  * Face ID -> student class attendance ingestion.
@@ -68,7 +69,8 @@ export type FaceIdWebhookResult = {
     | 'no_lesson'
     | 'not_class_day'
     | 'ignored_action'
-    | 'invalid_payload';
+    | 'invalid_payload'
+    | 'configuration_error';
   reason?: string;
   customerId?: string;
   courseRunId?: string;
@@ -224,18 +226,8 @@ export function parseFaceIdPayload(body: unknown): ParsedFaceIdEvent | null {
 }
 
 // ---------------------------------------------------------------------------
-// Date helpers (mirrors apps/api/src/trpc/routers/amaliy.ts)
+// Date helpers
 // ---------------------------------------------------------------------------
-
-function startOfDayLocal(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDaysLocal(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
 
 function isClassDay(date: Date): boolean {
   const day = date.getDay();
@@ -286,11 +278,21 @@ async function matchStudent(
 
   // 1) Strongest signal: a previously learned Face ID external id.
   if (parsed.externalUserId) {
-    const byExternal = await prisma.customer.findFirst({
+    const byExternal = await prisma.customer.findMany({
       where: { ...tenantWhere, faceIdExternalId: parsed.externalUserId },
       select: { id: true, tenantId: true, faceIdExternalId: true },
+      take: 2,
     });
-    if (byExternal) return byExternal;
+    if (byExternal.length === 1) return byExternal[0];
+    if (byExternal.length > 1) {
+      console.error(JSON.stringify({
+        level: 'error',
+        event: 'faceid_student_ambiguous',
+        reason: 'multiple_external_id_matches',
+        matchCount: byExternal.length,
+      }));
+      return null;
+    }
   }
 
   // 2) Phone match. Compare on the last 9 digits then confirm a full normalized match.
@@ -489,7 +491,10 @@ export function extractFaceIdMetaFromPayload(rawPayload: unknown): Partial<FaceI
 
 async function resolveFaceIdTenantId(): Promise<string | null> {
   const envTenant = process.env.FACEID_TENANT_ID?.trim();
-  if (envTenant) return envTenant;
+  if (envTenant) {
+    const tenant = await prisma.tenant.findUnique({ where: { id: envTenant }, select: { id: true } });
+    return tenant?.id ?? null;
+  }
   const tenants = await prisma.tenant.findMany({ select: { id: true }, take: 2 });
   return tenants.length === 1 ? tenants[0].id : null;
 }
@@ -541,8 +546,45 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
   }
 
   const rawBody = JSON.stringify(body ?? {});
-  const tenantScopeId = process.env.FACEID_TENANT_ID?.trim() || null;
+  const configuredTenantId = process.env.FACEID_TENANT_ID?.trim() || null;
   const earlyTenantId = await resolveFaceIdTenantId();
+  if (!earlyTenantId) {
+    const reason = 'FACEID_TENANT_ID_required_unless_exactly_one_tenant_exists';
+    console.error(JSON.stringify({
+      level: 'error',
+      event: 'faceid_configuration_error',
+      reason,
+    }));
+    await prisma.webhookEvent.create({
+      data: {
+        tenantId: null,
+        source: 'faceid_student',
+        eventType: parsed.eventType,
+        rawPayload: {
+          ...parsed.rawPayload,
+          _faceid_meta: {
+            status: 'configuration_error',
+            phone: parsed.phone,
+            externalUserId: parsed.externalUserId,
+            customerId: null,
+            courseRunId: null,
+            lessonDate: null,
+            branchName: parsed.branchName,
+            reason,
+          },
+        } as object,
+        processed: true,
+        processedAt: new Date(),
+        errorMessage: reason,
+      },
+    }).catch(() => undefined);
+    return {
+      ok: false,
+      status: 'configuration_error',
+      reason: 'FACEID_TENANT_ID sozlanishi kerak',
+    };
+  }
+  const tenantScopeId = configuredTenantId || earlyTenantId;
 
   // 3. Create WebhookEvent before student match (single-tenant path).
   //    This ensures every IN event is visible on the Face ID page, including unmatched scans.

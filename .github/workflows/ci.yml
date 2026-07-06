@@ -3,36 +3,91 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
 
 jobs:
-  typecheck:
+  verify:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kuratordashboard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/kuratordashboard_test
+      JWT_SECRET: ci-only-jwt-secret-with-at-least-32-characters
+      FACEID_WEBHOOK_SECRET: ci-faceid-secret
+      FACEID_TENANT_ID: ci-tenant
+      CRON_SECRET: ci-cron-secret
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:4010
+      PORT: 4010
+      NODE_ENV: test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Install dependencies
-        run: npm install
-      - name: Prisma generate
+          cache: npm
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Generate Prisma client
         run: npm run db:generate
-      - name: Type-check API
-        run: npm run type-check --workspace @kuratordashboard/api
-      - name: Type-check Web
-        run: npm run type-check --workspace @kuratordashboard/web
-      - name: Build API
-        run: npm run build --workspace @kuratordashboard/api
-      - name: API smoke checks
+      - name: Apply database migrations
+        run: npm run db:migrate:deploy
+      - name: Lint and unused-symbol checks
+        run: npm run lint
+      - name: Type-check API and Web
         run: |
-          PORT=4010 node apps/api/dist/index.js &
-          API_PID=$!
-          sleep 3
-          curl -fsS http://127.0.0.1:4010/health > /dev/null
-          curl -fsS http://127.0.0.1:4010/ready > /dev/null
-          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "http://127.0.0.1:4010/api/trpc/auth.loginWithPassword?batch=1" -H "Content-Type: application/json" --data '{"0":{"json":{"login":"","password":""}}}')
-          kill "$API_PID"
-          if [ "$STATUS" = "404" ]; then
-            echo "Auth route smoke failed with 404 (route missing)"
-            exit 1
-          fi
+          npm run type-check --workspace @kuratordashboard/api
+          npm run type-check --workspace @kuratordashboard/web
+      - name: Run API integration tests
+        run: npm test
+      - name: Seed deterministic browser fixtures
+        run: npm run seed:e2e --workspace @kuratordashboard/api
+      - name: Production build
+        env:
+          NODE_ENV: production
+        run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Start built API and Web
+        env:
+          NODE_ENV: production
+        run: |
+          node apps/api/dist/index.js > api.log 2>&1 &
+          npm run start --workspace @kuratordashboard/web -- -p 3000 > web.log 2>&1 &
+          for i in {1..60}; do
+            if curl -fsS http://127.0.0.1:4010/ready >/dev/null && curl -fsS http://127.0.0.1:3000/auth/login >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat api.log web.log
+          exit 1
+      - name: Verify API liveness and readiness
+        run: |
+          curl -fsS http://127.0.0.1:4010/health
+          curl -fsS http://127.0.0.1:4010/ready
+      - name: Run browser regression tests
+        env:
+          E2E_SEEDED: '1'
+          PLAYWRIGHT_EXTERNAL_SERVER: '1'
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:3000
+        run: npm run test:e2e
+      - name: Upload service logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-logs
+          path: |
+            api.log
+            web.log

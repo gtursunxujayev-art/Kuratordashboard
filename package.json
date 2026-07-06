@@ -17,6 +17,9 @@
     "build": "npm run build --workspace @kuratordashboard/db && npm run build --workspace @kuratordashboard/api && npm run build --workspace @kuratordashboard/web",
     "db:generate": "npm run generate --workspace @kuratordashboard/db",
     "db:migrate": "npm run migrate --workspace @kuratordashboard/db",
-    "db:migrate:deploy": "npm run migrate:deploy --workspace @kuratordashboard/db"
+    "db:migrate:deploy": "npm run migrate:deploy --workspace @kuratordashboard/db",
+    "lint": "npm run lint --workspace @kuratordashboard/web",
+    "test": "npm run test --workspace @kuratordashboard/api",
+    "test:e2e": "npm run test:e2e --workspace @kuratordashboard/web"
   }
 }

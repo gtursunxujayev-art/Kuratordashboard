@@ -1,8 +1,8 @@
 'use client';
 
-import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
+import { DashboardDetailHeader, DashboardDetailState, SummaryCard } from '@/components/dashboard-detail';
 
 type DateFilter = 'today' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'all';
 
@@ -21,15 +21,10 @@ export default function DashboardStudentDetailPage() {
 
   return (
     <div className="p-5 md:p-6 space-y-5">
-      <div className="kd-card kd-topbar p-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold kd-title">O'quvchi samaradorligi</h1>
-        <Link href="/dashboard" className="px-3 py-2 rounded-md text-sm kd-chip">
-          Ortga
-        </Link>
-      </div>
+      <DashboardDetailHeader title="O'quvchi samaradorligi" />
 
       {isLoading ? (
-        <div className="kd-card p-5 text-sm kd-subtle">Yuklanmoqda...</div>
+        <DashboardDetailState>Yuklanmoqda...</DashboardDetailState>
       ) : data ? (
         <>
           <div className="kd-card p-4">
@@ -126,17 +121,8 @@ export default function DashboardStudentDetailPage() {
           </div>
         </>
       ) : (
-        <div className="kd-card p-5 text-sm kd-subtle">Ma'lumot topilmadi</div>
+        <DashboardDetailState>Ma&apos;lumot topilmadi</DashboardDetailState>
       )}
-    </div>
-  );
-}
-
-function SummaryCard({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="kd-card p-3">
-      <p className="text-xs kd-subtle">{title}</p>
-      <p className="text-2xl font-bold kd-title mt-1">{value}</p>
     </div>
   );
 }

@@ -4,46 +4,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
+import { ReportTable } from '@/components/report-table';
 import {
   DATE_PRESET_LABELS,
-  WEEK_KEYS,
   type DatePreset,
-  getReportTableLayout,
 } from '@/app/shared/report/report-table-layout';
-
-function textColorForBackground(hexColor?: string | null): string {
-  if (!hexColor) return '#111827';
-  const value = hexColor.trim().replace('#', '');
-  if (![3, 6].includes(value.length)) return '#111827';
-
-  const normalized = value.length === 3
-    ? value.split('').map((char) => char + char).join('')
-    : value;
-
-  const r = Number.parseInt(normalized.slice(0, 2), 16);
-  const g = Number.parseInt(normalized.slice(2, 4), 16);
-  const b = Number.parseInt(normalized.slice(4, 6), 16);
-
-  if ([r, g, b].some((channel) => Number.isNaN(channel))) return '#111827';
-
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.56 ? '#111827' : '#F9FAFB';
-}
-
-function formatPoint(value: number | null | undefined): string {
-  const safe = value ?? 0;
-  if (Number.isInteger(safe)) return String(safe);
-  return safe.toFixed(2).replace(/\.?0+$/, '');
-}
-
-function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean {
-  const date = new Date(`${dayKey}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return true;
-  const day = date.getDay();
-  if (practiceType === 'class') return day === 0 || day === 6;
-  if (practiceType === 'homework' || practiceType === 'extra') return day >= 1 && day <= 5;
-  return true;
-}
 
 export default function HisobotPage() {
   const router = useRouter();
@@ -57,8 +22,6 @@ export default function HisobotPage() {
   const [shareToken, setShareToken] = useState<string | null>(null);
   const [shareLinkCopied, setShareLinkCopied] = useState(false);
   const shareLinkInputRef = useRef<HTMLInputElement>(null);
-  const headerRowRef = useRef<HTMLTableRowElement>(null);
-  const [stickySubHeaderTop, setStickySubHeaderTop] = useState(0);
 
   const generateShareToken = trpc.settings.generateReportShareToken.useMutation();
 
@@ -166,43 +129,6 @@ export default function HisobotPage() {
     filterOptionsError?.message ||
     kuratorsError?.message ||
     reportError?.message;
-  const {
-    emptyColSpan,
-    hasSubColumns,
-    isEmptyWeek,
-    isTodayPreset,
-    isWeekPreset,
-    perPracticeColumnCount,
-    subColumns,
-    tableMinWidth,
-  } = getReportTableLayout({
-    datePreset,
-    dateFrom: report?.meta.dateFrom,
-    dateToInclusive: report?.meta.dateToInclusive,
-    practiceTypes: (report?.practices ?? []).map((practice) => practice.type),
-    practiceCount: report?.practices.length ?? 0,
-  });
-
-  useEffect(() => {
-    const updateStickyOffsets = () => {
-      const nextSubHeaderTop = headerRowRef.current?.offsetHeight ?? 0;
-      setStickySubHeaderTop(nextSubHeaderTop);
-    };
-
-    updateStickyOffsets();
-
-    const resizeObserver = new ResizeObserver(() => updateStickyOffsets());
-    if (headerRowRef.current) {
-      resizeObserver.observe(headerRowRef.current);
-    }
-
-    window.addEventListener('resize', updateStickyOffsets);
-    return () => {
-      resizeObserver.disconnect();
-      window.removeEventListener('resize', updateStickyOffsets);
-    };
-  }, [hasSubColumns, report?.practices.length, datePreset]);
-
   if (isLoading) {
     return (
       <div className="p-6">
@@ -231,6 +157,7 @@ export default function HisobotPage() {
           <div>
             <label className="block text-xs kd-subtle mb-1">Kurs</label>
             <select
+              data-testid="hisobot-course"
               value={courseId}
               onChange={(e) => {
                 resetShareState();
@@ -252,6 +179,7 @@ export default function HisobotPage() {
           <div>
             <label className="block text-xs kd-subtle mb-1">Oqim</label>
             <select
+              data-testid="hisobot-run"
               value={courseRunId}
               onChange={(e) => {
                 resetShareState();
@@ -275,6 +203,7 @@ export default function HisobotPage() {
           <div>
             <label className="block text-xs kd-subtle mb-1">Tarif</label>
             <select
+              data-testid="hisobot-tariff"
               value={tariffId}
               onChange={(e) => {
                 resetShareState();
@@ -298,6 +227,7 @@ export default function HisobotPage() {
           <div>
             <label className="block text-xs kd-subtle mb-1">Kurator</label>
             <select
+              data-testid="hisobot-kurator"
               value={kuratorUserId}
               onChange={(e) => {
                 resetShareState();
@@ -318,6 +248,7 @@ export default function HisobotPage() {
         <div className="flex flex-wrap gap-2">
           {(Object.keys(DATE_PRESET_LABELS) as DatePreset[]).map((preset) => (
             <button
+              data-testid={`hisobot-preset-${preset}`}
               key={preset}
               onClick={() => {
                 if (preset === datePreset) return;
@@ -344,6 +275,7 @@ export default function HisobotPage() {
             {shareToken ? (
               <div className="flex items-center gap-2">
                 <input
+                  data-testid="hisobot-share-link"
                   ref={shareLinkInputRef}
                   type="text"
                   readOnly
@@ -352,6 +284,7 @@ export default function HisobotPage() {
                   onClick={(e) => (e.target as HTMLInputElement).select()}
                 />
                 <button
+                  data-testid="hisobot-copy-share-link"
                   type="button"
                   onClick={() => {
                     const url = `${window.location.origin}/shared/report/${shareToken}`;
@@ -381,6 +314,7 @@ export default function HisobotPage() {
               </div>
             ) : (
               <button
+                data-testid="hisobot-create-share-link"
                 type="button"
                 onClick={async () => {
                   try {
@@ -416,218 +350,11 @@ export default function HisobotPage() {
         <div className="kd-card p-6 text-center text-sm kd-subtle">Ma&apos;lumot topilmadi.</div>
       ) : (
         <div className="kd-card p-0">
-          <div className="overflow-x-auto overflow-y-visible rounded-[inherit]">
-            <table className={`w-full text-xs md:text-sm border-collapse ${tableMinWidth}`}>
-              <thead>
-                <tr ref={headerRowRef} className="bg-gray-50 border-b border-gray-200">
-                  <th
-                    rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: 0 }}
-                    className="sticky left-0 z-30 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]"
-                  >
-                    №
-                  </th>
-                  <th
-                    rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: 0 }}
-                    className="sticky left-[32px] md:left-[40px] z-30 bg-gray-50 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]"
-                  >
-                    O&apos;quvchi
-                  </th>
-                  <th
-                    rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: 0 }}
-                    className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]"
-                  >
-                    Tarif
-                  </th>
-                  <th
-                    rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: 0 }}
-                    className="sticky z-20 bg-gray-50 text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[68px] w-[68px] md:min-w-[118px] md:w-[118px]"
-                  >
-                    Kurator
-                  </th>
-                  {isTodayPreset
-                    ? report.practices.map((practice, pIdx) => (
-                        <th
-                          key={practice.id}
-                          style={{ top: 0 }}
-                          className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[46px] md:min-w-[96px] ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
-                        >
-                          <div className="leading-tight">
-                            <p className="text-[10px] md:text-xs">{practice.name}</p>
-                          </div>
-                        </th>
-                      ))
-                    : report.practices.map((practice, pIdx) => (
-                        <th
-                          key={practice.id}
-                          colSpan={perPracticeColumnCount}
-                          style={{ top: 0 }}
-                          className={`sticky z-20 bg-gray-50 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 ${pIdx < report.practices.length - 1 ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'}`}
-                        >
-                          <div className="leading-tight">
-                            <p className="text-[10px] md:text-xs">{practice.name}</p>
-                          </div>
-                        </th>
-                      ))}
-                  <th
-                    rowSpan={hasSubColumns ? 2 : 1}
-                    style={{ top: 0 }}
-                    className="sticky right-0 z-30 bg-gray-50 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]"
-                  >
-                    Jami ball
-                  </th>
-                </tr>
-                {hasSubColumns && (
-                  <tr className="bg-gray-50 border-b border-gray-200">
-                    {report.practices.flatMap((practice, pIdx) =>
-                      subColumns.map((subColumn, sIdx) => {
-                        const isSelectedWeek = datePreset === subColumn.key;
-                        const isLastCol = sIdx === subColumns.length - 1;
-                        const isPracticeDivider = isLastCol && pIdx < report.practices.length - 1;
-                        return (
-                          <th
-                            key={`${practice.id}-${subColumn.key}`}
-                            style={{ top: stickySubHeaderTop }}
-                            className={`text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold min-w-[36px] md:min-w-[48px] ${
-                              isPracticeDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'
-                            } sticky z-20 bg-gray-50 ${
-                              isSelectedWeek ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'
-                            }`}
-                          >
-                            {subColumn.label}
-                          </th>
-                        );
-                      }),
-                    )}
-                  </tr>
-                )}
-              </thead>
-              <tbody>
-                {report.students.length === 0 ? (
-                  <tr>
-                    <td colSpan={emptyColSpan} className="px-4 py-8 text-center text-sm kd-subtle">
-                      Tanlangan filterlar bo&apos;yicha o&apos;quvchilar topilmadi.
-                    </td>
-                  </tr>
-                ) : (
-                  report.students.map((student, idx) => (
-                    <tr key={student.id} className="border-b border-gray-100">
-                      <td className="sticky left-0 z-10 bg-white text-center px-1 md:px-2 py-1.5 md:py-2 border-r border-gray-100 align-middle text-xs md:text-sm text-gray-500 font-medium">
-                        {idx + 1}
-                      </td>
-                      <td className="sticky left-[32px] md:left-[40px] z-10 bg-white px-2 md:px-3 py-1.5 md:py-2 border-r border-gray-100 align-middle whitespace-nowrap">
-                        <div className="flex items-baseline gap-2 whitespace-nowrap">
-                          <p className="font-medium text-gray-900 leading-4 md:leading-5 text-sm md:text-base">{student.name}</p>
-                          <p className="text-[10px] md:text-[11px] text-gray-500 leading-3.5 md:leading-4">{student.customerNumber ?? '-'}</p>
-                        </div>
-                      </td>
-                      <td className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-middle text-[11px] md:text-xs leading-4 whitespace-nowrap">
-                        {student.tariffName ?? '-'}
-                      </td>
-                      <td
-                        title={student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
-                        className="px-1.5 md:px-2 py-1.5 md:py-2 text-gray-700 border-r border-gray-100 align-middle text-[11px] md:text-xs leading-4 whitespace-nowrap"
-                      >
-                        <span className="block truncate">
-                          {student.kuratorNames.length > 0 ? student.kuratorNames.join(', ') : '-'}
-                        </span>
-                      </td>
-                      {isTodayPreset
-                        ? report.practices.map((practice, pIdx) => {
-                            const cell = student.cells[practice.id];
-                            const isApplicable = isPracticeEligibleOnDate(practice.type, report.meta.dateFrom);
-                            const hasLog = cell?.hasLogs ?? false;
-                            const points = cell?.points ?? 0;
-                            const colorHex = hasLog ? (cell?.colorHex ?? null) : null;
-                            const isColored = Boolean(colorHex) && hasLog && isApplicable;
-                            const backgroundColor = isColored ? colorHex! : '#FFFFFF';
-                            const color = isColored ? textColorForBackground(colorHex) : '#374151';
-                            const isDivider = pIdx < report.practices.length - 1;
-
-                            return (
-                              <td
-                                key={`${student.id}-${practice.id}-today`}
-                                className={`px-0.5 md:px-2 py-1.5 md:py-2 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
-                                style={{ backgroundColor, color }}
-                              >
-                                {!isApplicable || !hasLog ? '-' : formatPoint(points)}
-                              </td>
-                            );
-                          })
-                        : report.practices.flatMap((practice, pIdx) => {
-                            const cell = student.cells[practice.id];
-                            if (isWeekPreset) {
-                              if (isEmptyWeek) {
-                                const isDivider = pIdx < report.practices.length - 1;
-                                return (
-                                  <td
-                                    key={`${student.id}-${practice.id}-empty-week`}
-                                    className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-medium text-sm md:text-base text-gray-300 ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
-                                  >
-                                    -
-                                  </td>
-                                );
-                              }
-
-                              const dayStatsByDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
-                              return subColumns.map((dayColumn, dIdx) => {
-                                const stat = dayStatsByDate.get(dayColumn.key);
-                                const isApplicable = stat?.isApplicable ?? isPracticeEligibleOnDate(practice.type, dayColumn.key);
-                                const hasLog = stat?.hasLog ?? false;
-                                const points = stat?.points ?? 0;
-                                const dayColor = hasLog ? (stat?.colorHex ?? null) : null;
-                                const isColored = Boolean(dayColor) && hasLog && isApplicable;
-                                const backgroundColor = isColored ? dayColor! : '#FFFFFF';
-                                const color = isColored ? textColorForBackground(dayColor) : '#374151';
-                                const isLastCol = dIdx === subColumns.length - 1;
-                                const isDivider = isLastCol && pIdx < report.practices.length - 1;
-                                return (
-                                  <td
-                                    key={`${student.id}-${practice.id}-${dayColumn.key}`}
-                                    className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
-                                    style={{ backgroundColor, color }}
-                                  >
-                                    {!isApplicable || !hasLog ? '-' : formatPoint(points)}
-                                  </td>
-                                );
-                              });
-                            }
-
-                            return WEEK_KEYS.map((weekKey, wIdx) => {
-                              const weekStat = cell?.weekStats?.[weekKey];
-                              const points = weekStat?.points ?? cell?.weekPoints?.[weekKey] ?? 0;
-                              const hasLog = weekStat?.hasLog ?? false;
-                              const isApplicable = weekStat?.isApplicable ?? true;
-                              const weekColor = hasLog ? (weekStat?.colorHex ?? cell?.weekColors?.[weekKey] ?? null) : null;
-                              const isColored = Boolean(weekColor) && hasLog && isApplicable;
-                              const backgroundColor = isColored ? weekColor! : '#FFFFFF';
-                              const color = isColored ? textColorForBackground(weekColor) : '#374151';
-                              const isLastCol = wIdx === WEEK_KEYS.length - 1;
-                              const isDivider = isLastCol && pIdx < report.practices.length - 1;
-
-                              return (
-                                <td
-                                  key={`${student.id}-${practice.id}-${weekKey}`}
-                                  className={`px-0.5 md:px-1 py-1 md:py-1.5 text-center font-semibold text-sm md:text-base ${isDivider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-100'}`}
-                                  style={{ backgroundColor, color }}
-                                >
-                                  {!isApplicable || !hasLog ? '-' : formatPoint(points)}
-                                </td>
-                              );
-                            });
-                          })}
-                      <td className="sticky right-0 z-10 bg-white px-1.5 md:px-2 py-1.5 md:py-2 text-center font-bold text-gray-900 border-l border-gray-200 text-sm md:text-base align-middle">
-                        {formatPoint(student.totalPoints)}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <ReportTable
+            report={report}
+            datePreset={datePreset}
+            emptyMessage="Tanlangan filterlar bo'yicha o'quvchilar topilmadi."
+          />
         </div>
       )}
     </div>

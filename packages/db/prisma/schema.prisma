@@ -600,9 +600,8 @@ model CourseRun {
   @@map("course_runs")
 }
 
-// Explicit hand-picked roster of customers that belong to a course-run mini-group.
-// When non-empty, this is the source of truth for "who is in this run".
-// When empty, callers fall back to "all customers with active new_sale income on the run's course".
+// Explicit roster of customers that belong to a course run.
+// This is the only source of truth for run membership; an empty roster means no members.
 model CourseRunMember {
   id          String   @id @default(cuid())
   tenantId    String

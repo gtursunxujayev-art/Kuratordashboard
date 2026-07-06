@@ -20,6 +20,18 @@ type LoginUserCandidate = {
   createdAt: Date;
 };
 
+function mapAuthUser(user: LoginUserCandidate) {
+  return {
+    userId: user.id,
+    tenantId: user.tenantId,
+    roles: user.roles,
+    username: user.username ?? undefined,
+    name: user.name ?? undefined,
+    email: user.email ?? undefined,
+    phone: user.phone ?? undefined,
+  };
+}
+
 function isTransientDatabaseConnectionError(error: unknown): boolean {
   const code = String((error as { code?: string })?.code || '').toUpperCase();
   if (code === 'P1001' || code === 'P1002' || code === 'P1017') return true;
@@ -55,7 +67,7 @@ function hasKDAccess(roles: string[]): boolean {
   return roles.some((role) => KD_ALLOWED_ROLES.includes(role as (typeof KD_ALLOWED_ROLES)[number]));
 }
 
-async function chooseLoginCandidate(
+export async function chooseLoginCandidate(
   candidates: LoginUserCandidate[],
   password: string,
 ): Promise<LoginUserCandidate | null> {
@@ -73,74 +85,10 @@ async function chooseLoginCandidate(
 
   if (passwordMatched.length === 0) return null;
   if (passwordMatched.length === 1) return passwordMatched[0];
-
-  const tenantIds = Array.from(new Set(passwordMatched.map((candidate) => candidate.tenantId)));
-  const [tenantIncomeCounts, tenantCustomerCounts, tenantCourseCounts] = await Promise.all([
-    prisma.income.groupBy({
-      by: ['tenantId'],
-      where: {
-        tenantId: { in: tenantIds },
-        type: 'new_sale',
-        lifecycleStatus: 'active',
-      },
-      _count: { id: true },
-    }),
-    prisma.customer.groupBy({
-      by: ['tenantId'],
-      where: {
-        tenantId: { in: tenantIds },
-      },
-      _count: { id: true },
-    }),
-    prisma.course.groupBy({
-      by: ['tenantId'],
-      where: {
-        tenantId: { in: tenantIds },
-        isActive: true,
-      },
-      _count: { id: true },
-    }),
-  ]);
-
-  const incomeCountByTenant = new Map(
-    tenantIncomeCounts.map((row) => [row.tenantId, row._count.id]),
-  );
-  const customerCountByTenant = new Map(
-    tenantCustomerCounts.map((row) => [row.tenantId, row._count.id]),
-  );
-  const courseCountByTenant = new Map(
-    tenantCourseCounts.map((row) => [row.tenantId, row._count.id]),
-  );
-
-  passwordMatched.sort((left, right) => {
-    const rightIncomeCount = incomeCountByTenant.get(right.tenantId) ?? 0;
-    const leftIncomeCount = incomeCountByTenant.get(left.tenantId) ?? 0;
-    if (rightIncomeCount !== leftIncomeCount) {
-      return rightIncomeCount - leftIncomeCount;
-    }
-
-    const rightCustomerCount = customerCountByTenant.get(right.tenantId) ?? 0;
-    const leftCustomerCount = customerCountByTenant.get(left.tenantId) ?? 0;
-    if (rightCustomerCount !== leftCustomerCount) {
-      return rightCustomerCount - leftCustomerCount;
-    }
-
-    const rightCourseCount = courseCountByTenant.get(right.tenantId) ?? 0;
-    const leftCourseCount = courseCountByTenant.get(left.tenantId) ?? 0;
-    if (rightCourseCount !== leftCourseCount) {
-      return rightCourseCount - leftCourseCount;
-    }
-
-    const rightLastLogin = right.lastLoginAt?.getTime() ?? 0;
-    const leftLastLogin = left.lastLoginAt?.getTime() ?? 0;
-    if (rightLastLogin !== leftLastLogin) {
-      return rightLastLogin - leftLastLogin;
-    }
-
-    return right.createdAt.getTime() - left.createdAt.getTime();
+  throw new TRPCError({
+    code: 'CONFLICT',
+    message: 'Login bir nechta hisobga mos keldi. Global noyob username bilan kiring.',
   });
-
-  return passwordMatched[0];
 }
 
 export const authRouter = router({
@@ -205,28 +153,13 @@ export const authRouter = router({
         data: { lastLoginAt: new Date() },
       });
 
-      const token = signJWT({
-        userId: user.id,
-        tenantId: user.tenantId,
-        roles: user.roles,
-        username: user.username ?? undefined,
-        name: user.name ?? undefined,
-        email: user.email ?? undefined,
-        phone: user.phone ?? undefined,
-      });
+      const authUser = mapAuthUser(user);
+      const token = signJWT(authUser);
 
       return {
         success: true,
         token,
-        user: {
-          userId: user.id,
-          tenantId: user.tenantId,
-          roles: user.roles,
-          username: user.username ?? undefined,
-          name: user.name ?? undefined,
-          email: user.email ?? undefined,
-          phone: user.phone ?? undefined,
-        },
+        user: authUser,
       };
     }),
 

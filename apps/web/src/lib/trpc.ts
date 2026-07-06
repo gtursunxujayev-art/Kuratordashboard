@@ -28,6 +28,4 @@ export function createTRPCClient() {
   });
 }
 
-export const trpcClient = typeof window !== 'undefined' ? createTRPCClient() : (null as unknown as ReturnType<typeof createTRPCClient>);
-
 export type { AppRouter };

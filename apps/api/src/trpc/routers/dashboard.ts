@@ -4,7 +4,11 @@ import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import jwt from 'jsonwebtoken';
 import { getCustomersScopedToKurator } from '../utils/kuratorScope';
-import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
+import {
+  resolveCourseRunMemberCustomerIds,
+  resolveCourseRunMemberSets,
+  resolvePreferredRunByCustomer,
+} from '../utils/runMembership';
 import {
   isMissingCourseRunHiddenColumnError,
   isMissingExerciseDefinitionHiddenColumnError,
@@ -13,6 +17,7 @@ import {
   withCourseRunVisibilityFallback,
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
+import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -28,6 +33,15 @@ const amaliyReportDatePresetSchema = z.enum([
 type AmaliyWeekKey = 'week1' | 'week2' | 'week3' | 'week4' | 'week5' | 'week6';
 const AMALIY_WEEK_KEYS: AmaliyWeekKey[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
 const REPORT_TIME_ZONE = 'Asia/Tashkent';
+const reportSharePayloadSchema = z.object({
+  type: z.literal('report_share'),
+  tenantId: z.string().min(1),
+  courseId: z.string().min(1),
+  courseRunId: z.string().nullable().optional(),
+  tariffId: z.string().nullable().optional(),
+  kuratorUserId: z.string().nullable().optional(),
+  generatedBy: z.string().min(1),
+});
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -83,14 +97,6 @@ function isMissingOptionalPerformanceSchemaError(error: unknown): boolean {
     || message.includes('kurator_assignments')
     || message.includes('course_runs')
   );
-}
-
-function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
-}
-
-function hasKuratorRole(roles: string[]): boolean {
-  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
 }
 
 function getDatePartsInTimeZone(date: Date, timeZone: string): { year: number; month: number; day: number } {
@@ -345,43 +351,7 @@ async function getRoleScopedCustomerIds(
     });
   }
 
-  // Admin/Manager + courseRunId: customers in this run via per-customer
-  // assignments, plus — if the run has been claimed by a kurator — any
-  // currently-enrolled customer in that course (handles enrollments that
-  // happened after the kurator attached).
-  const [assignments, run] = await withCourseRunVisibilityFallback((withHiddenColumn) =>
-    Promise.all([
-      prisma.kuratorAssignment.findMany({
-        where: {
-          tenantId,
-          isActive: true,
-          courseRunId,
-          ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
-        },
-        select: { customerId: true },
-      }),
-      prisma.courseRun.findFirst({
-        where: { tenantId, id: courseRunId, ...visibleCourseRunWhere(withHiddenColumn) },
-        select: { courseId: true, kuratorUserId: true },
-      }),
-    ]),
-  );
-  const ids = new Set<string>(assignments.map((row) => row.customerId));
-  if (run?.kuratorUserId) {
-    const enrolled = await prisma.income.findMany({
-      where: {
-        tenantId,
-        courseId: run.courseId,
-        ...ACTIVE_ENROLLMENT_FILTER,
-      },
-      select: { customerId: true },
-      distinct: ['customerId'],
-    });
-    for (const row of enrolled) {
-      if (row.customerId) ids.add(row.customerId);
-    }
-  }
-  return Array.from(ids);
+  return resolveCourseRunMemberCustomerIds({ tenantId, courseRunId: courseRunId! });
 }
 
 async function getCourseScopedCustomerIds(
@@ -408,25 +378,16 @@ async function getCourseIdFromRun(tenantId: string, courseRunId?: string): Promi
       where: { id: courseRunId, tenantId },
       select: { courseId: true },
     });
-    return run?.courseId;
+    if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+    return run.courseId;
   } catch (error) {
     if (!isMissingCourseRunsTableError(error)) {
       throw error;
     }
-    return undefined;
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Oqim migratsiyasi o\'rnatilmagan' });
   }
 }
 
-/**
- * Resolves the set of customer IDs that belong to a course run.
- *
- * ALWAYS combines BOTH sources:
- *   1. Explicit course_run_members roster (if any)
- *   2. Active new_sale incomes on the run's course
- *
- * This ensures new enrollments from Dashboarduz appear immediately,
- * regardless of whether the run has an explicit roster.
- */
 type StudentPerformance = {
   completedTasks: number;
   pendingTasks: number;
@@ -821,53 +782,13 @@ async function getAmaliyReportMatrixData(params: {
         assignedStudentIds = assignedStudentIds.filter((id) => scopedSet.has(id));
       }
 
-      const kuratorByStudent = new Map<string, { name: string; createdAt: Date }>();
-      const assignments = await prisma.kuratorAssignment.findMany({
-        where: {
-          tenantId,
-          isActive: true,
-          ...(selectedRun ? { courseRunId: selectedRun.id } : { courseRun: { courseId: input.courseId } }),
-        },
-        orderBy: [{ createdAt: 'desc' }],
-        select: {
-          customerId: true,
-          courseRunId: true,
-          createdAt: true,
-          kurator: { select: { id: true, name: true, username: true } },
-        },
-      });
-
-      const memberIdsByRun = selectedRun
-        ? new Map([[selectedRun.id, new Set(assignedStudentIds)]])
-        : new Map(
-            await Promise.all(
-              Array.from(new Set(assignments.map((row) => row.courseRunId))).map(async (courseRunId) => [
-                courseRunId,
-                new Set(
-                  await resolveCourseRunMemberCustomerIds({
-                    tenantId,
-                    courseRunId,
-                    courseId: input.courseId,
-                  }),
-                ),
-              ] as const),
-            ),
-          );
-
-      for (const row of assignments) {
-        if (!memberIdsByRun.get(row.courseRunId)?.has(row.customerId)) {
-          continue;
-        }
-
-        const kuratorName = row.kurator.name ?? row.kurator.username ?? 'Kurator';
-        const current = kuratorByStudent.get(row.customerId);
-        if (!current || row.createdAt.getTime() > current.createdAt.getTime()) {
-          kuratorByStudent.set(row.customerId, {
-            name: kuratorName,
-            createdAt: row.createdAt,
+      const preferredRunByStudent = selectedRun
+        ? new Map(assignedStudentIds.map((customerId) => [customerId, selectedRun]))
+        : await resolvePreferredRunByCustomer({
+            tenantId,
+            courseId: input.courseId,
+            customerIds: assignedStudentIds,
           });
-        }
-      }
 
       const latestTariffByStudent = new Map<string, { tariffId: string | null; tariffName: string | null }>();
       if (assignedStudentIds.length > 0) {
@@ -1238,7 +1159,13 @@ async function getAmaliyReportMatrixData(params: {
           name: student.name,
           customerNumber: student.customerNumber,
           tariffName: latestTariffByStudent.get(student.id)?.tariffName ?? null,
-          kuratorNames: kuratorByStudent.has(student.id) ? [kuratorByStudent.get(student.id)!.name] : [],
+          kuratorNames: preferredRunByStudent.get(student.id)?.kurator
+            ? [
+                preferredRunByStudent.get(student.id)!.kurator!.name
+                  ?? preferredRunByStudent.get(student.id)!.kurator!.username
+                  ?? 'Kurator',
+              ]
+            : [],
           cells,
           totalPoints,
         };
@@ -1389,91 +1316,42 @@ export const dashboardRouter = router({
       const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
       const adminOrManager = isAdminOrManager(user.roles);
 
-      const [kurators, assignments] = await withCourseRunVisibilityFallback((withHiddenColumn) =>
-        Promise.all([
-          prisma.user.findMany({
-            where: {
-              tenantId,
-              roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
-              isActive: true,
-              ...(!adminOrManager ? { id: user.userId } : {}),
-            },
-            select: {
-              id: true,
-              name: true,
-              username: true,
-            },
-          }),
-          prisma.kuratorAssignment.findMany({
-            where: {
-              tenantId,
-              isActive: true,
-              ...(withHiddenColumn ? { courseRun: { isHidden: false } } : {}),
-              ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-              ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
-              ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
-            },
-            select: { kuratorUserId: true, customerId: true },
-          }),
-        ]),
-      );
-
-      // Derive (kurator, customer) pairs from run-level kurator links so that
-      // future enrollments not yet in the per-customer table are still counted.
+      const kurators = await prisma.user.findMany({
+        where: {
+          tenantId,
+          roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
+          isActive: true,
+          ...(!adminOrManager ? { id: user.userId } : {}),
+        },
+        select: { id: true, name: true, username: true },
+      });
       const ownedRuns = await withCourseRunVisibilityFallback((withHiddenColumn) =>
         prisma.courseRun.findMany({
           where: {
             tenantId,
             ...visibleCourseRunWhere(withHiddenColumn),
             kuratorUserId: { not: null },
+            ...(input.courseId ? { courseId: input.courseId } : {}),
             ...(input.courseRunId ? { id: input.courseRunId } : {}),
             ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
           },
-          select: { id: true, courseId: true, kuratorUserId: true },
+          select: { id: true, kuratorUserId: true },
         }),
       );
-
-      const runDerivedPairs: Array<{ kuratorUserId: string; customerId: string }> = [];
-      if (ownedRuns.length > 0) {
-        const courseToKurators = new Map<string, Set<string>>();
-        for (const run of ownedRuns) {
-          if (!run.kuratorUserId) continue;
-          const set = courseToKurators.get(run.courseId) ?? new Set<string>();
-          set.add(run.kuratorUserId);
-          courseToKurators.set(run.courseId, set);
-        }
-        const enrolledIncomes = await prisma.income.findMany({
-          where: {
-            tenantId,
-            courseId: { in: Array.from(courseToKurators.keys()) },
-            ...ACTIVE_ENROLLMENT_FILTER,
-            ...(scopedStudentIds ? { customerId: { in: scopedStudentIds } } : {}),
-          },
-          select: { customerId: true, courseId: true },
-          distinct: ['customerId', 'courseId'],
-        });
-        for (const row of enrolledIncomes) {
-          if (!row.customerId || !row.courseId) continue;
-          const kuratorSet = courseToKurators.get(row.courseId) ?? new Set<string>();
-          for (const kuratorUserId of kuratorSet) {
-            runDerivedPairs.push({ kuratorUserId, customerId: row.customerId });
-          }
-        }
-      }
-
+      const membersByRun = await resolveCourseRunMemberSets({
+        tenantId,
+        runIds: ownedRuns.map((run) => run.id),
+      });
+      const scopedStudentSet = scopedStudentIds ? new Set(scopedStudentIds) : null;
       const studentIdsByKurator = new Map<string, Set<string>>();
-      const upsertPair = (kuratorUserId: string, customerId: string) => {
-        const studentSet = studentIdsByKurator.get(kuratorUserId) ?? new Set<string>();
-        studentSet.add(customerId);
-        studentIdsByKurator.set(kuratorUserId, studentSet);
-      };
-      for (const assignment of assignments) {
-        upsertPair(assignment.kuratorUserId, assignment.customerId);
+      for (const run of ownedRuns) {
+        if (!run.kuratorUserId) continue;
+        const students = studentIdsByKurator.get(run.kuratorUserId) ?? new Set<string>();
+        for (const customerId of membersByRun.get(run.id) ?? []) {
+          if (!scopedStudentSet || scopedStudentSet.has(customerId)) students.add(customerId);
+        }
+        studentIdsByKurator.set(run.kuratorUserId, students);
       }
-      for (const pair of runDerivedPairs) {
-        upsertPair(pair.kuratorUserId, pair.customerId);
-      }
-
       const runCourseId = await getCourseIdFromRun(tenantId, input.courseRunId);
       const effectiveExerciseCourseId = input.courseId ?? runCourseId;
       const allStudentIds = Array.from(
@@ -1638,17 +1516,12 @@ export const dashboardRouter = router({
       const { tenantId, user } = ctx;
       const kuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
       if (kuratorOnly) {
-        const assignment = await prisma.kuratorAssignment.findFirst({
-          where: {
-            tenantId,
-            kuratorUserId: user.userId,
-            customerId: input.customerId,
-            isActive: true,
-            ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-          },
-          select: { id: true },
+        const scopedIds = await getCustomersScopedToKurator({
+          tenantId,
+          kuratorUserId: user.userId,
+          courseRunId: input.courseRunId,
         });
-        if (!assignment) {
+        if (!scopedIds.includes(input.customerId)) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
         }
       }
@@ -2004,15 +1877,47 @@ export const dashboardRouter = router({
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'JWT sozlanmagan' });
       }
 
-      let payload: any;
+      let decoded: unknown;
       try {
-        payload = jwt.verify(input.token, jwtSecret);
+        decoded = jwt.verify(input.token, jwtSecret);
       } catch {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Havola yaroqsiz yoki muddati tugagan' });
       }
-
-      if (payload.type !== 'report_share') {
+      const parsedPayload = reportSharePayloadSchema.safeParse(decoded);
+      if (!parsedPayload.success) {
         throw new TRPCError({ code: 'FORBIDDEN', message: "Noto'g'ri havola" });
+      }
+      const payload = parsedPayload.data;
+      const [tenant, course, run, tariff, kurator] = await Promise.all([
+        prisma.tenant.findUnique({ where: { id: payload.tenantId }, select: { id: true } }),
+        prisma.course.findFirst({
+          where: { id: payload.courseId, tenantId: payload.tenantId, isActive: true },
+          select: { id: true },
+        }),
+        payload.courseRunId
+          ? prisma.courseRun.findFirst({
+              where: { id: payload.courseRunId, tenantId: payload.tenantId, courseId: payload.courseId },
+              select: { id: true, kuratorUserId: true },
+            })
+          : Promise.resolve(null),
+        payload.tariffId
+          ? prisma.tariff.findFirst({
+              where: { id: payload.tariffId, tenantId: payload.tenantId, courseId: payload.courseId, isActive: true },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+        payload.kuratorUserId
+          ? prisma.user.findFirst({
+              where: { id: payload.kuratorUserId, tenantId: payload.tenantId, isActive: true },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+      ]);
+      if (!tenant || !course || (payload.courseRunId && !run) || (payload.tariffId && !tariff) || (payload.kuratorUserId && !kurator)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Havola filtrlari endi yaroqsiz' });
+      }
+      if (payload.courseRunId && payload.kuratorUserId && run?.kuratorUserId !== payload.kuratorUserId) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Havola filtrlari endi yaroqsiz' });
       }
 
       return getAmaliyReportMatrixData({

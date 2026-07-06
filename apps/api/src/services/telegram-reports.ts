@@ -8,6 +8,7 @@ import {
   withCourseRunVisibilityFallback,
   withExerciseDefinitionVisibilityFallback,
 } from '../utils/prisma-visibility';
+import { resolveCourseRunMemberSets } from '../trpc/utils/runMembership';
 
 const TASHKENT_OFFSET_MINUTES = 5 * 60;
 const DEFAULT_TIMEZONE = 'Asia/Tashkent';
@@ -309,28 +310,28 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
     const courseWhere = useEndDateFilter
       ? activeCourseWindowForPeriod(period)
       : { isActive: true, startDate: { lte: period.to } };
-    const [kurators, assignments] = await Promise.all([
+    const [kurators, runs] = await Promise.all([
       prisma.user.findMany({
         where: { tenantId, roles: { hasSome: ['Kurator', 'Bosh Kurator'] }, isActive: true },
         select: { id: true, name: true, username: true },
         orderBy: [{ name: 'asc' }, { username: 'asc' }],
       }),
-      prisma.kuratorAssignment.findMany({
+      prisma.courseRun.findMany({
         where: {
           tenantId,
-          isActive: true,
-          courseRun: { course: courseWhere as any },
+          kuratorUserId: { not: null },
+          course: courseWhere as any,
         },
         select: {
+          id: true,
           kuratorUserId: true,
-          customerId: true,
-          courseRun: { select: { course: { select: { category: true } } } },
+          course: { select: { category: true } },
         },
       }),
     ]);
-    return { kurators, assignments };
+    return { kurators, runs };
   };
-  const { kurators, assignments } = await loadRows(true).catch(async (error) => {
+  const { kurators, runs } = await loadRows(true).catch(async (error) => {
     if (!isMissingCourseEndDateColumnError(error)) {
       throw error;
     }
@@ -341,16 +342,20 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
     online: new Map<string, Set<string>>(),
     offline: new Map<string, Set<string>>(),
   };
+  const membersByRun = await resolveCourseRunMemberSets({
+    tenantId,
+    runIds: runs.map((run) => run.id),
+  });
 
-  for (const row of assignments) {
-    const courseType = normalizeCourseType(row.courseRun.course.category);
+  for (const run of runs) {
+    if (!run.kuratorUserId) continue;
+    const courseType = normalizeCourseType(run.course.category);
     if (!courseType) continue;
 
     const studentsByKurator = studentsByKuratorByType[courseType];
-
-    const studentSet = studentsByKurator.get(row.kuratorUserId) ?? new Set<string>();
-    studentSet.add(row.customerId);
-    studentsByKurator.set(row.kuratorUserId, studentSet);
+    const studentSet = studentsByKurator.get(run.kuratorUserId) ?? new Set<string>();
+    for (const customerId of membersByRun.get(run.id) ?? []) studentSet.add(customerId);
+    studentsByKurator.set(run.kuratorUserId, studentSet);
   }
 
   const buildRows = async (courseType: 'online' | 'offline'): Promise<InternalKuratorSummaryRow[]> => {
@@ -576,26 +581,9 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
     const runIds = activeRuns.map((run) => run.id);
     if (runIds.length === 0) continue;
 
-    const [runMembers, assignments] = await Promise.all([
-      prisma.courseRunMember.findMany({
-        where: {
-          tenantId,
-          courseRunId: { in: runIds },
-        },
-        select: { customerId: true },
-      }),
-      prisma.kuratorAssignment.findMany({
-        where: {
-          tenantId,
-          courseRunId: { in: runIds },
-          isActive: true,
-        },
-        select: { customerId: true },
-      }),
-    ]);
-
+    const memberSets = await resolveCourseRunMemberSets({ tenantId, runIds });
     const studentIds = Array.from(
-      new Set([...runMembers.map((row) => row.customerId), ...assignments.map((row) => row.customerId)]),
+      new Set(Array.from(memberSets.values()).flatMap((members) => Array.from(members))),
     );
     if (studentIds.length === 0) continue;
 
@@ -796,31 +784,34 @@ async function sendTenantCuratorSummaries(
   }
 
   const uniqueKuratorIds = Array.from(new Set(receivers.map((receiver) => receiver.createdByUserId)));
-  const assignments = await prisma.kuratorAssignment.findMany({
+  const ownedRuns = await prisma.courseRun.findMany({
     where: {
       tenantId,
-      isActive: true,
       kuratorUserId: { in: uniqueKuratorIds },
-      courseRun: {
-        startDate: { lte: now },
-        endDate: { gte: dayStart },
-      },
+      startDate: { lte: now },
+      endDate: { gte: dayStart },
     },
     select: {
       kuratorUserId: true,
-      customerId: true,
+      id: true,
     },
   });
 
+  const memberSets = await resolveCourseRunMemberSets({
+    tenantId,
+    runIds: ownedRuns.map((run) => run.id),
+  });
+
   const assignedStudentsByKurator = new Map<string, Set<string>>();
-  for (const row of assignments) {
-    const set = assignedStudentsByKurator.get(row.kuratorUserId) ?? new Set<string>();
-    set.add(row.customerId);
-    assignedStudentsByKurator.set(row.kuratorUserId, set);
+  for (const run of ownedRuns) {
+    if (!run.kuratorUserId) continue;
+    const set = assignedStudentsByKurator.get(run.kuratorUserId) ?? new Set<string>();
+    for (const customerId of memberSets.get(run.id) ?? []) set.add(customerId);
+    assignedStudentsByKurator.set(run.kuratorUserId, set);
   }
 
   const allAssignedCustomerIds = Array.from(
-    new Set(assignments.map((row) => row.customerId).filter((id): id is string => Boolean(id))),
+    new Set(Array.from(assignedStudentsByKurator.values()).flatMap((members) => Array.from(members))),
   );
 
   const [exerciseLogs, attendanceLogs] = await Promise.all([

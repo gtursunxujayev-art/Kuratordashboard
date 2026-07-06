@@ -28,6 +28,17 @@ export function isMissingPrismaColumnError(error: unknown, tableName: string, co
   return mentionsColumn;
 }
 
+export function isMissingPrismaTableError(error: unknown, tableName: string): boolean {
+  const code = String((error as { code?: string })?.code ?? '');
+  const message = normalize(String((error as { message?: string })?.message ?? ''));
+  const table = normalize(tableName);
+  const compactTable = table.replace(/_/g, '');
+  const mentionsTable = message.includes(table) || message.includes(compactTable);
+  return ['P2021', 'P2022', 'P2010'].includes(code)
+    ? mentionsTable
+    : mentionsTable && message.includes('does not exist');
+}
+
 export function isMissingCourseRunHiddenColumnError(error: unknown): boolean {
   return isMissingPrismaColumnError(error, 'course_runs', 'isHidden');
 }

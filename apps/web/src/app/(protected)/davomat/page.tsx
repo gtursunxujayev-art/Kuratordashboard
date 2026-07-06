@@ -4,16 +4,10 @@ import { useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { trpc } from '@/lib/trpc';
 import { useToast } from '@/components/ui/toast';
+import { formatDateLocal } from '@/lib/date';
 
 type DateMode = 'today' | 'yesterday' | 'all';
 type AttendanceStatus = 'tanlanmagan' | 'keldi' | 'kelmadi';
-
-function formatDateLocal(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
 
 function getModeDate(mode: Exclude<DateMode, 'all'>): string {
   const today = new Date();
@@ -45,6 +39,30 @@ function statusTextColor(status: AttendanceStatus): string {
 
 function slotKey(customerId: string, lessonType: 'base' | 'premium_extra', date: string): string {
   return `${customerId}:${lessonType}:${date}`;
+}
+
+function AttendanceSlotCard({
+  date,
+  status,
+  isFaceId,
+  onChange,
+}: {
+  date: string;
+  status: AttendanceStatus;
+  isFaceId: boolean;
+  onChange: (status: AttendanceStatus) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-gray-200 p-2">
+      <p className="text-[11px] kd-subtle mb-1">{formatShortDate(date)}</p>
+      {isFaceId && (
+        <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
+          Face ID
+        </span>
+      )}
+      <AttendanceStatusSelect value={status} onChange={onChange} />
+    </div>
+  );
 }
 
 export default function DavomatPage() {
@@ -274,23 +292,15 @@ export default function DavomatPage() {
                               const selectedStatus = selectedAllBase[key] ?? slot.status;
                               const isFaceId = !selectedAllBase[key] && slot.status === 'keldi' && slot.source === 'system';
                               return (
-                                <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
-                                  <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                  {isFaceId && (
-                                    <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
-                                      Face ID
-                                    </span>
-                                  )}
-                                  <AttendanceStatusSelect
-                                    value={selectedStatus}
-                                    onChange={(nextStatus) =>
-                                      setSelectedAllBase((prev) => ({
-                                        ...prev,
-                                        [key]: nextStatus,
-                                      }))
-                                    }
-                                  />
-                                </div>
+                                <AttendanceSlotCard
+                                  key={slot.date}
+                                  date={slot.date}
+                                  status={selectedStatus}
+                                  isFaceId={isFaceId}
+                                  onChange={(nextStatus) =>
+                                    setSelectedAllBase((prev) => ({ ...prev, [key]: nextStatus }))
+                                  }
+                                />
                               );
                             })}
                           </div>
@@ -307,23 +317,15 @@ export default function DavomatPage() {
                                 const selectedStatus = selectedAllPremium[key] ?? slot.status;
                                 const isFaceId = !selectedAllPremium[key] && slot.status === 'keldi' && slot.source === 'system';
                                 return (
-                                  <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
-                                    <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
-                                    {isFaceId && (
-                                      <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
-                                        Face ID
-                                      </span>
-                                    )}
-                                    <AttendanceStatusSelect
-                                      value={selectedStatus}
-                                      onChange={(nextStatus) =>
-                                        setSelectedAllPremium((prev) => ({
-                                          ...prev,
-                                          [key]: nextStatus,
-                                        }))
-                                      }
-                                    />
-                                  </div>
+                                  <AttendanceSlotCard
+                                    key={slot.date}
+                                    date={slot.date}
+                                    status={selectedStatus}
+                                    isFaceId={isFaceId}
+                                    onChange={(nextStatus) =>
+                                      setSelectedAllPremium((prev) => ({ ...prev, [key]: nextStatus }))
+                                    }
+                                  />
                                 );
                               })}
                             </div>

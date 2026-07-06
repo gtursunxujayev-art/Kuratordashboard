@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { prisma } from '@kuratordashboard/db';
 import { trpcMiddleware } from './trpc/server';
 import {
   getTelegramWebhookSecret,
@@ -115,7 +116,8 @@ function triggerRequestDrivenSchedulerTick(reason: string): void {
     });
 }
 
-const allowedOrigins = (process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'http://localhost:3000')
+const configuredOrigins = process.env.CORS_ORIGIN || process.env.FRONTEND_URL;
+const allowedOrigins = (configuredOrigins || 'http://localhost:3000,http://127.0.0.1:3000')
   .split(',')
   .map((v) => v.trim().replace(/\/+$/, ''))
   .filter(Boolean);
@@ -167,8 +169,13 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-app.get('/ready', (_req, res) => {
-  res.json({ status: 'ready', timestamp: new Date().toISOString() });
+app.get('/ready', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.json({ status: 'ready', timestamp: new Date().toISOString() });
+  } catch {
+    res.status(503).json({ status: 'not_ready', timestamp: new Date().toISOString() });
+  }
 });
 
 app.post('/webhooks/telegram', async (req, res) => {
@@ -205,14 +212,7 @@ function extractFaceIdToken(req: express.Request): string | null {
   const auth = String(req.header('authorization') || '');
   const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : null;
   if (bearer) return bearer;
-  const queryToken =
-    (typeof req.query.token === 'string' && req.query.token.trim()) ||
-    (typeof req.query.webhook_token === 'string' && req.query.webhook_token.trim()) ||
-    (typeof req.query.access_token === 'string' && req.query.access_token.trim()) ||
-    '';
-  if (queryToken) return queryToken;
-  const bodyToken = typeof req.body?.token === 'string' ? req.body.token.trim() : '';
-  return bodyToken || null;
+  return String(req.header('x-faceid-webhook-secret') || '').trim() || null;
 }
 
 function tokensMatch(provided: string, expected: string): boolean {
@@ -228,7 +228,7 @@ app.get('/webhooks/faceid', (_req, res) => {
     endpoint: '/webhooks/faceid',
     method: 'POST',
     message: 'Face ID student attendance webhook is alive.',
-    auth: ['Authorization: Bearer <token>', '?token=<token>', 'body.token'],
+    auth: ['Authorization: Bearer <token>', 'x-faceid-webhook-secret: <token>'],
   });
 });
 
@@ -263,9 +263,7 @@ const handleTelegramReportRun: express.RequestHandler = async (req, res) => {
   const bearer = authHeader.toLowerCase().startsWith('bearer ')
     ? authHeader.slice(7).trim()
     : null;
-  const queryToken = typeof req.query.token === 'string' ? req.query.token : null;
-  const bodyToken = typeof req.body?.token === 'string' ? req.body.token : null;
-  const providedSecret = bearer || queryToken || bodyToken;
+  const providedSecret = bearer || String(req.header('x-internal-secret') || '').trim() || null;
 
   if (!validateCronSecret(providedSecret)) {
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
@@ -313,7 +311,6 @@ const handleTelegramReportRun: express.RequestHandler = async (req, res) => {
 };
 
 app.post('/internal/reports/telegram/run', handleTelegramReportRun);
-app.get('/internal/reports/telegram/run', handleTelegramReportRun);
 
 app.use('/api/trpc', trpcMiddleware);
 

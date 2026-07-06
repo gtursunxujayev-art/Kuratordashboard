@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
+import { formatDateLocal } from '@/lib/date';
 
 type DateMode = 'today' | 'yesterday' | 'custom' | 'all';
 type AmaliyMode = 'students' | 'practice';
@@ -32,13 +33,6 @@ type SlotItem = {
 
 const DAY_NAMES = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
 
-function formatDateLocal(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
 function getModeDate(mode: Exclude<DateMode, 'all'>): string {
   const today = new Date();
   if (mode === 'today') return formatDateLocal(today);
@@ -47,20 +41,20 @@ function getModeDate(mode: Exclude<DateMode, 'all'>): string {
   return formatDateLocal(yesterday);
 }
 
-function keyForStudentExercise(studentId: string, date: string, exerciseId: string): string {
-  return `${studentId}:${date}:${exerciseId}`;
+function keyForStudentExercise(courseRunId: string, studentId: string, date: string, exerciseId: string): string {
+  return `${courseRunId}:${studentId}:${date}:${exerciseId}`;
 }
 
-function keyForPracticeStudent(practiceId: string, date: string, studentId: string): string {
-  return `${practiceId}:${date}:${studentId}`;
+function keyForPracticeStudent(courseRunId: string, practiceId: string, date: string, studentId: string): string {
+  return `${courseRunId}:${practiceId}:${date}:${studentId}`;
 }
 
-function keyForExerciseSlot(exerciseId: string, date: string): string {
-  return `${exerciseId}:${date}`;
+function keyForExerciseSlot(courseRunId: string, studentId: string, exerciseId: string, date: string): string {
+  return `${courseRunId}:${studentId}:${exerciseId}:${date}`;
 }
 
-function keyForPracticeStudentSlot(studentId: string, date: string): string {
-  return `${studentId}:${date}`;
+function keyForPracticeStudentSlot(courseRunId: string, practiceId: string, studentId: string, date: string): string {
+  return `${courseRunId}:${practiceId}:${studentId}:${date}`;
 }
 
 function formatShortDate(date: string): string {
@@ -81,6 +75,7 @@ function normalizeCourseCategory(raw?: string | null): CourseType | null {
 export default function AmaliyPage() {
   const { isManager } = useAuth();
   const toast = useToast();
+  const trpcUtils = trpc.useContext();
   const canUseHammasi = isManager;
 
   const [mode, setMode] = useState<AmaliyMode>('students');
@@ -109,6 +104,21 @@ export default function AmaliyPage() {
   const [vanishingStudentExerciseKeys, setVanishingStudentExerciseKeys] = useState<Set<string>>(new Set());
   const [hiddenPracticeStudentKeys, setHiddenPracticeStudentKeys] = useState<Set<string>>(new Set());
   const [vanishingPracticeStudentKeys, setVanishingPracticeStudentKeys] = useState<Set<string>>(new Set());
+
+  const resetDraftState = useCallback(() => {
+    setSelectedColorByExercise({});
+    setSelectedColorByPracticeStudent({});
+    setSelectedColorByExerciseSlot({});
+    setSelectedColorByPracticeStudentSlot({});
+    setHiddenStudentExerciseKeys(new Set());
+    setVanishingStudentExerciseKeys(new Set());
+    setHiddenPracticeStudentKeys(new Set());
+    setVanishingPracticeStudentKeys(new Set());
+    setBusyStudentExerciseKey(null);
+    setBusyPracticeStudentKey(null);
+    setBusyAttendance(null);
+    setBusySlotSaveKey(null);
+  }, []);
 
   const selectedDate = useMemo(() => {
     if (dateMode === 'all') return hammasiDate || getModeDate('today');
@@ -211,7 +221,14 @@ export default function AmaliyPage() {
     setSelectedCourseRunId('');
     setSelectedStudentId('');
     setSelectedPracticeId('');
-  }, [filteredCourses, preferredCourseIdForType, selectedCourseId]);
+  }, [
+    filteredCourses,
+    preferredCourseIdForType,
+    selectedCourseId,
+    selectedCourseRunId,
+    selectedPracticeId,
+    selectedStudentId,
+  ]);
 
   useEffect(() => {
     if (!selectedCourseId) return;
@@ -222,16 +239,11 @@ export default function AmaliyPage() {
   }, [filteredCourseRuns, preferredRunIdForCourse, selectedCourseId, selectedCourseRunId]);
 
   useEffect(() => {
-    if (dateMode === 'all') return;
-    setSelectedColorByExercise({});
-    setSelectedColorByPracticeStudent({});
-    setHiddenStudentExerciseKeys(new Set());
-    setVanishingStudentExerciseKeys(new Set());
-    setHiddenPracticeStudentKeys(new Set());
-    setVanishingPracticeStudentKeys(new Set());
+    resetDraftState();
   }, [
     dateMode,
     mode,
+    resetDraftState,
     selectedDate,
     selectedStudentId,
     selectedPracticeId,
@@ -243,7 +255,7 @@ export default function AmaliyPage() {
     courseRunId: selectedCourseRunId || undefined,
   });
 
-  const { data: exerciseData, refetch: refetchStudentExercises } = trpc.amaliy.getStudentExercises.useQuery(
+  const { data: exerciseData } = trpc.amaliy.getStudentExercises.useQuery(
     {
       customerId: selectedStudentId,
       date: selectedDate,
@@ -253,7 +265,7 @@ export default function AmaliyPage() {
     { enabled: Boolean(selectedStudentId) && (dateMode !== 'all' || Boolean(selectedCourseRunId)) },
   );
 
-  const { data: recentLogs, refetch: refetchRecentLogs } = trpc.amaliy.listRecentLogs.useQuery(
+  const { data: recentLogs } = trpc.amaliy.listRecentLogs.useQuery(
     {
       customerId: selectedStudentId,
       date: selectedDate,
@@ -267,7 +279,7 @@ export default function AmaliyPage() {
     { enabled: Boolean(selectedCourseId) },
   );
 
-  const { data: practiceStudents, refetch: refetchPracticeStudents } = trpc.amaliy.listPracticeStudents.useQuery(
+  const { data: practiceStudents } = trpc.amaliy.listPracticeStudents.useQuery(
     {
       exerciseDefinitionId: selectedPracticeId,
       date: selectedDate,
@@ -294,11 +306,23 @@ export default function AmaliyPage() {
   const attendanceMutation = trpc.amaliy.markAttendance.useMutation({
     onSuccess: () => {
       toast.show('Davomat saqlandi', 'success');
-      void refetchStudentExercises();
+      if (selectedStudentId && exerciseData?.courseRunId) {
+        void trpcUtils.amaliy.getStudentExercises.invalidate({
+          customerId: selectedStudentId,
+          date: selectedDate,
+          mode: dateMode === 'all' ? 'all' : 'day',
+          courseRunId: exerciseData.courseRunId,
+        });
+      }
     },
     onError: (error) => toast.show(error.message || 'Xatolik', 'error'),
     onSettled: () => setBusyAttendance(null),
   });
+  const isSelectionLocked =
+    logMutation.isLoading ||
+    saveSlotsMutation.isLoading ||
+    attendanceMutation.isLoading ||
+    Boolean(busyStudentExerciseKey || busyPracticeStudentKey || busySlotSaveKey || busyAttendance);
 
   const selectedStudent = useMemo(
     () => (students ?? []).find((student) => student.id === selectedStudentId),
@@ -315,20 +339,28 @@ export default function AmaliyPage() {
     if (dateMode === 'all') return exerciseData.exercises;
 
     return exerciseData.exercises.filter((exercise) => {
-      const key = keyForStudentExercise(selectedStudentId, selectedDate, exercise.id);
+      const key = keyForStudentExercise(selectedCourseRunId, selectedStudentId, selectedDate, exercise.id);
       return !doneTodaySet.has(exercise.id) && !hiddenStudentExerciseKeys.has(key);
     });
-  }, [dateMode, doneTodaySet, exerciseData, hiddenStudentExerciseKeys, selectedDate, selectedStudentId]);
+  }, [
+    dateMode,
+    doneTodaySet,
+    exerciseData,
+    hiddenStudentExerciseKeys,
+    selectedCourseRunId,
+    selectedDate,
+    selectedStudentId,
+  ]);
 
   const visiblePracticeStudents = useMemo(() => {
     const base = practiceStudents ?? [];
     if (!selectedPracticeId || dateMode === 'all') return base;
 
     return base.filter((student) => {
-      const key = keyForPracticeStudent(selectedPracticeId, selectedDate, student.id);
+      const key = keyForPracticeStudent(selectedCourseRunId, selectedPracticeId, selectedDate, student.id);
       return !hiddenPracticeStudentKeys.has(key);
     });
-  }, [dateMode, hiddenPracticeStudentKeys, practiceStudents, selectedDate, selectedPracticeId]);
+  }, [dateMode, hiddenPracticeStudentKeys, practiceStudents, selectedCourseRunId, selectedDate, selectedPracticeId]);
 
   const dayLabel = useMemo(() => {
     const d = new Date(selectedDate);
@@ -336,7 +368,10 @@ export default function AmaliyPage() {
   }, [selectedDate]);
 
   const completeStudentExercise = async (exerciseId: string) => {
-    if (!selectedStudentId) return;
+    if (!selectedStudentId || !selectedCourseRunId) return;
+    const customerId = selectedStudentId;
+    const courseRunId = selectedCourseRunId;
+    const completionDate = selectedDate;
     const exercise = (exerciseData?.exercises ?? []).find((item) => item.id === exerciseId);
     const exerciseOptions: ColorPointOption[] = (exercise?.colorPoints ?? []).map((row) => ({
       id: row.colorOptionId,
@@ -356,20 +391,26 @@ export default function AmaliyPage() {
       return;
     }
 
-    const actionKey = keyForStudentExercise(selectedStudentId, selectedDate, exerciseId);
+    const actionKey = keyForStudentExercise(courseRunId, customerId, completionDate, exerciseId);
     setBusyStudentExerciseKey(actionKey);
 
     try {
       await logMutation.mutateAsync({
-        customerId: selectedStudentId,
+        customerId,
+        courseRunId,
         exerciseDefinitionId: exerciseId,
         colorOptionId: selectedColorId,
-        completedAt: selectedDate,
+        completedAt: completionDate,
       });
 
       toast.show('Saqlandi', 'success');
       if (dateMode === 'all') {
-        void refetchStudentExercises();
+        void trpcUtils.amaliy.getStudentExercises.invalidate({
+          customerId,
+          date: completionDate,
+          mode: 'all',
+          courseRunId,
+        });
       } else {
         setSelectedColorByExercise((prev) => {
           const next = { ...prev };
@@ -385,8 +426,17 @@ export default function AmaliyPage() {
             return next;
           });
           setHiddenStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
-          void refetchStudentExercises();
-          void refetchRecentLogs();
+          void trpcUtils.amaliy.getStudentExercises.invalidate({
+            customerId,
+            date: completionDate,
+            mode: 'day',
+            courseRunId,
+          });
+          void trpcUtils.amaliy.listRecentLogs.invalidate({
+            customerId,
+            date: completionDate,
+            courseRunId,
+          });
         }, 480);
       }
     } finally {
@@ -395,7 +445,10 @@ export default function AmaliyPage() {
   };
 
   const completePracticeStudent = async (studentId: string) => {
-    if (!selectedPracticeId) return;
+    if (!selectedPracticeId || !selectedCourseRunId) return;
+    const exerciseDefinitionId = selectedPracticeId;
+    const courseRunId = selectedCourseRunId;
+    const completionDate = selectedDate;
     const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row: ExerciseColorPointRow) => ({
       id: row.colorOptionId,
       label: row.colorOption.label,
@@ -414,20 +467,26 @@ export default function AmaliyPage() {
       return;
     }
 
-    const actionKey = keyForPracticeStudent(selectedPracticeId, selectedDate, studentId);
+    const actionKey = keyForPracticeStudent(courseRunId, exerciseDefinitionId, completionDate, studentId);
     setBusyPracticeStudentKey(actionKey);
 
     try {
       await logMutation.mutateAsync({
         customerId: studentId,
-        exerciseDefinitionId: selectedPracticeId,
+        courseRunId,
+        exerciseDefinitionId,
         colorOptionId: selectedColorId,
-        completedAt: selectedDate,
+        completedAt: completionDate,
       });
 
       toast.show('Saqlandi', 'success');
       if (dateMode === 'all') {
-        void refetchPracticeStudents();
+        void trpcUtils.amaliy.listPracticeStudents.invalidate({
+          exerciseDefinitionId,
+          date: completionDate,
+          courseRunId,
+          includeCompleted: true,
+        });
       } else {
         setSelectedColorByPracticeStudent((prev) => {
           const next = { ...prev };
@@ -443,7 +502,12 @@ export default function AmaliyPage() {
             return next;
           });
           setHiddenPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
-          void refetchPracticeStudents();
+          void trpcUtils.amaliy.listPracticeStudents.invalidate({
+            exerciseDefinitionId,
+            date: completionDate,
+            courseRunId,
+            includeCompleted: false,
+          });
         }, 480);
       }
     } finally {
@@ -453,11 +517,14 @@ export default function AmaliyPage() {
 
   const saveStudentExerciseSlots = async (exercise: (NonNullable<typeof exerciseData>['exercises'])[number]) => {
     if (!selectedStudentId || !selectedCourseRunId) return;
-    const slotKey = `student:${selectedStudentId}:${exercise.id}`;
-    setBusySlotSaveKey(slotKey);
+    const customerId = selectedStudentId;
+    const courseRunId = selectedCourseRunId;
+    const exerciseDefinitionId = exercise.id;
+    const busyKey = `student:${courseRunId}:${customerId}:${exerciseDefinitionId}`;
+    setBusySlotSaveKey(busyKey);
     try {
       const payload = (exercise.slots ?? []).map((slot: SlotItem) => {
-        const key = keyForExerciseSlot(exercise.id, slot.date);
+        const key = keyForExerciseSlot(courseRunId, customerId, exerciseDefinitionId, slot.date);
         const next = selectedColorByExerciseSlot[key];
         const selectedColorOptionId =
           next !== undefined
@@ -470,14 +537,23 @@ export default function AmaliyPage() {
       });
 
       await saveSlotsMutation.mutateAsync({
-        customerId: selectedStudentId,
-        exerciseDefinitionId: exercise.id,
-        courseRunId: selectedCourseRunId,
+        customerId,
+        exerciseDefinitionId,
+        courseRunId,
         slots: payload,
       });
       toast.show('Saqlandi', 'success');
-      void refetchStudentExercises();
-      void refetchRecentLogs();
+      void trpcUtils.amaliy.getStudentExercises.invalidate({
+        customerId,
+        date: selectedDate,
+        mode: 'all',
+        courseRunId,
+      });
+      void trpcUtils.amaliy.listRecentLogs.invalidate({
+        customerId,
+        date: selectedDate,
+        courseRunId,
+      });
     } finally {
       setBusySlotSaveKey(null);
     }
@@ -485,11 +561,13 @@ export default function AmaliyPage() {
 
   const savePracticeStudentSlots = async (studentId: string, slots: SlotItem[]) => {
     if (!selectedPracticeId || !selectedCourseRunId) return;
-    const slotKey = `practice:${selectedPracticeId}:${studentId}`;
-    setBusySlotSaveKey(slotKey);
+    const exerciseDefinitionId = selectedPracticeId;
+    const courseRunId = selectedCourseRunId;
+    const busyKey = `practice:${courseRunId}:${exerciseDefinitionId}:${studentId}`;
+    setBusySlotSaveKey(busyKey);
     try {
       const payload = slots.map((slot) => {
-        const key = keyForPracticeStudentSlot(studentId, slot.date);
+        const key = keyForPracticeStudentSlot(courseRunId, exerciseDefinitionId, studentId, slot.date);
         const next = selectedColorByPracticeStudentSlot[key];
         const selectedColorOptionId =
           next !== undefined
@@ -503,12 +581,17 @@ export default function AmaliyPage() {
 
       await saveSlotsMutation.mutateAsync({
         customerId: studentId,
-        exerciseDefinitionId: selectedPracticeId,
-        courseRunId: selectedCourseRunId,
+        exerciseDefinitionId,
+        courseRunId,
         slots: payload,
       });
       toast.show('Saqlandi', 'success');
-      void refetchPracticeStudents();
+      void trpcUtils.amaliy.listPracticeStudents.invalidate({
+        exerciseDefinitionId,
+        date: selectedDate,
+        courseRunId,
+        includeCompleted: true,
+      });
     } finally {
       setBusySlotSaveKey(null);
     }
@@ -535,7 +618,12 @@ export default function AmaliyPage() {
       <div className="kd-card p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => setMode('students')}
+            onClick={() => {
+              if (mode !== 'students') resetDraftState();
+              setMode('students');
+            }}
+            disabled={isSelectionLocked}
+            data-testid="amaliy-mode-students"
             className={`px-3 py-2 rounded-md text-sm font-medium ${
               mode === 'students' ? 'kd-chip-active' : 'kd-chip'
             }`}
@@ -543,7 +631,12 @@ export default function AmaliyPage() {
             By Students
           </button>
           <button
-            onClick={() => setMode('practice')}
+            onClick={() => {
+              if (mode !== 'practice') resetDraftState();
+              setMode('practice');
+            }}
+            disabled={isSelectionLocked}
+            data-testid="amaliy-mode-practice"
             className={`px-3 py-2 rounded-md text-sm font-medium ${
               mode === 'practice' ? 'kd-chip-active' : 'kd-chip'
             }`}
@@ -551,7 +644,11 @@ export default function AmaliyPage() {
             By Amaliy
           </button>
           <button
-            onClick={() => setSelectedCourseType('online')}
+            onClick={() => {
+              if (selectedCourseType !== 'online') resetDraftState();
+              setSelectedCourseType('online');
+            }}
+            disabled={isSelectionLocked}
             className={`px-3 py-2 rounded-md text-sm font-medium ${
               selectedCourseType === 'online' ? 'kd-chip-active' : 'kd-chip'
             }`}
@@ -559,7 +656,11 @@ export default function AmaliyPage() {
             Online
           </button>
           <button
-            onClick={() => setSelectedCourseType('offline')}
+            onClick={() => {
+              if (selectedCourseType !== 'offline') resetDraftState();
+              setSelectedCourseType('offline');
+            }}
+            disabled={isSelectionLocked}
             className={`px-3 py-2 rounded-md text-sm font-medium ${
               selectedCourseType === 'offline' ? 'kd-chip-active' : 'kd-chip'
             }`}
@@ -568,13 +669,16 @@ export default function AmaliyPage() {
           </button>
           <div className="min-w-[170px] flex-1 sm:flex-none sm:w-[280px]">
             <select
+              data-testid="amaliy-course"
               value={selectedCourseId}
               onChange={(e) => {
+                resetDraftState();
                 setSelectedCourseId(e.target.value);
                 setSelectedCourseRunId('');
                 setSelectedStudentId('');
                 setSelectedPracticeId('');
               }}
+              disabled={isSelectionLocked}
               className="w-full px-3 py-2 border rounded-lg text-sm"
             >
               {filteredCourses.length === 0 ? (
@@ -594,13 +698,15 @@ export default function AmaliyPage() {
           <div>
             <label className="block text-xs kd-subtle mb-1">Oqim</label>
             <select
+              data-testid="amaliy-run"
               value={selectedCourseRunId}
               onChange={(e) => {
+                resetDraftState();
                 setSelectedCourseRunId(e.target.value);
                 setSelectedStudentId('');
                 setSelectedPracticeId('');
               }}
-              disabled={!selectedCourseId}
+              disabled={!selectedCourseId || isSelectionLocked}
               className="w-full px-3 py-2 border rounded-lg text-sm"
             >
               <option value="">
@@ -618,8 +724,13 @@ export default function AmaliyPage() {
             <div>
               <label className="block text-xs kd-subtle mb-1">O'quvchi</label>
               <select
+                data-testid="amaliy-student"
                 value={selectedStudentId}
-                onChange={(e) => setSelectedStudentId(e.target.value)}
+                onChange={(e) => {
+                  resetDraftState();
+                  setSelectedStudentId(e.target.value);
+                }}
+                disabled={!selectedCourseRunId || isSelectionLocked}
                 className="w-full px-3 py-2 border rounded-lg text-sm"
               >
                 <option value="">Tanlang...</option>
@@ -634,10 +745,14 @@ export default function AmaliyPage() {
             <div>
               <label className="block text-xs kd-subtle mb-1">Amaliy mashq</label>
               <select
+                data-testid="amaliy-practice"
                 value={selectedPracticeId}
-                onChange={(e) => setSelectedPracticeId(e.target.value)}
+                onChange={(e) => {
+                  resetDraftState();
+                  setSelectedPracticeId(e.target.value);
+                }}
                 className="w-full px-3 py-2 border rounded-lg text-sm"
-                disabled={!selectedCourseRunId}
+                disabled={!selectedCourseRunId || isSelectionLocked}
               >
                 <option value="">
                   {selectedCourseRunId ? 'Mashqni tanlang...' : 'Avval oqimni tanlang'}
@@ -655,20 +770,32 @@ export default function AmaliyPage() {
             <label className="block text-xs kd-subtle mb-1">Sana</label>
             <div className="grid grid-cols-4 gap-1 rounded-md p-1" style={{ background: 'var(--kd-surface-soft)' }}>
               <button
-                onClick={() => setDateMode('today')}
+                onClick={() => {
+                  if (dateMode !== 'today') resetDraftState();
+                  setDateMode('today');
+                }}
+                disabled={isSelectionLocked}
                 className={`px-2 py-2 rounded text-sm ${dateMode === 'today' ? 'bg-white shadow-sm' : 'kd-subtle'}`}
               >
                 Bugun
               </button>
               <button
-                onClick={() => setDateMode('yesterday')}
+                onClick={() => {
+                  if (dateMode !== 'yesterday') resetDraftState();
+                  setDateMode('yesterday');
+                }}
+                disabled={isSelectionLocked}
                 className={`px-2 py-2 rounded text-sm ${dateMode === 'yesterday' ? 'bg-white shadow-sm' : 'kd-subtle'}`}
               >
                 Kecha
               </button>
               <button
-                onClick={() => setDateMode('all')}
-                disabled={!canUseHammasi}
+                onClick={() => {
+                  if (dateMode !== 'all') resetDraftState();
+                  setDateMode('all');
+                }}
+                disabled={!canUseHammasi || isSelectionLocked}
+                data-testid="amaliy-date-all"
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'all' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
@@ -676,8 +803,11 @@ export default function AmaliyPage() {
                 Hammasi
               </button>
               <button
-                onClick={() => setDateMode('custom')}
-                disabled={!canUseHammasi}
+                onClick={() => {
+                  if (dateMode !== 'custom') resetDraftState();
+                  setDateMode('custom');
+                }}
+                disabled={!canUseHammasi || isSelectionLocked}
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'custom' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
@@ -691,6 +821,7 @@ export default function AmaliyPage() {
                   type="date"
                   value={dateMode === 'all' ? hammasiDate : customDate}
                   onChange={(e) => {
+                    resetDraftState();
                     if (dateMode === 'all') {
                       setHammasiDate(e.target.value);
                     } else {
@@ -698,6 +829,7 @@ export default function AmaliyPage() {
                       setDateMode('custom');
                     }
                   }}
+                  disabled={isSelectionLocked}
                   className="w-full px-3 py-2 border rounded-lg text-sm"
                 />
               </div>
@@ -777,7 +909,12 @@ export default function AmaliyPage() {
                   </div>
                 ) : (
                   visibleExercises.map((exercise) => {
-                    const rowKey = keyForStudentExercise(selectedStudentId, selectedDate, exercise.id);
+                    const rowKey = keyForStudentExercise(
+                      selectedCourseRunId,
+                      selectedStudentId,
+                      selectedDate,
+                      exercise.id,
+                    );
                     const exerciseOptions: ColorPointOption[] = (exercise.colorPoints ?? []).map((row) => ({
                       id: row.colorOptionId,
                       label: row.label,
@@ -810,7 +947,12 @@ export default function AmaliyPage() {
                             <div className="overflow-x-auto">
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
                                 {(exercise.slots ?? []).map((slot: SlotItem) => {
-                                  const slotKey = keyForExerciseSlot(exercise.id, slot.date);
+                                  const slotKey = keyForExerciseSlot(
+                                    selectedCourseRunId,
+                                    selectedStudentId,
+                                    exercise.id,
+                                    slot.date,
+                                  );
                                   const slotSelectedColorId =
                                     selectedColorByExerciseSlot[slotKey] !== undefined
                                       ? selectedColorByExerciseSlot[slotKey]
@@ -820,6 +962,7 @@ export default function AmaliyPage() {
                                     <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                       <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
                                       <ColorPointsSelect
+                                        testId={`amaliy-student-slot-${exercise.id}-${slot.date}`}
                                         options={exerciseOptions}
                                         value={slotSelectedColorId}
                                         selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
@@ -837,11 +980,15 @@ export default function AmaliyPage() {
                             </div>
                             <div className="flex justify-end">
                               <button
+                                data-testid={`amaliy-student-save-${exercise.id}`}
                                 onClick={() => void saveStudentExerciseSlots(exercise)}
-                                disabled={busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` || exerciseOptions.length === 0}
+                                disabled={
+                                  busySlotSaveKey === `student:${selectedCourseRunId}:${selectedStudentId}:${exercise.id}` ||
+                                  exerciseOptions.length === 0
+                                }
                                 className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                               >
-                                {busySlotSaveKey === `student:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
+                                {busySlotSaveKey === `student:${selectedCourseRunId}:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
                               </button>
                             </div>
                           </div>
@@ -907,7 +1054,12 @@ export default function AmaliyPage() {
               ) : (
                 <div className="space-y-2">
                   {visiblePracticeStudents.map((student) => {
-                    const rowKey = keyForPracticeStudent(selectedPracticeId, selectedDate, student.id);
+                    const rowKey = keyForPracticeStudent(
+                      selectedCourseRunId,
+                      selectedPracticeId,
+                      selectedDate,
+                      student.id,
+                    );
                     const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row: ExerciseColorPointRow) => ({
                       id: row.colorOptionId,
                       label: row.colorOption.label,
@@ -945,7 +1097,12 @@ export default function AmaliyPage() {
                               <div className="overflow-x-auto">
                                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
                                   {(student.slots ?? []).map((slot: SlotItem) => {
-                                    const slotKey = keyForPracticeStudentSlot(student.id, slot.date);
+                                    const slotKey = keyForPracticeStudentSlot(
+                                      selectedCourseRunId,
+                                      selectedPracticeId,
+                                      student.id,
+                                      slot.date,
+                                    );
                                     const slotSelectedColorId =
                                       selectedColorByPracticeStudentSlot[slotKey] !== undefined
                                         ? selectedColorByPracticeStudentSlot[slotKey]
@@ -955,6 +1112,7 @@ export default function AmaliyPage() {
                                       <div key={slot.date} className="rounded-lg border border-gray-200 p-2">
                                         <p className="text-[11px] kd-subtle mb-1">{formatShortDate(slot.date)}</p>
                                         <ColorPointsSelect
+                                          testId={`amaliy-practice-slot-${selectedPracticeId}-${student.id}-${slot.date}`}
                                           options={practiceOptions}
                                           value={slotSelectedColorId}
                                           selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
@@ -972,11 +1130,15 @@ export default function AmaliyPage() {
                               </div>
                               <div className="flex justify-end">
                                 <button
+                                  data-testid={`amaliy-practice-save-${selectedPracticeId}-${student.id}`}
                                   onClick={() => void savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])}
-                                  disabled={busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` || practiceOptions.length === 0}
+                                  disabled={
+                                    busySlotSaveKey === `practice:${selectedCourseRunId}:${selectedPracticeId}:${student.id}` ||
+                                    practiceOptions.length === 0
+                                  }
                                   className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                                 >
-                                  {busySlotSaveKey === `practice:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
+                                  {busySlotSaveKey === `practice:${selectedCourseRunId}:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
                                 </button>
                               </div>
                             </div>
@@ -1023,6 +1185,7 @@ function ColorPointsSelect({
   allowEmpty,
   emptyLabel,
   onChange,
+  testId,
 }: {
   options: Array<{
     id: string;
@@ -1036,6 +1199,7 @@ function ColorPointsSelect({
   allowEmpty?: boolean;
   emptyLabel?: string;
   onChange: (nextId: string) => void;
+  testId?: string;
 }) {
   return (
     <div className="flex items-center gap-2">
@@ -1045,6 +1209,7 @@ function ColorPointsSelect({
         style={{ backgroundColor: selectedColorHex || '#D1D5DB' }}
       />
       <select
+        data-testid={testId}
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}

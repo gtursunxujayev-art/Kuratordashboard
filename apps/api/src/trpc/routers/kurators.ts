@@ -2,10 +2,8 @@ import { router, protectedProcedure, adminProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
-
-function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
-}
+import { getCustomersScopedToKurator } from '../utils/kuratorScope';
+import { isAdminOrManager } from '../../utils/access';
 
 export const kuratorsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
@@ -31,19 +29,34 @@ export const kuratorsRouter = router({
         ? input.kuratorUserId
         : user.userId;
 
-      return prisma.kuratorAssignment.findMany({
+      const runs = await prisma.courseRun.findMany({
         where: {
           tenantId: ctx.tenantId,
-          isActive: true,
-          ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
-          ...(effectiveKuratorUserId ? { kuratorUserId: effectiveKuratorUserId } : {}),
+          ...(input.courseRunId ? { id: input.courseRunId } : {}),
+          kuratorUserId: effectiveKuratorUserId ?? { not: null },
         },
-        include: {
-          customer: { select: { id: true, name: true } },
+        select: {
+          id: true,
+          name: true,
+          kuratorUserId: true,
           kurator: { select: { id: true, name: true } },
-          courseRun: { select: { id: true, name: true } },
+          members: { select: { customer: { select: { id: true, name: true } } } },
         },
       });
+      return runs.flatMap((run) =>
+        run.members.map(({ customer }) => ({
+          id: `${run.id}:${customer.id}`,
+          tenantId: ctx.tenantId,
+          kuratorUserId: run.kuratorUserId!,
+          customerId: customer.id,
+          courseRunId: run.id,
+          isActive: true,
+          createdAt: new Date(0),
+          customer,
+          kurator: run.kurator!,
+          courseRun: { id: run.id, name: run.name },
+        })),
+      );
     }),
 
   listTasks: protectedProcedure
@@ -115,16 +128,11 @@ export const kuratorsRouter = router({
         }
 
         if (!managerScope) {
-          const assignment = await prisma.kuratorAssignment.findFirst({
-            where: {
-              tenantId,
-              kuratorUserId: user.userId,
-              customerId: input.customerId,
-              isActive: true,
-            },
-            select: { id: true },
+          const scopedIds = await getCustomersScopedToKurator({
+            tenantId,
+            kuratorUserId: user.userId,
           });
-          if (!assignment) {
+          if (!scopedIds.includes(input.customerId)) {
             throw new TRPCError({ code: 'FORBIDDEN', message: "Bu o'quvchiga vazifa qo'sha olmaysiz" });
           }
         }

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
+import { startOfDayLocal } from '../../utils/date-local';
 import {
   createTelegramLinkToken,
   deleteTelegramReceiver,
@@ -11,7 +12,6 @@ import {
   getTelegramSelfStatus,
   sendTelegramTestReport,
 } from '../../services/telegram-reports';
-import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
 
 const scheduleTemplateSchema = z.object({
   id: z.string().optional(),
@@ -398,115 +398,126 @@ async function resolveRunMemberCounts(params: {
   const counts = new Map<string, number>();
   if (runs.length === 0) return counts;
 
-  const runById = new Map(runs.map((run) => [run.id, run]));
   const membersByRun = new Map<string, Set<string>>();
+  const memberRows = await prisma.courseRunMember.findMany({
+    where: { tenantId, courseRunId: { in: runs.map((run) => run.id) } },
+    select: { courseRunId: true, customerId: true },
+  });
 
-  try {
-    const memberRows = await prisma.courseRunMember.findMany({
-      where: { tenantId, courseRunId: { in: runs.map((run) => run.id) } },
-      select: { courseRunId: true, customerId: true },
-    });
-
-    for (const row of memberRows) {
-      const set = membersByRun.get(row.courseRunId) ?? new Set<string>();
-      set.add(row.customerId);
-      membersByRun.set(row.courseRunId, set);
-    }
-  } catch (error) {
-    if (!isMissingCourseRunMembersTableError(error)) {
-      throw error;
-    }
+  for (const row of memberRows) {
+    const set = membersByRun.get(row.courseRunId) ?? new Set<string>();
+    set.add(row.customerId);
+    membersByRun.set(row.courseRunId, set);
   }
 
   for (const [runId, members] of membersByRun) {
     counts.set(runId, members.size);
   }
 
-  const fallbackRuns = runs.filter((run) => !membersByRun.has(run.id));
-  if (fallbackRuns.length === 0) return counts;
-
-  const fallbackCourseIds = Array.from(new Set(fallbackRuns.map((run) => run.courseId)));
-  const enrolledRows = await prisma.income.findMany({
-    where: {
-      tenantId,
-      courseId: { in: fallbackCourseIds },
-      type: 'new_sale',
-      lifecycleStatus: 'active',
-    },
-    select: { courseId: true, customerId: true },
-    distinct: ['courseId', 'customerId'],
-  });
-
-  const enrolledByCourse = new Map<string, Set<string>>();
-  for (const row of enrolledRows) {
-    if (!row.courseId || !row.customerId) continue;
-    const set = enrolledByCourse.get(row.courseId) ?? new Set<string>();
-    set.add(row.customerId);
-    enrolledByCourse.set(row.courseId, set);
-  }
-
-  for (const run of fallbackRuns) {
-    counts.set(run.id, enrolledByCourse.get(run.courseId)?.size ?? 0);
-  }
-
-  for (const runId of runById.keys()) {
+  for (const runId of runs.map((run) => run.id)) {
     if (!counts.has(runId)) counts.set(runId, 0);
   }
 
   return counts;
 }
 
-/**
- * Re-sync the per-customer `kuratorAssignment` cache so it matches the run's current member set.
- * Used by both `attachKuratorToRun` and `updateCourseRun` (when the roster changes on a run that
- * already has a kurator attached).
- */
-async function syncKuratorAssignmentsForRun(params: {
-  tenantId: string;
-  courseRunId: string;
-  kuratorUserId: string;
-  courseId: string;
-}): Promise<number> {
-  const { tenantId, courseRunId, kuratorUserId, courseId } = params;
-  const memberCustomerIds = await resolveCourseRunMemberCustomerIds({ tenantId, courseRunId, courseId });
+type SettingsTransaction = Prisma.TransactionClient;
 
-  await prisma.$transaction([
-    // Deactivate stale rows: rows under any other kurator OR rows for customers no longer in the set.
-    prisma.kuratorAssignment.updateMany({
+async function lockCourseRoster(
+  tx: SettingsTransaction,
+  tenantId: string,
+  courseId: string,
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`course-roster:${tenantId}:${courseId}`}))`;
+}
+
+async function replaceCourseRunRoster(params: {
+  tx: SettingsTransaction;
+  tenantId: string;
+  courseId: string;
+  courseRunId: string;
+  customerIds: string[];
+}): Promise<void> {
+  const { tx, tenantId, courseId, courseRunId, customerIds } = params;
+  await lockCourseRoster(tx, tenantId, courseId);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const targetRun = await tx.courseRun.findFirst({
+    where: { id: courseRunId, tenantId, courseId },
+    select: { endDate: true },
+  });
+  if (!targetRun) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+
+  if (customerIds.length > 0 && targetRun.endDate >= today) {
+    const conflictingMemberships = await tx.courseRunMember.findMany({
       where: {
         tenantId,
-        courseRunId,
-        isActive: true,
-        OR: [
-          { kuratorUserId: { not: kuratorUserId } },
-          { customerId: { notIn: memberCustomerIds.length > 0 ? memberCustomerIds : ['__none__'] } },
-        ],
+        customerId: { in: customerIds },
+        courseRunId: { not: courseRunId },
+        courseRun: {
+          courseId,
+          endDate: { gte: today },
+        },
       },
-      data: { isActive: false },
-    }),
-    ...memberCustomerIds.map((customerId) =>
-      prisma.kuratorAssignment.upsert({
+      select: { courseRunId: true, customerId: true },
+    });
+    if (conflictingMemberships.length > 0) {
+      await tx.courseRunMember.deleteMany({
         where: {
-          tenantId_kuratorUserId_customerId_courseRunId: {
-            tenantId,
-            kuratorUserId,
-            customerId,
-            courseRunId,
-          },
-        },
-        create: {
           tenantId,
-          kuratorUserId,
-          customerId,
-          courseRunId,
-          isActive: true,
+          OR: conflictingMemberships.map((row) => ({
+            courseRunId: row.courseRunId,
+            customerId: row.customerId,
+          })),
         },
-        update: { isActive: true },
-      }),
-    ),
-  ]);
+      });
+      await tx.kuratorAssignment.updateMany({
+        where: {
+          tenantId,
+          isActive: true,
+          OR: conflictingMemberships.map((row) => ({
+            courseRunId: row.courseRunId,
+            customerId: row.customerId,
+          })),
+        },
+        data: { isActive: false },
+      });
+    }
+  }
 
-  return memberCustomerIds.length;
+  await tx.courseRunMember.deleteMany({ where: { tenantId, courseRunId } });
+  if (customerIds.length > 0) {
+    await tx.courseRunMember.createMany({
+      data: customerIds.map((customerId) => ({ tenantId, courseRunId, customerId })),
+      skipDuplicates: true,
+    });
+  }
+}
+
+async function validateRosterEligibility(
+  tenantId: string,
+  courseId: string,
+  customerIds: string[],
+): Promise<void> {
+  if (customerIds.length === 0) return;
+  const eligible = await prisma.income.findMany({
+    where: {
+      tenantId,
+      courseId,
+      customerId: { in: customerIds },
+      type: 'new_sale',
+      lifecycleStatus: 'active',
+    },
+    select: { customerId: true },
+    distinct: ['customerId'],
+  });
+  if (eligible.length !== customerIds.length) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: "Tanlangan o'quvchilarning ba'zilari ushbu kursda faol emas",
+    });
+  }
 }
 
 export const settingsRouter = router({
@@ -915,9 +926,7 @@ export const settingsRouter = router({
         durationWeeks: z.number().int().min(1).max(52).optional(),
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
-        // Explicit hand-picked roster. When provided & non-empty, becomes the source of truth
-        // for "who is in this run". When empty/omitted, callers fall back to "all customers
-        // with an active new_sale income on the run's course" (the default-group behavior).
+        // Explicit roster. Empty means the run has no assigned students.
         customerIds: z.array(z.string()).optional(),
       }),
     )
@@ -1012,45 +1021,32 @@ export const settingsRouter = router({
       const durationWeeksFromDates = calculateDurationWeeksFromDates(start, endDate);
 
       const rosterIds = Array.from(new Set(input.customerIds ?? []));
-      if (rosterIds.length > 0) {
-        const validCustomers = await prisma.customer.findMany({
-          where: { tenantId: ctx.tenantId, id: { in: rosterIds } },
-          select: { id: true },
-        });
-        if (validCustomers.length !== rosterIds.length) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: "Tanlangan o'quvchilarning ba'zilari topilmadi",
-          });
-        }
-      }
+      await validateRosterEligibility(ctx.tenantId, input.courseId, rosterIds);
 
       try {
-        const created = await prisma.courseRun.create({
-          data: {
+        return await prisma.$transaction(async (tx) => {
+          await lockCourseRoster(tx, ctx.tenantId, input.courseId);
+          const created = await tx.courseRun.create({
+            data: {
+              tenantId: ctx.tenantId,
+              courseId: input.courseId,
+              name: input.name,
+              startDate: start,
+              endDate,
+              durationWeeks: durationWeeksFromDates,
+              baseLessons,
+              premiumExtraLessons,
+            },
+          });
+          await replaceCourseRunRoster({
+            tx,
             tenantId: ctx.tenantId,
             courseId: input.courseId,
-            name: input.name,
-            startDate: start,
-            endDate,
-            durationWeeks: durationWeeksFromDates,
-            baseLessons,
-            premiumExtraLessons,
-          },
-        });
-
-        if (rosterIds.length > 0) {
-          await prisma.courseRunMember.createMany({
-            data: rosterIds.map((customerId) => ({
-              tenantId: ctx.tenantId,
-              courseRunId: created.id,
-              customerId,
-            })),
-            skipDuplicates: true,
+            courseRunId: created.id,
+            customerIds: rosterIds,
           });
-        }
-
-        return created;
+          return created;
+        }, { isolationLevel: 'Serializable' });
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -1070,8 +1066,7 @@ export const settingsRouter = router({
         baseLessons: z.number().int().min(1).max(200).optional(),
         premiumExtraLessons: z.number().int().min(0).max(50).optional(),
         // Replace the run's roster wholesale. When omitted, roster is left untouched.
-        // When provided as [], the roster is cleared and the run reverts to default-group
-        // behavior (all enrolled customers on the course).
+        // When provided as [], the roster is cleared.
         customerIds: z.array(z.string()).optional(),
       }),
     )
@@ -1128,67 +1123,61 @@ export const settingsRouter = router({
       const nextDurationWeeks = calculateDurationWeeksFromDates(nextStartDate, nextEndDate);
 
       const rosterIds = input.customerIds === undefined ? null : Array.from(new Set(input.customerIds));
-      if (rosterIds && rosterIds.length > 0) {
-        const validCustomers = await prisma.customer.findMany({
-          where: { tenantId: ctx.tenantId, id: { in: rosterIds } },
-          select: { id: true },
-        });
-        if (validCustomers.length !== rosterIds.length) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: "Tanlangan o'quvchilarning ba'zilari topilmadi",
-          });
-        }
-      }
+      if (rosterIds) await validateRosterEligibility(ctx.tenantId, existing.courseId, rosterIds);
 
       try {
-        const updated = await prisma.courseRun.update({
-          where: { id: input.courseRunId },
-          data: {
-            ...(input.name !== undefined ? { name: input.name } : {}),
-            startDate: nextStartDate,
-            endDate: nextEndDate,
-            durationWeeks: nextDurationWeeks,
-            ...(input.baseLessons !== undefined ? { baseLessons: input.baseLessons } : {}),
-            ...(input.premiumExtraLessons !== undefined
-              ? { premiumExtraLessons: input.premiumExtraLessons }
-              : {}),
-          },
-        });
+        return await prisma.$transaction(async (tx) => {
+          await lockCourseRoster(tx, ctx.tenantId, existing.courseId);
+          const updated = await tx.courseRun.update({
+            where: { id: input.courseRunId },
+            data: {
+              ...(input.name !== undefined ? { name: input.name } : {}),
+              startDate: nextStartDate,
+              endDate: nextEndDate,
+              durationWeeks: nextDurationWeeks,
+              ...(input.baseLessons !== undefined ? { baseLessons: input.baseLessons } : {}),
+              ...(input.premiumExtraLessons !== undefined
+                ? { premiumExtraLessons: input.premiumExtraLessons }
+                : {}),
+            },
+          });
 
-        if (rosterIds !== null) {
-          // Replace roster wholesale in a transaction.
-          await prisma.$transaction([
-            prisma.courseRunMember.deleteMany({
-              where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
-            }),
-            ...(rosterIds.length > 0
-              ? [
-                  prisma.courseRunMember.createMany({
-                    data: rosterIds.map((customerId) => ({
-                      tenantId: ctx.tenantId,
-                      courseRunId: input.courseRunId,
-                      customerId,
-                    })),
-                    skipDuplicates: true,
-                  }),
-                ]
-              : []),
-          ]);
-
-          // If a kurator is already attached, re-sync their per-customer assignment cache
-          // so it matches the new roster (or the new default-group set when roster cleared).
-          if (existing.kuratorUserId) {
-            await syncKuratorAssignmentsForRun({
+          if (rosterIds !== null) {
+            await replaceCourseRunRoster({
+              tx,
               tenantId: ctx.tenantId,
-              courseRunId: input.courseRunId,
-              kuratorUserId: existing.kuratorUserId,
               courseId: existing.courseId,
+              courseRunId: input.courseRunId,
+              customerIds: rosterIds,
             });
+            await tx.kuratorAssignment.updateMany({
+              where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
+              data: { isActive: false },
+            });
+            if (existing.kuratorUserId && rosterIds.length > 0) {
+              await tx.kuratorAssignment.createMany({
+                data: rosterIds.map((customerId) => ({
+                  tenantId: ctx.tenantId,
+                  courseRunId: input.courseRunId,
+                  customerId,
+                  kuratorUserId: existing.kuratorUserId!,
+                  isActive: true,
+                })),
+                skipDuplicates: true,
+              });
+              await tx.kuratorAssignment.updateMany({
+                where: {
+                  tenantId: ctx.tenantId,
+                  courseRunId: input.courseRunId,
+                  kuratorUserId: existing.kuratorUserId,
+                  customerId: { in: rosterIds },
+                },
+                data: { isActive: true },
+              });
+            }
           }
-        }
-
-        return updated;
+          return updated;
+        }, { isolationLevel: 'Serializable' });
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -1837,7 +1826,7 @@ export const settingsRouter = router({
         prisma.courseRun
           .findFirst({
             where: { id: input.courseRunId, tenantId: ctx.tenantId },
-            select: { id: true },
+            select: { id: true, courseId: true, kuratorUserId: true },
           })
           .catch((error) => {
             if (isMissingCourseRunsTableError(error)) {
@@ -1850,9 +1839,24 @@ export const settingsRouter = router({
       if (!kurator) throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
       if (!customer) throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
       if (!courseRun) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      if (courseRun.kuratorUserId !== input.kuratorUserId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Kurator oqim egasi bilan mos emas' });
+      }
+      const member = await prisma.courseRunMember.findFirst({
+        where: {
+          tenantId: ctx.tenantId,
+          courseRunId: input.courseRunId,
+          customerId: input.customerId,
+        },
+        select: { id: true },
+      });
+      if (!member) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi oqim a'zosi emas" });
+      }
 
-      const [, assignment] = await prisma.$transaction([
-        prisma.kuratorAssignment.updateMany({
+      const assignment = await prisma.$transaction(async (tx) => {
+        await lockCourseRoster(tx, ctx.tenantId, courseRun.courseId);
+        await tx.kuratorAssignment.updateMany({
           where: {
             tenantId: ctx.tenantId,
             customerId: input.customerId,
@@ -1861,8 +1865,8 @@ export const settingsRouter = router({
             isActive: true,
           },
           data: { isActive: false },
-        }),
-        prisma.kuratorAssignment.upsert({
+        });
+        return tx.kuratorAssignment.upsert({
           where: {
             tenantId_kuratorUserId_customerId_courseRunId: {
               tenantId: ctx.tenantId,
@@ -1879,8 +1883,8 @@ export const settingsRouter = router({
             isActive: true,
           },
           update: { isActive: true },
-        }),
-      ]);
+        });
+      }, { isolationLevel: 'Serializable' });
 
       return assignment;
     }),
@@ -1894,15 +1898,33 @@ export const settingsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      await prisma.kuratorAssignment.updateMany({
+      const run = await prisma.courseRun.findFirst({
         where: {
+          id: input.courseRunId,
           tenantId: ctx.tenantId,
           kuratorUserId: input.kuratorUserId,
-          customerId: input.customerId,
-          courseRunId: input.courseRunId,
         },
-        data: { isActive: false },
+        select: { id: true, courseId: true },
       });
+      if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim yoki kurator topilmadi' });
+      await prisma.$transaction(async (tx) => {
+        await lockCourseRoster(tx, ctx.tenantId, run.courseId);
+        await tx.courseRunMember.deleteMany({
+          where: {
+            tenantId: ctx.tenantId,
+            courseRunId: input.courseRunId,
+            customerId: input.customerId,
+          },
+        });
+        await tx.kuratorAssignment.updateMany({
+          where: {
+            tenantId: ctx.tenantId,
+            customerId: input.customerId,
+            courseRunId: input.courseRunId,
+          },
+          data: { isActive: false },
+        });
+      }, { isolationLevel: 'Serializable' });
       return { success: true };
     }),
 
@@ -1942,20 +1964,43 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurator topilmadi' });
       }
 
-      // 1. Set the run's kurator first (so future scope queries hit the relation).
-      await prisma.courseRun.update({
-        where: { id: input.courseRunId },
-        data: { kuratorUserId: input.kuratorUserId },
-      });
-
-      // 2. Re-sync the per-customer assignment cache from the resolved member set
-      //    (explicit roster if non-empty, else default-group of all enrolled customers).
-      const syncedCount = await syncKuratorAssignmentsForRun({
-        tenantId: ctx.tenantId,
-        courseRunId: input.courseRunId,
-        kuratorUserId: input.kuratorUserId,
-        courseId: courseRun.courseId,
-      });
+      const syncedCount = await prisma.$transaction(async (tx) => {
+        await lockCourseRoster(tx, ctx.tenantId, courseRun.courseId);
+        await tx.courseRun.update({
+          where: { id: input.courseRunId },
+          data: { kuratorUserId: input.kuratorUserId },
+        });
+        const members = await tx.courseRunMember.findMany({
+          where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
+          select: { customerId: true },
+        });
+        await tx.kuratorAssignment.updateMany({
+          where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId, isActive: true },
+          data: { isActive: false },
+        });
+        if (members.length > 0) {
+          await tx.kuratorAssignment.createMany({
+            data: members.map(({ customerId }) => ({
+              tenantId: ctx.tenantId,
+              courseRunId: input.courseRunId,
+              customerId,
+              kuratorUserId: input.kuratorUserId,
+              isActive: true,
+            })),
+            skipDuplicates: true,
+          });
+          await tx.kuratorAssignment.updateMany({
+            where: {
+              tenantId: ctx.tenantId,
+              courseRunId: input.courseRunId,
+              kuratorUserId: input.kuratorUserId,
+              customerId: { in: members.map(({ customerId }) => customerId) },
+            },
+            data: { isActive: true },
+          });
+        }
+        return members.length;
+      }, { isolationLevel: 'Serializable' });
 
       return {
         runId: input.courseRunId,
@@ -1964,10 +2009,7 @@ export const settingsRouter = router({
       };
     }),
 
-  /**
-   * Returns the explicit roster (customer IDs) for a run. Empty array means the run uses
-   * the default-group fallback. Used by the CourseRunsTab edit form to seed checkbox state.
-   */
+  /** Returns the explicit roster (customer IDs) for a run. */
   listCourseRunMembers: managerProcedure
     .input(z.object({ courseRunId: z.string() }))
     .query(async ({ ctx, input }) => {
@@ -2071,7 +2113,7 @@ export const settingsRouter = router({
       const courseRun = await prisma.courseRun
         .findFirst({
           where: { id: input.courseRunId, tenantId: ctx.tenantId },
-          select: { id: true },
+          select: { id: true, courseId: true },
         })
         .catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -2083,20 +2125,21 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
 
-      await prisma.$transaction([
-        prisma.courseRun.update({
+      await prisma.$transaction(async (tx) => {
+        await lockCourseRoster(tx, ctx.tenantId, courseRun.courseId);
+        await tx.courseRun.update({
           where: { id: input.courseRunId },
           data: { kuratorUserId: null },
-        }),
-        prisma.kuratorAssignment.updateMany({
+        });
+        await tx.kuratorAssignment.updateMany({
           where: {
             tenantId: ctx.tenantId,
             courseRunId: input.courseRunId,
             isActive: true,
           },
           data: { isActive: false },
-        }),
-      ]);
+        });
+      }, { isolationLevel: 'Serializable' });
 
       return { success: true };
     }),
@@ -2226,7 +2269,7 @@ export const settingsRouter = router({
         prisma.courseRun
           .findFirst({
             where: { id: input.courseRunId, tenantId: ctx.tenantId },
-            select: { id: true },
+            select: { id: true, courseId: true, kuratorUserId: true },
           })
           .catch((error) => {
             if (isMissingCourseRunsTableError(error)) {
@@ -2246,15 +2289,30 @@ export const settingsRouter = router({
       if (!courseRun) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
+      if (courseRun.kuratorUserId !== input.kuratorUserId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Kurator oqim egasi bilan mos emas' });
+      }
 
       const validCustomerIds = new Set(customers.map((c) => c.id));
       const missing = uniqueCustomerIds.filter((id) => !validCustomerIds.has(id));
       if (missing.length > 0) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: "Ba'zi o'quvchilar topilmadi" });
       }
+      const memberRows = await prisma.courseRunMember.findMany({
+        where: {
+          tenantId: ctx.tenantId,
+          courseRunId: input.courseRunId,
+          customerId: { in: uniqueCustomerIds },
+        },
+        select: { customerId: true },
+      });
+      if (memberRows.length !== uniqueCustomerIds.length) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Ba'zi o'quvchilar oqim a'zosi emas" });
+      }
 
-      await prisma.$transaction([
-        prisma.kuratorAssignment.updateMany({
+      await prisma.$transaction(async (tx) => {
+        await lockCourseRoster(tx, ctx.tenantId, courseRun.courseId);
+        await tx.kuratorAssignment.updateMany({
           where: {
             tenantId: ctx.tenantId,
             customerId: { in: uniqueCustomerIds },
@@ -2263,9 +2321,9 @@ export const settingsRouter = router({
             isActive: true,
           },
           data: { isActive: false },
-        }),
-        ...uniqueCustomerIds.map((customerId) =>
-          prisma.kuratorAssignment.upsert({
+        });
+        for (const customerId of uniqueCustomerIds) {
+          await tx.kuratorAssignment.upsert({
             where: {
               tenantId_kuratorUserId_customerId_courseRunId: {
                 tenantId: ctx.tenantId,
@@ -2282,9 +2340,9 @@ export const settingsRouter = router({
               isActive: true,
             },
             update: { isActive: true },
-          }),
-        ),
-      ]);
+          });
+        }
+      }, { isolationLevel: 'Serializable' });
 
       return { assignedCount: uniqueCustomerIds.length };
     }),
@@ -2336,6 +2394,37 @@ export const settingsRouter = router({
         throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'JWT sozlanmagan' });
       }
 
+      const [course, courseRun, tariff, kurator] = await Promise.all([
+        prisma.course.findFirst({
+          where: { id: input.courseId, tenantId: ctx.tenantId, isActive: true },
+          select: { id: true },
+        }),
+        input.courseRunId
+          ? prisma.courseRun.findFirst({
+              where: { id: input.courseRunId, tenantId: ctx.tenantId, courseId: input.courseId },
+              select: { id: true, kuratorUserId: true },
+            })
+          : Promise.resolve(null),
+        input.tariffId
+          ? prisma.tariff.findFirst({
+              where: { id: input.tariffId, tenantId: ctx.tenantId, courseId: input.courseId, isActive: true },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+        input.kuratorUserId
+          ? prisma.user.findFirst({
+              where: { id: input.kuratorUserId, tenantId: ctx.tenantId, isActive: true },
+              select: { id: true },
+            })
+          : Promise.resolve(null),
+      ]);
+      if (!course || (input.courseRunId && !courseRun) || (input.tariffId && !tariff) || (input.kuratorUserId && !kurator)) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Hisobot filtrlari yaroqsiz" });
+      }
+      if (input.courseRunId && input.kuratorUserId && courseRun?.kuratorUserId !== input.kuratorUserId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Kurator oqim egasi bilan mos emas' });
+      }
+
       const payload = {
         type: 'report_share',
         tenantId: ctx.tenantId,
@@ -2350,11 +2439,7 @@ export const settingsRouter = router({
       return { token };
     }),
 
-  /**
-   * Syncs course_run_members with active incomes.
-   * Add customers newly enrolled (have active income but missing from roster).
-   * Remove stale roster entries (no active income on the run's course).
-   */
+  /** Removes roster members who no longer have an active course enrollment. */
   syncCourseRunMembers: adminProcedure
     .input(
       z.object({
@@ -2364,10 +2449,24 @@ export const settingsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const run = await prisma.courseRun.findFirst({
         where: { id: input.courseRunId, tenantId: ctx.tenantId },
-        select: { id: true, courseId: true },
+        select: { id: true, courseId: true, endDate: true },
       });
       if (!run) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs oqimi topilmadi' });
+      }
+
+      if (startOfDayLocal(run.endDate) < startOfDayLocal(new Date())) {
+        const historicalRosterCount = await prisma.courseRunMember.count({
+          where: { tenantId: ctx.tenantId, courseRunId: run.id },
+        });
+        return {
+          courseRunId: run.id,
+          courseId: run.courseId,
+          added: 0,
+          removed: 0,
+          totalActive: 0,
+          totalRoster: historicalRosterCount,
+        };
       }
 
       // Active income customers for this course
@@ -2390,21 +2489,8 @@ export const settingsRouter = router({
       });
       const rosterSet = new Set(currentRoster.map((r) => r.customerId));
 
-      // Customers to add: active income but not in roster
-      const toAdd = Array.from(activeSet).filter((id) => !rosterSet.has(id));
       // Customers to remove: in roster but no active income
       const toRemove = Array.from(rosterSet).filter((id) => !activeSet.has(id));
-
-      if (toAdd.length > 0) {
-        await prisma.courseRunMember.createMany({
-          data: toAdd.map((customerId) => ({
-            tenantId: ctx.tenantId,
-            courseRunId: run.id,
-            customerId,
-          })),
-          skipDuplicates: true,
-        });
-      }
 
       if (toRemove.length > 0) {
         await prisma.courseRunMember.deleteMany({
@@ -2419,10 +2505,10 @@ export const settingsRouter = router({
       return {
         courseRunId: run.id,
         courseId: run.courseId,
-        added: toAdd.length,
+        added: 0,
         removed: toRemove.length,
         totalActive: activeSet.size,
-        totalRoster: activeSet.size, // After sync, roster matches active
+        totalRoster: rosterSet.size - toRemove.length,
       };
     }),
 });

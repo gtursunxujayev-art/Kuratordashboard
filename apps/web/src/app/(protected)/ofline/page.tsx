@@ -1,5 +1,5 @@
-import DashboardPage from '../dashboard/page';
+import { DashboardContent } from '@/components/dashboard-content';
 
 export default function OflinePage() {
-  return <DashboardPage forcedCategory="offline" />;
+  return <DashboardContent forcedCategory="offline" />;
 }

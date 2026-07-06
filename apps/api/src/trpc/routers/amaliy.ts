@@ -1,26 +1,75 @@
 import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
-import { prisma } from '@kuratordashboard/db';
+import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import { resolveCourseRunMemberCustomerIds, resolveCourseRunMemberSets } from '../utils/runMembership';
 import {
   visibleCourseRunWhere,
   visibleExerciseDefinitionWhere,
   withCourseRunVisibilityFallback,
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
+import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
+import { addDaysLocal, startOfDayLocal } from '../../utils/date-local';
+import { isPremiumTariffName } from '../../utils/tariff';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
   lifecycleStatus: 'active' as const,
 };
 
-function isAdminOrManager(roles: string[]): boolean {
-  return roles.includes('Admin') || roles.includes('Manager') || roles.includes('Bosh Kurator');
+function exerciseWriteLockKey(tenantId: string, customerId: string, exerciseDefinitionId: string): string {
+  return `exercise-write:${tenantId}:${customerId}:${exerciseDefinitionId}`;
 }
 
-function hasKuratorRole(roles: string[]): boolean {
-  return roles.includes('Kurator') || roles.includes('Bosh Kurator');
+async function lockExerciseWrites(
+  tx: Prisma.TransactionClient,
+  params: { tenantId: string; customerId: string; exerciseDefinitionId: string },
+): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${exerciseWriteLockKey(
+    params.tenantId,
+    params.customerId,
+    params.exerciseDefinitionId,
+  )}))`;
+}
+
+async function assertExerciseWriteMembership(
+  tx: Prisma.TransactionClient,
+  params: {
+    tenantId: string;
+    customerId: string;
+    courseRunId: string;
+    courseId: string;
+    runEndDate: Date;
+  },
+): Promise<void> {
+  const membership = await tx.courseRunMember.findFirst({
+    where: {
+      tenantId: params.tenantId,
+      courseRunId: params.courseRunId,
+      customerId: params.customerId,
+      courseRun: { courseId: params.courseId },
+    },
+    select: { id: true },
+  });
+  if (!membership) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: "O'quvchi ushbu oqimga biriktirilmagan" });
+  }
+
+  if (startOfDayLocal(params.runEndDate) < startOfDayLocal(new Date())) return;
+  const activeEnrollment = await tx.income.findFirst({
+    where: {
+      tenantId: params.tenantId,
+      customerId: params.customerId,
+      courseId: params.courseId,
+      ...ACTIVE_ENROLLMENT_FILTER,
+    },
+    select: { id: true },
+  });
+  if (!activeEnrollment) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: "O'quvchining ushbu kursdagi faol savdosi topilmadi" });
+  }
 }
 
 function isMissingCustomerTelegramColumnError(error: unknown): boolean {
@@ -39,15 +88,6 @@ function isMissingCourseRunsTableError(error: unknown): boolean {
     return message.includes('course_runs') && message.includes('does not exist');
   }
   return message.includes('course_runs');
-}
-
-function isMissingCourseRunMembersTableError(error: unknown): boolean {
-  const code = String((error as any)?.code || '');
-  const message = String((error as any)?.message || '').toLowerCase();
-  if (code !== 'P2021' && code !== 'P2022') {
-    return message.includes('course_run_members') && message.includes('does not exist');
-  }
-  return message.includes('course_run_members');
 }
 
 function isPointsTypeMigrationMismatchError(error: unknown): boolean {
@@ -93,16 +133,6 @@ function parseDateInput(dateInput: string): Date {
   return fallback;
 }
 
-function startOfDayLocal(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
-}
-
-function addDaysLocal(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
 function toDateKeyLocal(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -144,11 +174,6 @@ function buildExerciseSlotDates(params: {
   };
 }
 
-function isPremiumTariffName(name: string | null | undefined): boolean {
-  const value = (name || '').toLowerCase();
-  return value.includes('premium') || value.includes('vip');
-}
-
 type AttendanceStatus = 'tanlanmagan' | 'keldi' | 'kelmadi';
 
 function buildAttendanceSlotDates(params: {
@@ -168,49 +193,6 @@ function buildAttendanceSlotDates(params: {
     slotDates: classDays.slice(0, Math.max(0, params.targetCount)),
     hasInsufficientDates: classDays.length < params.targetCount,
   };
-}
-
-async function resolveCourseRunCustomerIds(params: {
-  tenantId: string;
-  courseRunId: string;
-  courseId: string;
-}): Promise<string[]> {
-  const { tenantId, courseRunId, courseId } = params;
-
-  try {
-    const [explicitMembers, legacyAssignments] = await Promise.all([
-      prisma.courseRunMember.findMany({
-        where: { tenantId, courseRunId },
-        select: { customerId: true },
-      }),
-      prisma.kuratorAssignment.findMany({
-        where: { tenantId, courseRunId, isActive: true },
-        select: { customerId: true },
-      }),
-    ]);
-    const attachedCustomerIds = new Set<string>();
-    for (const row of explicitMembers) attachedCustomerIds.add(row.customerId);
-    for (const row of legacyAssignments) attachedCustomerIds.add(row.customerId);
-    if (attachedCustomerIds.size > 0) {
-      return Array.from(attachedCustomerIds);
-    }
-  } catch (error) {
-    if (!isMissingCourseRunMembersTableError(error)) {
-      throw error;
-    }
-  }
-
-  const enrolled = await prisma.income.findMany({
-    where: {
-      tenantId,
-      courseId,
-      ...ACTIVE_ENROLLMENT_FILTER,
-    },
-    select: { customerId: true },
-    distinct: ['customerId'],
-  });
-
-  return enrolled.map((row) => row.customerId).filter((id): id is string => Boolean(id));
 }
 
 async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: string) {
@@ -309,7 +291,7 @@ export const amaliyRouter = router({
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
         }
 
-        customerIds = await resolveCourseRunCustomerIds({
+        customerIds = await resolveCourseRunMemberCustomerIds({
           tenantId,
           courseRunId: run.id,
           courseId: run.courseId,
@@ -435,7 +417,7 @@ export const amaliyRouter = router({
 
       let assignedCustomerIds: string[] = [];
       if (input.courseRunId) {
-        assignedCustomerIds = await resolveCourseRunCustomerIds({
+        assignedCustomerIds = await resolveCourseRunMemberCustomerIds({
           tenantId,
           courseRunId: input.courseRunId,
           courseId: exercise.courseId,
@@ -451,16 +433,21 @@ export const amaliyRouter = router({
           assignedCustomerIds = assignedCustomerIds.filter((id) => scopedSet.has(id));
         }
       } else {
-        const assignments = await prisma.kuratorAssignment.findMany({
+        const runs = await prisma.courseRun.findMany({
           where: {
             tenantId,
-            courseRun: { courseId: exercise.courseId },
-            isActive: true,
+            courseId: exercise.courseId,
             ...(kuratorOnly ? { kuratorUserId: user.userId } : {}),
           },
-          select: { customerId: true },
+          select: { id: true },
         });
-        assignedCustomerIds = Array.from(new Set(assignments.map((row) => row.customerId)));
+        const membersByRun = await resolveCourseRunMemberSets({
+          tenantId,
+          runIds: runs.map((run) => run.id),
+        });
+        assignedCustomerIds = Array.from(
+          new Set(runs.flatMap((run) => Array.from(membersByRun.get(run.id) ?? []))),
+        );
       }
 
       if (assignedCustomerIds.length === 0) {
@@ -693,7 +680,7 @@ export const amaliyRouter = router({
       const selectedDateEnd = addDaysLocal(selectedDate, 1);
       const isLessonDay = isClassDay(selectedDate);
 
-      const runCustomerIds = await resolveCourseRunCustomerIds({
+      const runCustomerIds = await resolveCourseRunMemberCustomerIds({
         tenantId,
         courseRunId: courseRun.id,
         courseId: courseRun.courseId,
@@ -1006,7 +993,7 @@ export const amaliyRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
 
-      const runCustomerIds = await resolveCourseRunCustomerIds({
+      const runCustomerIds = await resolveCourseRunMemberCustomerIds({
         tenantId,
         courseRunId: courseRun.id,
         courseId: courseRun.courseId,
@@ -1155,6 +1142,7 @@ export const amaliyRouter = router({
           tenantId,
           kuratorUserId: user.userId,
           customerId: input.customerId,
+          courseRunId: input.courseRunId,
         });
         if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
@@ -1180,17 +1168,13 @@ export const amaliyRouter = router({
         };
       }
 
-      const enrollment = await prisma.income.findFirst({
-        where: {
-          tenantId,
-          customerId: input.customerId,
-          courseId: courseRun.courseId,
-          ...ACTIVE_ENROLLMENT_FILTER,
-        },
-        select: { id: true },
+      const memberCustomerIds = await resolveCourseRunMemberCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: courseRun.courseId,
       });
-      if (!enrollment) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu oqim kursiga biriktirilmagan" });
+      if (!memberCustomerIds.includes(input.customerId)) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu oqimga biriktirilmagan" });
       }
 
       const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId);
@@ -1254,6 +1238,7 @@ export const amaliyRouter = router({
                 tenantId,
                 customerId: input.customerId,
                 exerciseDefinitionId: { in: definitionIds },
+                completedAt: { gte: runStart, lt: runEndExclusive },
               },
               _count: { id: true },
             })
@@ -1400,6 +1385,7 @@ export const amaliyRouter = router({
     .input(
       z.object({
         customerId: z.string(),
+        courseRunId: z.string(),
         exerciseDefinitionId: z.string(),
         colorOptionId: z.string(),
         completedAt: z.string(),
@@ -1425,6 +1411,26 @@ export const amaliyRouter = router({
       );
       if (!definition) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
+      const courseRun = await prisma.courseRun.findFirst({
+        where: {
+          id: input.courseRunId,
+          tenantId,
+          courseId: definition.courseId,
+        },
+        select: { id: true, courseId: true, startDate: true, endDate: true },
+      });
+      if (!courseRun) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi yoki mashqqa mos emas' });
+      }
+      const memberIds = await resolveCourseRunMemberCustomerIds({
+        tenantId,
+        courseRunId: courseRun.id,
+        courseId: definition.courseId,
+      });
+      if (!memberIds.includes(input.customerId)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "O'quvchi ushbu oqimga biriktirilmagan" });
       }
 
       const colorOption = await prisma.exerciseColorOption.findFirst({
@@ -1457,6 +1463,7 @@ export const amaliyRouter = router({
           tenantId,
           kuratorUserId: user.userId,
           customerId: input.customerId,
+          courseRunId: courseRun.id,
         });
         if (!allowed) {
           throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
@@ -1467,6 +1474,11 @@ export const amaliyRouter = router({
       const dayStart = startOfDayLocal(completedAt);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
+      const runStart = startOfDayLocal(courseRun.startDate);
+      const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      if (dayStart < runStart || dayStart >= runEndExclusive) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Sana oqim davriga kirmaydi" });
+      }
       if (!isEligibleExerciseDate(definition.type, dayStart)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -1489,6 +1501,18 @@ export const amaliyRouter = router({
 
       try {
         return await prisma.$transaction(async (tx) => {
+          await lockExerciseWrites(tx, {
+            tenantId,
+            customerId: input.customerId,
+            exerciseDefinitionId: definition.id,
+          });
+          await assertExerciseWriteMembership(tx, {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            courseId: courseRun.courseId,
+            runEndDate: courseRun.endDate,
+          });
           const existingLogForDay = await tx.studentExerciseLog.findFirst({
             where: {
               tenantId,
@@ -1519,6 +1543,7 @@ export const amaliyRouter = router({
               tenantId,
               customerId: input.customerId,
               exerciseDefinitionId: definition.id,
+              completedAt: { gte: runStart, lt: runEndExclusive },
             },
           });
 
@@ -1619,7 +1644,7 @@ export const amaliyRouter = router({
       if (definition.courseId !== courseRun.courseId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Mashq va oqim mos emas' });
       }
-      const runCustomerIds = await resolveCourseRunCustomerIds({
+      const runCustomerIds = await resolveCourseRunMemberCustomerIds({
         tenantId,
         courseRunId: courseRun.id,
         courseId: courseRun.courseId,
@@ -1707,28 +1732,32 @@ export const amaliyRouter = router({
       });
 
       try {
-        const operations = [
-          prisma.studentExerciseLog.deleteMany({
+        return await prisma.$transaction(async (tx) => {
+          await lockExerciseWrites(tx, {
+            tenantId,
+            customerId: input.customerId,
+            exerciseDefinitionId: definition.id,
+          });
+          await assertExerciseWriteMembership(tx, {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            courseId: courseRun.courseId,
+            runEndDate: courseRun.endDate,
+          });
+          const deleted = await tx.studentExerciseLog.deleteMany({
             where: {
               tenantId,
               customerId: input.customerId,
               exerciseDefinitionId: definition.id,
               completedAt: { gte: runStart, lt: runEndExclusive },
             },
-          }),
-          ...(createRows.length > 0
-            ? [prisma.studentExerciseLog.createMany({ data: createRows })]
-            : []),
-        ];
-
-        const result = await prisma.$transaction(operations);
-        const deletedCount = result[0]?.count ?? 0;
-        const savedCount = result.length > 1 ? (result[1] as { count: number }).count : 0;
-        return {
-          success: true,
-          savedCount,
-          deletedCount,
-        };
+          });
+          const saved = createRows.length > 0
+            ? await tx.studentExerciseLog.createMany({ data: createRows })
+            : { count: 0 };
+          return { success: true, savedCount: saved.count, deletedCount: deleted.count };
+        }, { isolationLevel: 'Serializable' });
       } catch (error) {
         if (isPointsTypeMigrationMismatchError(error)) {
           throw new TRPCError({
@@ -1748,7 +1777,7 @@ export const amaliyRouter = router({
     }),
 
   removeExerciseLog: protectedProcedure
-    .input(z.object({ logId: z.string() }))
+    .input(z.object({ logId: z.string(), courseRunId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
       const isKuratorOnly =
@@ -1757,17 +1786,59 @@ export const amaliyRouter = router({
 
       const log = await prisma.studentExerciseLog.findFirst({
         where: { id: input.logId, tenantId },
-        select: { id: true, customerId: true, loggedByUserId: true },
+        select: {
+          id: true,
+          customerId: true,
+          exerciseDefinitionId: true,
+          loggedByUserId: true,
+          completedAt: true,
+          exerciseDefinition: { select: { courseId: true } },
+        },
       });
       if (!log) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Yozuv topilmadi' });
+      }
+
+      const courseRun = await prisma.courseRun.findFirst({
+        where: {
+          id: input.courseRunId,
+          tenantId,
+          courseId: log.exerciseDefinition.courseId,
+        },
+        select: { id: true, courseId: true, startDate: true, endDate: true },
+      });
+      const logDate = startOfDayLocal(log.completedAt);
+      if (
+        !courseRun ||
+        logDate < startOfDayLocal(courseRun.startDate) ||
+        logDate >= addDaysLocal(startOfDayLocal(courseRun.endDate), 1)
+      ) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Yozuv tanlangan oqimga tegishli emas' });
+      }
+      const memberIds = await resolveCourseRunMemberCustomerIds({ tenantId, courseRunId: courseRun.id });
+      if (!memberIds.includes(log.customerId)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "O'quvchi ushbu oqimga biriktirilmagan" });
       }
 
       if (isKuratorOnly && log.loggedByUserId !== user.userId) {
         throw new TRPCError({ code: 'FORBIDDEN', message: "Faqat o'zingiz kiritgan yozuvni o'chira olasiz" });
       }
 
-      await prisma.studentExerciseLog.delete({ where: { id: input.logId } });
+      await prisma.$transaction(async (tx) => {
+        await lockExerciseWrites(tx, {
+          tenantId,
+          customerId: log.customerId,
+          exerciseDefinitionId: log.exerciseDefinitionId,
+        });
+        await assertExerciseWriteMembership(tx, {
+          tenantId,
+          customerId: log.customerId,
+          courseRunId: courseRun.id,
+          courseId: courseRun.courseId,
+          runEndDate: courseRun.endDate,
+        });
+        await tx.studentExerciseLog.delete({ where: { id: input.logId } });
+      }, { isolationLevel: 'Serializable' });
       return { success: true };
     }),
 
@@ -1879,7 +1950,14 @@ export const amaliyRouter = router({
             tenantId,
             ...visibleCourseRunWhere(withHiddenColumn),
           },
-          select: { id: true, courseId: true },
+          select: {
+            id: true,
+            courseId: true,
+            startDate: true,
+            endDate: true,
+            baseLessons: true,
+            premiumExtraLessons: true,
+          },
         }),
       )
         .catch((error) => {
@@ -1893,7 +1971,7 @@ export const amaliyRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
 
-      const runCustomerIds = await resolveCourseRunCustomerIds({
+      const runCustomerIds = await resolveCourseRunMemberCustomerIds({
         tenantId,
         courseRunId: courseRun.id,
         courseId: courseRun.courseId,
@@ -1925,6 +2003,28 @@ export const amaliyRouter = router({
       }
 
       const lessonDate = parseDateInput(input.lessonDate);
+      const lessonDay = startOfDayLocal(lessonDate);
+      const runStart = startOfDayLocal(courseRun.startDate);
+      const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      const allowedLessonDates = new Set(
+        buildAttendanceSlotDates({
+          startDate: courseRun.startDate,
+          endDate: courseRun.endDate,
+          targetCount: input.lessonType === 'base'
+            ? courseRun.baseLessons
+            : courseRun.premiumExtraLessons,
+        }).slotDates.map(toDateKeyLocal),
+      );
+      if (
+        lessonDay < runStart ||
+        lessonDay >= runEndExclusive ||
+        !allowedLessonDates.has(toDateKeyLocal(lessonDay))
+      ) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Sana oqimning ruxsat etilgan dars kuniga kirmaydi",
+        });
+      }
 
       return prisma.classAttendance.upsert({
         where: {

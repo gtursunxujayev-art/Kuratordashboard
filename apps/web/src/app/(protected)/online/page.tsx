@@ -1,5 +1,5 @@
-import DashboardPage from '../dashboard/page';
+import { DashboardContent } from '@/components/dashboard-content';
 
 export default function OnlinePage() {
-  return <DashboardPage forcedCategory="online" />;
+  return <DashboardContent forcedCategory="online" />;
 }

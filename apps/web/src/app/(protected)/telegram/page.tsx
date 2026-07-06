@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { trpc } from '@/lib/trpc';
 import { useAuth } from '@/contexts/auth-context';
@@ -33,8 +33,11 @@ export default function TelegramPage() {
     },
   });
 
+  useEffect(() => {
+    if (!isLoading && !canUsePage) router.replace('/dashboard');
+  }, [canUsePage, isLoading, router]);
+
   if (!isLoading && !canUsePage) {
-    router.replace('/dashboard');
     return null;
   }
 
