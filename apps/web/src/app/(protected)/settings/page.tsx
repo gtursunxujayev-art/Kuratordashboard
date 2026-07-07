@@ -566,6 +566,7 @@ function CourseRunsTab({
   // Explicit run roster. An empty set means no students are assigned to the run.
   const [tariffFilter, setTariffFilter] = useState('');
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<Set<string>>(new Set());
+  const [hydratedRosterRunId, setHydratedRosterRunId] = useState<string | null>(null);
 
   const { data: courseRuns, isLoading } = trpc.settings.listCourseRuns.useQuery();
   const { data: courses } = trpc.settings.listCourses.useQuery();
@@ -593,10 +594,36 @@ function CourseRunsTab({
     { courseId: form.courseId, tariffId: tariffFilter || undefined },
     { enabled: showForm && !!form.courseId },
   );
+  const { data: allEnrollable } = trpc.settings.listEnrollableStudents.useQuery(
+    { courseId: form.courseId },
+    { enabled: showForm && !!form.courseId },
+  );
   const { data: existingMembers } = trpc.settings.listCourseRunMembers.useQuery(
     { courseRunId: editingRunId ?? '' },
     { enabled: showForm && !!editingRunId },
   );
+  const activeCourseCustomerIds = useMemo(
+    () => new Set((allEnrollable ?? []).map((student) => student.id)),
+    [allEnrollable],
+  );
+  const visibleCustomerIds = useMemo(
+    () => new Set((enrollable ?? []).map((student) => student.id)),
+    [enrollable],
+  );
+  const selectedActiveCount = useMemo(() => {
+    let count = 0;
+    selectedCustomerIds.forEach((id) => {
+      if (activeCourseCustomerIds.has(id)) count += 1;
+    });
+    return count;
+  }, [activeCourseCustomerIds, selectedCustomerIds]);
+  const selectedVisibleCount = useMemo(() => {
+    let count = 0;
+    selectedCustomerIds.forEach((id) => {
+      if (visibleCustomerIds.has(id)) count += 1;
+    });
+    return count;
+  }, [selectedCustomerIds, visibleCustomerIds]);
 
   const isEditing = editingRunId !== null;
 
@@ -630,6 +657,7 @@ function CourseRunsTab({
 
   const openCreate = () => {
     setEditingRunId(null);
+    setHydratedRosterRunId(null);
     resetForm();
     setTariffFilter('');
     setSelectedCustomerIds(new Set());
@@ -650,6 +678,7 @@ function CourseRunsTab({
     isHidden?: boolean;
   }) => {
     setEditingRunId(run.id);
+    setHydratedRosterRunId(null);
     setForm({
       courseId: run.courseId,
       name: run.name,
@@ -670,10 +699,29 @@ function CourseRunsTab({
 
   // Hydrate roster checkbox state from the server when the edit form loads.
   useEffect(() => {
-    if (editingRunId && existingMembers) {
-      setSelectedCustomerIds(new Set(existingMembers));
+    if (editingRunId && existingMembers && allEnrollable && hydratedRosterRunId !== editingRunId) {
+      const eligibleIds = new Set(allEnrollable.map((student) => student.id));
+      setSelectedCustomerIds(new Set(existingMembers.filter((id) => eligibleIds.has(id))));
+      setHydratedRosterRunId(editingRunId);
     }
-  }, [editingRunId, existingMembers]);
+  }, [allEnrollable, editingRunId, existingMembers, hydratedRosterRunId]);
+
+  useEffect(() => {
+    if (!allEnrollable) return;
+    setSelectedCustomerIds((prev) => {
+      const next = new Set<string>();
+      prev.forEach((id) => {
+        if (activeCourseCustomerIds.has(id)) next.add(id);
+      });
+      return next.size === prev.size ? prev : next;
+    });
+  }, [activeCourseCustomerIds, allEnrollable]);
+
+  useEffect(() => {
+    if (!tariffFilter || !tariffs) return;
+    if (tariffs.some((tariff) => tariff.id === tariffFilter)) return;
+    setTariffFilter('');
+  }, [tariffFilter, tariffs]);
 
   useEffect(() => {
     if (!form.startDate || !form.endDate) return;
@@ -698,7 +746,9 @@ function CourseRunsTab({
       setError('');
       setCreateSuccess('');
 
-      const customerIds = Array.from(selectedCustomerIds);
+      const customerIds = Array.from(selectedCustomerIds).filter((id) =>
+        activeCourseCustomerIds.has(id),
+      );
 
       if (isEditing && editingRunId) {
         await updateMutation.mutateAsync({
@@ -918,8 +968,11 @@ function CourseRunsTab({
               </div>
               <div className="flex items-center justify-between gap-3 flex-wrap text-xs text-gray-600">
                 <span>
-                  Tanlangan: <strong>{selectedCustomerIds.size}</strong>
+                  Tanlangan: <strong>{tariffFilter ? selectedVisibleCount : selectedActiveCount}</strong>
                   {enrollable ? ` / ${enrollable.length}` : ''}
+                  {tariffFilter && selectedActiveCount !== selectedVisibleCount
+                    ? ` (jami: ${selectedActiveCount})`
+                    : ''}
                 </span>
                 <div className="flex items-center gap-3">
                   <button
@@ -996,10 +1049,9 @@ function CourseRunsTab({
                   </ul>
                 )}
               </div>
-              {selectedCustomerIds.size === 0 && (
+              {selectedActiveCount === 0 && (
                 <p className="text-xs text-gray-500 italic">
-                  Bo'sh qoldirsangiz, kursga yozilgan barcha o'quvchilar avtomatik kiritiladi
-                  (default guruh).
+                  Bo'sh qoldirsangiz, bu oqimga hech kim biriktirilmaydi.
                 </p>
               )}
             </div>
