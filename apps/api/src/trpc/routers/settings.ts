@@ -2015,13 +2015,26 @@ export const settingsRouter = router({
     .query(async ({ ctx, input }) => {
       const courseRun = await prisma.courseRun.findFirst({
         where: { id: input.courseRunId, tenantId: ctx.tenantId },
-        select: { id: true },
+        select: { id: true, courseId: true },
       });
       if (!courseRun) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
       const rows = await prisma.courseRunMember.findMany({
-        where: { tenantId: ctx.tenantId, courseRunId: input.courseRunId },
+        where: {
+          tenantId: ctx.tenantId,
+          courseRunId: input.courseRunId,
+          customer: {
+            incomes: {
+              some: {
+                tenantId: ctx.tenantId,
+                courseId: courseRun.courseId,
+                type: 'new_sale',
+                lifecycleStatus: 'active',
+              },
+            },
+          },
+        },
         select: { customerId: true },
       });
       return rows.map((row) => row.customerId);
@@ -2210,6 +2223,14 @@ export const settingsRouter = router({
           tenantId: ctx.tenantId,
           courseId: input.courseId,
           isActive: true,
+          incomes: {
+            some: {
+              tenantId: ctx.tenantId,
+              courseId: input.courseId,
+              type: 'new_sale',
+              lifecycleStatus: 'active',
+            },
+          },
         },
         select: { id: true, name: true },
         orderBy: { name: 'asc' },
