@@ -316,6 +316,24 @@ function isAmaliyPracticeEligibleOnDate(type: string, date: Date): boolean {
   return true;
 }
 
+function resolveAmaliyPracticeStartDate(fallbackStartDate: Date, practiceStartDate?: Date | null): Date {
+  if (!practiceStartDate) return startOfDayLocal(fallbackStartDate);
+  const fallbackStart = startOfDayLocal(fallbackStartDate);
+  const practiceStart = startOfDayLocal(practiceStartDate);
+  return practiceStart > fallbackStart ? practiceStart : fallbackStart;
+}
+
+function isAmaliyPracticeActiveAndEligibleOnDate(
+  type: string,
+  date: Date,
+  fallbackStartDate: Date,
+  practiceStartDate?: Date | null,
+): boolean {
+  const day = startOfDayLocal(date);
+  if (day < resolveAmaliyPracticeStartDate(fallbackStartDate, practiceStartDate)) return false;
+  return isAmaliyPracticeEligibleOnDate(type, day);
+}
+
 function enumerateDateRange(range: { from: Date; to: Date }): Array<{ date: string; label: string }> {
   const result: Array<{ date: string; label: string }> = [];
   for (let cursor = startOfDayLocal(range.from); cursor.getTime() < range.to.getTime(); cursor = addDays(cursor, 1)) {
@@ -548,11 +566,28 @@ async function buildStudentPerformanceMap(params: {
 
   let exerciseCounts: Array<{ customerId: string; _count: { id: number } }> = [];
   try {
-    exerciseCounts = await prisma.studentExerciseLog.groupBy({
-      by: ['customerId'],
+    const exerciseLogs = (await prisma.studentExerciseLog.findMany({
       where: exerciseBaseWhere as any,
-      _count: { id: true },
-    } as any);
+      select: {
+        customerId: true,
+        completedAt: true,
+        exerciseDefinition: { select: { startDate: true } },
+      },
+    } as any)) as unknown as Array<{
+      customerId: string;
+      completedAt: Date;
+      exerciseDefinition: { startDate: Date | null } | null;
+    }>;
+    const countByCustomer = new Map<string, number>();
+    for (const log of exerciseLogs) {
+      const startDate = log.exerciseDefinition?.startDate;
+      if (startDate && startOfDayLocal(log.completedAt) < startOfDayLocal(startDate)) continue;
+      countByCustomer.set(log.customerId, (countByCustomer.get(log.customerId) ?? 0) + 1);
+    }
+    exerciseCounts = Array.from(countByCustomer.entries()).map(([customerId, count]) => ({
+      customerId,
+      _count: { id: count },
+    }));
   } catch (error) {
     if (!isMissingCourseRunsTableError(error)) {
       throw error;
@@ -835,6 +870,7 @@ async function getAmaliyReportMatrixData(params: {
             name: true,
             type: true,
             orderIndex: true,
+            startDate: true,
           },
           orderBy: [{ orderIndex: 'asc' }, { createdAt: 'asc' }],
         });
@@ -903,6 +939,7 @@ async function getAmaliyReportMatrixData(params: {
       const dayHasLogsByCell = new Map<string, Map<string, boolean>>();
       const dayColorByCell = new Map<string, Map<string, string | null>>();
       const practiceTypeById = new Map(practices.map((practice) => [practice.id, practice.type]));
+      const practiceStartById = new Map(practices.map((practice) => [practice.id, practice.startDate]));
 
       for (let idx = 0; idx < logs.length; idx += 1) {
         const log = logs[idx];
@@ -910,7 +947,14 @@ async function getAmaliyReportMatrixData(params: {
         if (!practiceType) continue;
 
         const completedDay = startOfDayLocal(log.completedAt);
-        if (!isAmaliyPracticeEligibleOnDate(practiceType, completedDay)) {
+        if (
+          !isAmaliyPracticeActiveAndEligibleOnDate(
+            practiceType,
+            completedDay,
+            anchorRunStart,
+            practiceStartById.get(log.exerciseDefinitionId),
+          )
+        ) {
           continue;
         }
 
@@ -1007,10 +1051,16 @@ async function getAmaliyReportMatrixData(params: {
           week5: false,
           week6: false,
         };
+        const practiceStart = practice.startDate;
         for (const weekKey of AMALIY_WEEK_KEYS) {
           const weekDays = enumerateDateRange(weekRanges[weekKey]);
           weekApplicability[weekKey] = weekDays.some((day) =>
-            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+            isAmaliyPracticeActiveAndEligibleOnDate(
+              practice.type,
+              new Date(`${day.date}T00:00:00`),
+              anchorRunStart,
+              practiceStart,
+            ),
           );
         }
         weekApplicabilityByPracticeId.set(practice.id, weekApplicability);
@@ -1018,8 +1068,13 @@ async function getAmaliyReportMatrixData(params: {
         const dayApplicability = new Map<string, boolean>();
         for (const day of activeWeekDays) {
           dayApplicability.set(
-            day.date,
-            isAmaliyPracticeEligibleOnDate(practice.type, new Date(`${day.date}T00:00:00`)),
+          day.date,
+            isAmaliyPracticeActiveAndEligibleOnDate(
+              practice.type,
+              new Date(`${day.date}T00:00:00`),
+              anchorRunStart,
+              practiceStart,
+            ),
           );
         }
         dayApplicabilityByPracticeId.set(practice.id, dayApplicability);
@@ -1651,7 +1706,7 @@ export const dashboardRouter = router({
         id: string;
         completedAt: Date;
         note: string | null;
-        exerciseDefinition: { id: string; name: string; type: string };
+        exerciseDefinition: { id: string; name: string; type: string; startDate?: Date | null };
       }> = [];
       try {
         recentExercises = await prisma.studentExerciseLog.findMany({
@@ -1660,7 +1715,7 @@ export const dashboardRouter = router({
             id: true,
             completedAt: true,
             note: true,
-            exerciseDefinition: { select: { id: true, name: true, type: true } },
+            exerciseDefinition: { select: { id: true, name: true, type: true, startDate: true } },
           },
           orderBy: { completedAt: 'desc' },
           take: 50,
@@ -1684,7 +1739,14 @@ export const dashboardRouter = router({
                 id: true,
                 completedAt: true,
                 note: true,
-                exerciseDefinition: { select: { id: true, name: true, type: true } },
+                exerciseDefinition: {
+                  select: {
+                    id: true,
+                    name: true,
+                    type: true,
+                    ...(withVisibilityColumns ? { startDate: true } : {}),
+                  },
+                },
               },
               orderBy: { completedAt: 'desc' },
               take: 50,
@@ -1707,17 +1769,26 @@ export const dashboardRouter = router({
         }
       }
 
-        const [homeworkDefinitions, completedHomeworkCount] = await Promise.all([
+      recentExercises = recentExercises.filter((row) => {
+        const startDate = row.exerciseDefinition.startDate;
+        return !startDate || startOfDayLocal(row.completedAt) >= startOfDayLocal(startDate);
+      });
+
+      const [homeworkDefinitions, completedHomeworkLogs] = await Promise.all([
         withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
           prisma.exerciseDefinition.findMany({
             where: {
               ...(homeworkDefinitionsWhere as any),
               ...visibleExerciseDefinitionWhere(withVisibilityColumns),
             },
-            select: { targetCount: true },
+            select: {
+              id: true,
+              targetCount: true,
+              ...(withVisibilityColumns ? { startDate: true } : {}),
+            },
           }),
         ),
-        prisma.studentExerciseLog.count({
+        prisma.studentExerciseLog.findMany({
           where: {
             tenantId,
             customerId: input.customerId,
@@ -1727,9 +1798,23 @@ export const dashboardRouter = router({
               ...(effectiveExerciseCourseId ? { courseId: effectiveExerciseCourseId } : {}),
             },
           } as any,
+          select: {
+            exerciseDefinitionId: true,
+            completedAt: true,
+          },
         }),
       ]);
       const homeworkTotalCount = homeworkDefinitions.reduce((sum, row) => sum + row.targetCount, 0);
+      const homeworkStartById = new Map(
+        homeworkDefinitions.map((definition) => [
+          definition.id,
+          (definition as { startDate?: Date | null }).startDate ?? null,
+        ]),
+      );
+      const completedHomeworkCount = completedHomeworkLogs.filter((log) => {
+        const startDate = homeworkStartById.get(log.exerciseDefinitionId);
+        return !startDate || startOfDayLocal(log.completedAt) >= startOfDayLocal(startDate);
+      }).length;
       const homeworkPendingCount = Math.max(0, homeworkTotalCount - completedHomeworkCount);
 
       return {
