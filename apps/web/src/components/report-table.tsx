@@ -68,12 +68,12 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
     };
   }, [layout.hasSubColumns, report.practices.length]);
 
-  const stickyHeader = 'sticky z-20 bg-gray-50';
+  const stickyHeader = 'sticky z-20 bg-[#fff8ef]';
   return (
     <div className="overflow-x-auto xl:overflow-visible rounded-[inherit]">
       <table data-testid="report-table" className={`w-full text-xs md:text-sm border-collapse ${layout.tableMinWidth}`}>
         <thead>
-          <tr ref={headerRowRef} data-testid="report-header" className="bg-gray-50 border-b border-gray-200">
+          <tr ref={headerRowRef} data-testid="report-header" className="bg-[#fff8ef] border-b border-[var(--kd-border)]">
             <th data-testid="report-sticky-header-cell" rowSpan={layout.hasSubColumns ? 2 : 1} style={{ top: 0 }} className={`${stickyHeader} left-0 z-30 text-center px-1 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[32px] md:min-w-[40px] w-[32px] md:w-[40px]`}>№</th>
             <th rowSpan={layout.hasSubColumns ? 2 : 1} style={{ top: 0 }} className={`${stickyHeader} left-[32px] md:left-[40px] z-30 text-left px-2 md:px-3 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[140px] md:min-w-[180px]`}>O&apos;quvchi</th>
             <th rowSpan={layout.hasSubColumns ? 2 : 1} style={{ top: 0 }} className={`${stickyHeader} text-left px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 border-r border-gray-200 min-w-[58px] w-[58px] md:min-w-[92px] md:w-[92px]`}>Tarif</th>
@@ -91,7 +91,7 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
             <th rowSpan={layout.hasSubColumns ? 2 : 1} style={{ top: 0 }} className={`${stickyHeader} right-0 z-30 text-center px-1.5 md:px-2 py-2 md:py-2.5 font-semibold text-gray-700 min-w-[58px] w-[58px] md:min-w-[82px] md:w-[82px]`}>Jami ball</th>
           </tr>
           {layout.hasSubColumns && (
-            <tr className="bg-gray-50 border-b border-gray-200">
+            <tr className="bg-[#fff8ef] border-b border-[var(--kd-border)]">
               {report.practices.flatMap((practice, practiceIndex) =>
                 layout.subColumns.map((column, columnIndex) => {
                   const divider = columnIndex === layout.subColumns.length - 1 && practiceIndex < report.practices.length - 1;
@@ -99,7 +99,7 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
                     <th
                       key={`${practice.id}-${column.key}`}
                       style={{ top: subHeaderTop }}
-                      className={`sticky z-20 bg-gray-50 text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold min-w-[36px] md:min-w-[48px] ${divider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'} ${datePreset === column.key ? 'bg-indigo-50 text-indigo-700' : 'text-gray-600'}`}
+                      className={`sticky z-20 bg-[#fff8ef] text-center px-0.5 md:px-1 py-1 md:py-1.5 text-[10px] md:text-[11px] font-semibold min-w-[36px] md:min-w-[48px] ${divider ? 'border-r-2 border-r-gray-300' : 'border-r border-gray-200'} ${datePreset === column.key ? 'bg-[var(--kd-accent-soft)] text-[var(--kd-accent)]' : 'text-gray-600'}`}
                     >
                       {column.label}
                     </th>
