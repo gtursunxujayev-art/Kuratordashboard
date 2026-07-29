@@ -107,8 +107,21 @@ export default function DavomatPage() {
     },
   });
 
-  const students = attendanceQuery.data?.students ?? [];
+  const students = useMemo(() => attendanceQuery.data?.students ?? [], [attendanceQuery.data?.students]);
   const isLessonDay = attendanceQuery.data?.isLessonDay ?? false;
+  const attendanceSummary = useMemo(() => {
+    const statuses = students.map((student) => (
+      dateMode === 'all'
+        ? student.baseSlots[0]?.status ?? 'tanlanmagan'
+        : student.dayStatuses.base
+    ));
+    const total = statuses.length;
+    const present = statuses.filter((status) => status === 'keldi').length;
+    const absent = statuses.filter((status) => status === 'kelmadi').length;
+    const unselected = statuses.filter((status) => status === 'tanlanmagan').length;
+    const percent = total ? Math.round((present / total) * 100) : 0;
+    return { total, present, absent, unselected, percent };
+  }, [dateMode, students]);
 
   const saveDayStudent = async (student: (typeof students)[number]) => {
     if (!selectedCourseRunId || !attendanceQuery.data) return;
@@ -180,10 +193,13 @@ export default function DavomatPage() {
   }
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      <h1 className="text-xl font-bold kd-title">Davomat</h1>
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>Davomat</h1>
+        <p>Darsga qatnashish va guruh holatini nazorat qilish.</p>
+      </section>
 
-      <div className="kd-card p-4 space-y-3">
+      <div className="nn-filter-card space-y-3">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs kd-subtle mb-1">Kurs</label>
@@ -243,6 +259,25 @@ export default function DavomatPage() {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div className="nn-kpi-grid">
+        <div className="nn-kpi-card">
+          <span className="nn-kpi-icon" style={{ background: 'var(--kd-accent)' }}>{attendanceSummary.total}</span>
+          <span><p className="text-xs kd-subtle">Jami o&apos;quvchi</p><p className="text-2xl font-bold kd-title">{attendanceSummary.total}</p></span>
+        </div>
+        <div className="nn-kpi-card">
+          <span className="nn-kpi-icon" style={{ background: 'var(--nn-cyan)' }}>{attendanceSummary.present}</span>
+          <span><p className="text-xs kd-subtle">Kelgan</p><p className="text-2xl font-bold kd-title">{attendanceSummary.present}</p></span>
+        </div>
+        <div className="nn-kpi-card">
+          <span className="nn-kpi-icon" style={{ background: 'var(--kd-accent)' }}>{attendanceSummary.absent}</span>
+          <span><p className="text-xs kd-subtle">Kelmagan</p><p className="text-2xl font-bold kd-title">{attendanceSummary.absent}</p></span>
+        </div>
+        <div className="nn-kpi-card">
+          <span className="nn-kpi-icon" style={{ background: 'var(--nn-coral)' }}>{attendanceSummary.percent}%</span>
+          <span><p className="text-xs kd-subtle">Davomat</p><p className="text-2xl font-bold kd-title">{attendanceSummary.percent}%</p><p className="text-xs kd-subtle">Tanlanmagan: {attendanceSummary.unselected}</p></span>
         </div>
       </div>
 
