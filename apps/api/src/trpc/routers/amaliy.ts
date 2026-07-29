@@ -174,6 +174,13 @@ function buildExerciseSlotDates(params: {
   };
 }
 
+function resolveExerciseScheduleStartDate(runStartDate: Date, exerciseStartDate?: Date | null): Date {
+  if (!exerciseStartDate) return runStartDate;
+  const runStart = startOfDayLocal(runStartDate);
+  const exerciseStart = startOfDayLocal(exerciseStartDate);
+  return exerciseStart > runStart ? exerciseStart : runStart;
+}
+
 type AttendanceStatus = 'tanlanmagan' | 'keldi' | 'kelmadi';
 
 function buildAttendanceSlotDates(params: {
@@ -374,6 +381,7 @@ export const amaliyRouter = router({
             courseId: true,
             type: true,
             targetCount: true,
+            ...(withVisibilityColumns ? { startDate: true } : {}),
           },
         }),
       );
@@ -461,6 +469,10 @@ export const amaliyRouter = router({
       const dayStart = startOfDayLocal(date);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
+      const exerciseStart = (exercise as { startDate?: Date | null }).startDate;
+      if (!input.includeCompleted && exerciseStart && dayStart < startOfDayLocal(exerciseStart)) {
+        return [];
+      }
 
       const completedRows = await prisma.studentExerciseLog.findMany({
         where: {
@@ -491,7 +503,10 @@ export const amaliyRouter = router({
       const search = input.search?.trim().toLowerCase();
       const slotInfo = input.includeCompleted && selectedRunDateRange
         ? buildExerciseSlotDates({
-            startDate: selectedRunDateRange.startDate,
+            startDate: resolveExerciseScheduleStartDate(
+              selectedRunDateRange.startDate,
+              (exercise as { startDate?: Date | null }).startDate,
+            ),
             endDate: selectedRunDateRange.endDate,
             type: exercise.type,
             targetCount: exercise.targetCount,
@@ -507,7 +522,9 @@ export const amaliyRouter = router({
       }>();
 
       if (input.includeCompleted && selectedRunDateRange && scopedCustomerIds.length > 0) {
-        const runStart = startOfDayLocal(selectedRunDateRange.startDate);
+        const runStart = startOfDayLocal(
+          resolveExerciseScheduleStartDate(selectedRunDateRange.startDate, exerciseStart),
+        );
         const runEndExclusive = addDaysLocal(startOfDayLocal(selectedRunDateRange.endDate), 1);
         const slotLogs = await prisma.studentExerciseLog.findMany({
           where: {
@@ -1052,6 +1069,7 @@ export const amaliyRouter = router({
           lessonDate: startOfDayLocal(parseDateInput(dateKey)),
           lessonType: 'base',
           attended: status === 'keldi',
+          status: status === 'keldi' ? 'keldi' : 'kelmadi',
           markedByUserId: user.userId,
         }));
 
@@ -1065,6 +1083,7 @@ export const amaliyRouter = router({
               lessonDate: startOfDayLocal(parseDateInput(dateKey)),
               lessonType: 'premium_extra',
               attended: status === 'keldi',
+              status: status === 'keldi' ? 'keldi' : 'kelmadi',
               markedByUserId: user.userId,
             }))
         : [];
@@ -1195,6 +1214,14 @@ export const amaliyRouter = router({
         prisma.exerciseDefinition.findMany({
           where: {
             ...whereDefinitions,
+            ...(withVisibilityColumns && input.mode === 'day'
+              ? {
+                  OR: [
+                    { startDate: null },
+                    { startDate: { lte: dayStart } },
+                  ],
+                }
+              : {}),
             ...visibleExerciseDefinitionWhere(withVisibilityColumns),
           },
           include: {
@@ -1219,6 +1246,12 @@ export const amaliyRouter = router({
       const definitionIds = definitions.map((d) => d.id);
       const runStart = startOfDayLocal(courseRun.startDate);
       const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
+      const effectiveStartByDefinition = new Map(
+        definitions.map((definition) => [
+          definition.id,
+          resolveExerciseScheduleStartDate(courseRun.startDate, definition.startDate),
+        ]),
+      );
       const [todayLogs, totalLogs, attendanceTotals, attendanceAttended, runLogs] = await Promise.all([
         definitionIds.length > 0
           ? prisma.studentExerciseLog.findMany({
@@ -1232,15 +1265,14 @@ export const amaliyRouter = router({
             })
           : Promise.resolve([]),
         definitionIds.length > 0
-          ? prisma.studentExerciseLog.groupBy({
-              by: ['exerciseDefinitionId'],
+          ? prisma.studentExerciseLog.findMany({
               where: {
                 tenantId,
                 customerId: input.customerId,
                 exerciseDefinitionId: { in: definitionIds },
                 completedAt: { gte: runStart, lt: runEndExclusive },
               },
-              _count: { id: true },
+              select: { exerciseDefinitionId: true, completedAt: true },
             })
           : Promise.resolve([]),
         prisma.classAttendance.groupBy({
@@ -1288,9 +1320,12 @@ export const amaliyRouter = router({
         doneTodayByDef.set(row.exerciseDefinitionId, (doneTodayByDef.get(row.exerciseDefinitionId) ?? 0) + 1);
       }
 
-      const doneTotalByDef = new Map<string, number>(
-        totalLogs.map((row) => [row.exerciseDefinitionId, row._count.id]),
-      );
+      const doneTotalByDef = new Map<string, number>();
+      for (const row of totalLogs) {
+        const effectiveStart = effectiveStartByDefinition.get(row.exerciseDefinitionId) ?? courseRun.startDate;
+        if (startOfDayLocal(row.completedAt) < startOfDayLocal(effectiveStart)) continue;
+        doneTotalByDef.set(row.exerciseDefinitionId, (doneTotalByDef.get(row.exerciseDefinitionId) ?? 0) + 1);
+      }
 
       const attendanceTotalByType = new Map<string, number>(
         attendanceTotals.map((row) => [row.lessonType, row._count.id]),
@@ -1326,7 +1361,7 @@ export const amaliyRouter = router({
           ...(input.mode === 'all'
             ? (() => {
                 const slotInfo = buildExerciseSlotDates({
-                  startDate: courseRun.startDate,
+                  startDate: resolveExerciseScheduleStartDate(courseRun.startDate, def.startDate),
                   endDate: courseRun.endDate,
                   type: def.type,
                   targetCount: def.targetCount,
@@ -1406,7 +1441,13 @@ export const amaliyRouter = router({
             isActive: true,
             ...visibleExerciseDefinitionWhere(withVisibilityColumns),
           },
-          select: { id: true, courseId: true, type: true, targetCount: true },
+          select: {
+            id: true,
+            courseId: true,
+            type: true,
+            targetCount: true,
+            ...(withVisibilityColumns ? { startDate: true } : {}),
+          },
         }),
       );
       if (!definition) {
@@ -1474,10 +1515,15 @@ export const amaliyRouter = router({
       const dayStart = startOfDayLocal(completedAt);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
-      const runStart = startOfDayLocal(courseRun.startDate);
+      const runStart = startOfDayLocal(
+        resolveExerciseScheduleStartDate(
+          courseRun.startDate,
+          (definition as { startDate?: Date | null }).startDate,
+        ),
+      );
       const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
       if (dayStart < runStart || dayStart >= runEndExclusive) {
-        throw new TRPCError({ code: 'BAD_REQUEST', message: "Sana oqim davriga kirmaydi" });
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "Sana mashq davriga kirmaydi" });
       }
       if (!isEligibleExerciseDate(definition.type, dayStart)) {
         throw new TRPCError({
@@ -1619,7 +1665,13 @@ export const amaliyRouter = router({
               isActive: true,
               ...visibleExerciseDefinitionWhere(withVisibilityColumns),
             },
-            select: { id: true, courseId: true, type: true, targetCount: true },
+            select: {
+              id: true,
+              courseId: true,
+              type: true,
+              targetCount: true,
+              ...(withVisibilityColumns ? { startDate: true } : {}),
+            },
           }),
         ),
         withCourseRunVisibilityFallback((withHiddenColumn) =>
@@ -1654,7 +1706,10 @@ export const amaliyRouter = router({
       }
 
       const slotInfo = buildExerciseSlotDates({
-        startDate: courseRun.startDate,
+        startDate: resolveExerciseScheduleStartDate(
+          courseRun.startDate,
+          (definition as { startDate?: Date | null }).startDate,
+        ),
         endDate: courseRun.endDate,
         type: definition.type,
         targetCount: definition.targetCount,
@@ -1713,7 +1768,12 @@ export const amaliyRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Ushbu mashq uchun ba\'zi ranglar sozlanmagan' });
       }
 
-      const runStart = startOfDayLocal(courseRun.startDate);
+      const runStart = startOfDayLocal(
+        resolveExerciseScheduleStartDate(
+          courseRun.startDate,
+          (definition as { startDate?: Date | null }).startDate,
+        ),
+      );
       const runEndExclusive = addDaysLocal(startOfDayLocal(courseRun.endDate), 1);
       const createRows = selectedEntries.map((row) => {
         const dayStart = startOfDayLocal(parseDateInput(row.date));
@@ -1792,7 +1852,7 @@ export const amaliyRouter = router({
           exerciseDefinitionId: true,
           loggedByUserId: true,
           completedAt: true,
-          exerciseDefinition: { select: { courseId: true } },
+          exerciseDefinition: { select: { courseId: true, startDate: true } },
         },
       });
       if (!log) {
@@ -1810,7 +1870,7 @@ export const amaliyRouter = router({
       const logDate = startOfDayLocal(log.completedAt);
       if (
         !courseRun ||
-        logDate < startOfDayLocal(courseRun.startDate) ||
+        logDate < startOfDayLocal(resolveExerciseScheduleStartDate(courseRun.startDate, log.exerciseDefinition.startDate)) ||
         logDate >= addDaysLocal(startOfDayLocal(courseRun.endDate), 1)
       ) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Yozuv tanlangan oqimga tegishli emas' });
@@ -2043,10 +2103,12 @@ export const amaliyRouter = router({
           lessonDate,
           lessonType: input.lessonType,
           attended: input.attended,
+          status: input.attended ? 'keldi' : 'kelmadi',
           markedByUserId: user.userId,
         },
         update: {
           attended: input.attended,
+          status: input.attended ? 'keldi' : 'kelmadi',
           lessonType: input.lessonType,
           markedByUserId: user.userId,
           updatedAt: new Date(),
