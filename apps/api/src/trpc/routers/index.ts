@@ -6,6 +6,7 @@ import { amaliyRouter } from './amaliy';
 import { settingsRouter } from './settings';
 import { kuratorsRouter } from './kurators';
 import { faceidRouter } from './faceid';
+import { intensivRouter } from './intensiv';
 
 export const appRouter = router({
   auth: authRouter,
@@ -15,6 +16,7 @@ export const appRouter = router({
   settings: settingsRouter,
   kurators: kuratorsRouter,
   faceid: faceidRouter,
+  intensiv: intensivRouter,
 });
 
 export type AppRouter = typeof appRouter;
