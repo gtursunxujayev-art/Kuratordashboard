@@ -55,41 +55,50 @@ export default function SettingsPage() {
       ];
 
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-bold text-gray-900 mb-6">Sozlamalar</h1>
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>Sozlamalar</h1>
+        <p>Kurslar, oqimlar, mashqlar va foydalanuvchilarni boshqarish.</p>
+      </section>
 
-      <div className="flex gap-1 mb-6 kd-topbar rounded-lg p-1 w-fit flex-wrap">
-        {visibleTabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
-              activeTab === tab.key
-                ? 'bg-white text-gray-900 shadow-sm'
-                : 'text-white/90 hover:text-white'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="grid gap-4 lg:grid-cols-[240px,1fr]">
+        <aside className="kd-card p-3 h-fit lg:sticky lg:top-24">
+          <div className="space-y-1">
+            {visibleTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setActiveTab(tab.key)}
+                className={`w-full text-left px-4 py-3 text-sm font-semibold rounded-xl transition-colors ${
+                  activeTab === tab.key
+                    ? 'bg-[var(--kd-accent-soft)] text-[var(--kd-accent)] border border-[var(--kd-accent)]'
+                    : 'text-[var(--kd-muted)] hover:bg-[var(--kd-surface-soft)] border border-transparent'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        <section className="min-w-0">
+          {activeTab === 'templates' && <ScheduleTemplatesTab />}
+          {activeTab === 'courseRuns' && (
+            <CourseRunsTab
+              selectedRunId={selectedCourseRunIdInTab}
+              onSelectRun={setSelectedCourseRunIdInTab}
+              isAdmin={isAdmin}
+            />
+          )}
+          {activeTab === 'exercises' && (
+            <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} isAdmin={isAdmin} />
+          )}
+          {activeTab === 'regions' && <RegionsTab />}
+          {activeTab === 'courseVisibility' && <CourseVisibilityTab />}
+          {activeTab === 'users' && <UsersTab />}
+          {activeTab === 'assignments' && <AssignmentsTab />}
+          {activeTab === 'telegramReports' && <TelegramReportsTab />}
+        </section>
       </div>
-
-      {activeTab === 'templates' && <ScheduleTemplatesTab />}
-      {activeTab === 'courseRuns' && (
-        <CourseRunsTab
-          selectedRunId={selectedCourseRunIdInTab}
-          onSelectRun={setSelectedCourseRunIdInTab}
-          isAdmin={isAdmin}
-        />
-      )}
-      {activeTab === 'exercises' && (
-        <ExercisesTab courseId={selectedExerciseCourseId} onSelectCourse={setSelectedExerciseCourseId} isAdmin={isAdmin} />
-      )}
-      {activeTab === 'regions' && <RegionsTab />}
-      {activeTab === 'courseVisibility' && <CourseVisibilityTab />}
-      {activeTab === 'users' && <UsersTab />}
-      {activeTab === 'assignments' && <AssignmentsTab />}
-      {activeTab === 'telegramReports' && <TelegramReportsTab />}
     </div>
   );
 }
@@ -1117,6 +1126,7 @@ function CourseRunsTab({
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {run.name}
                     {run.isHidden && <span className="ml-2 text-xs text-gray-500">(yashirilgan)</span>}
+                    {run.isSystemManaged && <span className="ml-2 text-xs text-cyan-700">(avtomatik intensiv)</span>}
                   </td>
                   <td className="px-4 py-3 text-gray-600">{run.course.name}</td>
                   <td className="px-4 py-3 text-gray-600">{new Date(run.startDate).toLocaleDateString('uz-UZ')}</td>
@@ -1136,7 +1146,7 @@ function CourseRunsTab({
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-3">
-                      <button
+                      {!run.isSystemManaged && <button
                         type="button"
                         onClick={() =>
                           openEdit({
@@ -1154,8 +1164,8 @@ function CourseRunsTab({
                         className="text-blue-600 text-xs hover:underline"
                       >
                         {editingRunId === run.id ? 'Tahrirlanmoqda' : 'Tahrirlash'}
-                      </button>
-                      {isAdmin && (
+                      </button>}
+                      {isAdmin && !run.isSystemManaged && (
                         <button
                           type="button"
                           onClick={() =>
@@ -1168,7 +1178,7 @@ function CourseRunsTab({
                           {run.isHidden ? "Ko'rsatish" : 'Yashirish'}
                         </button>
                       )}
-                      <button
+                      {!run.isSystemManaged && <button
                         type="button"
                         onClick={() => void handleDeleteCourseRun(run.id, run.name)}
                         disabled={deleteCourseRunMutation.isLoading && deletingRunId === run.id}
@@ -1177,7 +1187,7 @@ function CourseRunsTab({
                         {deleteCourseRunMutation.isLoading && deletingRunId === run.id
                           ? "O'chirilmoqda..."
                           : "O'chirish"}
-                      </button>
+                      </button>}
                     </div>
                   </td>
                 </tr>
@@ -1239,6 +1249,7 @@ function ExercisesTab({
   const [colorError, setColorError] = useState('');
   const [colorSuccess, setColorSuccess] = useState('');
   const [editingColorId, setEditingColorId] = useState<string | null>(null);
+  const [deletingExerciseId, setDeletingExerciseId] = useState<string | null>(null);
   const [colorForm, setColorForm] = useState({
     label: '',
     colorHex: '#22C55E',
@@ -1331,6 +1342,23 @@ function ExercisesTab({
     onError: (err) => setError(err.message),
   });
 
+  const deleteExerciseMutation = trpc.settings.deleteExerciseDefinition.useMutation({
+    onSuccess: async (_result, variables) => {
+      await utils.settings.listExerciseDefinitions.invalidate();
+      if (editingExerciseId === variables.id) {
+        setShowForm(false);
+        setEditingExerciseId(null);
+        setForm({ name: '', type: 'class', targetCount: 1, startDate: '', orderIndex: 0 });
+      }
+      setError('');
+      setDeletingExerciseId(null);
+    },
+    onError: (err) => {
+      setError(err.message);
+      setDeletingExerciseId(null);
+    },
+  });
+
   const openCreateForm = () => {
     const nextPoints: Record<string, number> = {};
     for (const option of activeColorOptions) {
@@ -1410,6 +1438,17 @@ function ExercisesTab({
       orderIndex: form.orderIndex,
       colorPoints: colorPointsPayload,
     });
+  };
+
+  const handleDeleteExercise = (exercise: { id: string; name: string }) => {
+    const confirmed = window.confirm(
+      `"${exercise.name}" mashqini o'chirmoqchimisiz?\n\nBu mashqqa yozilgan saqlangan natijalar ham o'chadi.`,
+    );
+    if (!confirmed) return;
+
+    setError('');
+    setDeletingExerciseId(exercise.id);
+    deleteExerciseMutation.mutate({ id: exercise.id });
   };
 
   return (
@@ -1782,6 +1821,16 @@ function ExercisesTab({
                                 {exercise.isHidden ? "Ko'rsatish" : 'Yashirish'}
                               </button>
                             )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteExercise({ id: exercise.id, name: exercise.name })}
+                              disabled={deleteExerciseMutation.isLoading && deletingExerciseId === exercise.id}
+                              className="text-red-600 text-xs hover:underline disabled:opacity-50"
+                            >
+                              {deleteExerciseMutation.isLoading && deletingExerciseId === exercise.id
+                                ? "O'chirilmoqda..."
+                                : "O'chirish"}
+                            </button>
                           </div>
                         </td>
                       </tr>
