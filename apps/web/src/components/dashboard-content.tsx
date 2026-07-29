@@ -138,13 +138,35 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
     return Math.max(1, Math.ceil(students.pagination.total / students.pagination.limit));
   }, [students]);
 
-  return (
-    <div className="p-4 md:p-6 space-y-5">
-      <div className="kd-card kd-topbar p-4">
-        <h1 className="text-2xl font-semibold kd-title">Bosh sahifa</h1>
-        <p className="text-sm kd-subtle mt-1">Kurs bo'yicha umumiy ko'rsatkichlar va samaradorlik</p>
+  const loadedStudentSummary = useMemo(() => {
+    const rows = students?.data ?? [];
+    const total = rows.length;
+    const averagePerformance = total
+      ? Math.round(rows.reduce((sum, student) => sum + student.performancePercent, 0) / total)
+      : 0;
+    const needsAttention = rows.filter((student) => student.performancePercent < 60).length;
+    const completedTasks = rows.reduce((sum, student) => sum + student.completedTasks, 0);
+    const pendingTasks = rows.reduce((sum, student) => sum + student.pendingTasks, 0);
+    const completionPercent = completedTasks + pendingTasks
+      ? Math.round((completedTasks / (completedTasks + pendingTasks)) * 100)
+      : 0;
+    return { total, averagePerformance, needsAttention, completionPercent };
+  }, [students]);
 
-        <div className="mt-4 flex flex-wrap gap-2">
+  const averageKuratorPerformance = useMemo(() => {
+    if (!kuratorList?.length) return 0;
+    return Math.round(kuratorList.reduce((sum, kurator) => sum + kurator.performancePercent, 0) / kuratorList.length);
+  }, [kuratorList]);
+
+  return (
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>O&apos;quvchi samaradorligi</h1>
+        <p>Uy vazifalar, mashqlar va kurator kuzatuvini bitta joyda ko&apos;ring.</p>
+      </section>
+
+      <div className="nn-filter-card">
+        <div className="flex flex-wrap gap-2">
           <select
             value={selectedCourseId}
             onChange={(e) => {
@@ -161,20 +183,22 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
             ))}
           </select>
 
-          {(Object.keys(DATE_FILTER_LABELS) as DateFilter[]).map((filter) => (
-            <button
-              key={filter}
-              onClick={() => {
-                setDateFilter(filter);
-                setStudentPage(1);
-              }}
-              className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                dateFilter === filter ? 'kd-chip-active' : 'kd-chip'
-              }`}
-            >
-              {DATE_FILTER_LABELS[filter]}
-            </button>
-          ))}
+          <div className="nn-segment">
+            {(Object.keys(DATE_FILTER_LABELS) as DateFilter[]).map((filter) => (
+              <button
+                key={filter}
+                onClick={() => {
+                  setDateFilter(filter);
+                  setStudentPage(1);
+                }}
+                className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                  dateFilter === filter ? 'kd-chip-active' : 'kd-chip'
+                }`}
+              >
+                {DATE_FILTER_LABELS[filter]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -188,15 +212,16 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
         <div className="kd-card p-5 kd-subtle text-sm">Yuklanmoqda...</div>
       ) : stats ? (
         <>
-          <div className="grid gap-3 grid-cols-2 md:grid-cols-4">
-            <CompactStatCard title="Umumiy o'quvchilar" value={String(stats.total)} subtitle={`Erkak: ${stats.male} | Ayol: ${stats.female}`} />
-            <CompactStatCard title="Tarif turlari" value={String(stats.tariffs.length)} subtitle="Faol tarif segmentlari" />
+          <div className="nn-kpi-grid">
+            <CompactStatCard tone="burgundy" title="Umumiy o'quvchilar" value={String(stats.total)} subtitle={`Erkak: ${stats.male} | Ayol: ${stats.female}`} />
+            <CompactStatCard tone="cyan" title="O'rtacha samaradorlik" value={`${averageKuratorPerformance || loadedStudentSummary.averagePerformance}%`} subtitle="Yuklangan ma'lumot asosida" />
+            <CompactStatCard tone="coral" title="E'tibor kerak" value={String(loadedStudentSummary.needsAttention)} subtitle={loadedStudentSummary.total ? '60% dan past samaradorlik' : "O'quvchi tanlanmagan"} />
             <CompactStatCard
+              tone="burgundy"
               title="Tanlangan kurs"
               value={selectedCourseId ? '1' : 'Barcha'}
               subtitle={selectedCourseId ? 'Bitta kurs filtri faol' : 'Kurs filtri yoqilmagan'}
             />
-            <CompactStatCard title="Davr" value={DATE_FILTER_LABELS[dateFilter]} subtitle="Sana filtri" />
           </div>
 
           {stats.tariffs.length > 0 && (
@@ -218,8 +243,13 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
       ) : null}
 
       <section className="space-y-2">
-        <h2 className="text-base font-semibold kd-title">Kuratorlar samaradorligi</h2>
-        <p className="text-xs kd-subtle">Har bir karta bosilsa, kurator bo'yicha to'liq sahifa ochiladi.</p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold kd-title">Kuratorlar kesimi</h2>
+            <p className="text-xs kd-subtle">Har bir karta bosilsa, kurator bo&apos;yicha to&apos;liq sahifa ochiladi.</p>
+          </div>
+          <span className="nn-status-pill nn-status-success">Davr: {DATE_FILTER_LABELS[dateFilter]}</span>
+        </div>
 
         {kuratorsLoading ? (
           <div className="kd-card p-5 kd-subtle text-sm">Yuklanmoqda...</div>
@@ -233,9 +263,15 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
                 }`}
                 className="kd-card kd-card-clickable p-3 block"
               >
-                <p className="text-sm font-semibold kd-title truncate">{kurator.name}</p>
-                <p className="text-2xl font-bold kd-title mt-2">{kurator.performancePercent}%</p>
-                <p className="text-xs kd-subtle mt-1">Samaradorlik</p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-semibold kd-title truncate">{kurator.name}</p>
+                  <span className={`nn-status-pill ${kurator.performancePercent >= 75 ? 'nn-status-success' : kurator.performancePercent >= 50 ? 'nn-status-warning' : 'nn-status-danger'}`}>
+                    {kurator.performancePercent}%
+                  </span>
+                </div>
+                <div className="mt-3 h-2 rounded-full bg-[var(--kd-surface-soft)] overflow-hidden">
+                  <div className="h-full rounded-full bg-[var(--nn-cyan)]" style={{ width: `${Math.min(100, Math.max(0, kurator.performancePercent))}%` }} />
+                </div>
                 <div className="mt-3 text-xs kd-subtle space-y-0.5">
                   <p>O'quvchilar: {kurator.studentCount}</p>
                   <p>Bajarilgan: {kurator.completedTasks}</p>
@@ -251,8 +287,13 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
       </section>
 
       <section className="space-y-2">
-        <h2 className="text-base font-semibold kd-title">O'quvchilar samaradorligi</h2>
-        <p className="text-xs kd-subtle">Har bir ism bosilsa, o'quvchi bo'yicha to'liq sahifa ochiladi.</p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold kd-title">O&apos;quvchilar samaradorligi</h2>
+            <p className="text-xs kd-subtle">Har bir ism bosilsa, o&apos;quvchi bo&apos;yicha to&apos;liq sahifa ochiladi.</p>
+          </div>
+          <span className="nn-status-pill nn-status-muted">Vazifa bajarilishi: {loadedStudentSummary.completionPercent}%</span>
+        </div>
 
         {studentsLoading ? (
           <div className="kd-card p-5 kd-subtle text-sm">Yuklanmoqda...</div>
@@ -267,9 +308,15 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
                   }`}
                   className="kd-card kd-card-clickable p-3 block"
                 >
-                  <p className="text-sm font-semibold kd-title truncate">{student.name}</p>
-                  <p className="text-xs kd-subtle">Raqam: {student.number}</p>
-                  <p className="text-xl font-bold kd-title mt-2">{student.performancePercent}%</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold kd-title truncate">{student.name}</p>
+                      <p className="text-xs kd-subtle">Raqam: {student.number}</p>
+                    </div>
+                    <span className={`nn-status-pill ${student.performancePercent >= 75 ? 'nn-status-success' : student.performancePercent >= 50 ? 'nn-status-warning' : 'nn-status-danger'}`}>
+                      {student.performancePercent}%
+                    </span>
+                  </div>
                   <div className="mt-2 text-xs kd-subtle space-y-0.5">
                     <p>Vazifa: {student.completedTasks}/{student.completedTasks + student.pendingTasks}</p>
                     <p>Davomat: {student.attendedLessons}/{student.totalLessons}</p>
@@ -309,12 +356,28 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
   );
 }
 
-function CompactStatCard({ title, value, subtitle }: { title: string; value: string; subtitle: string }) {
+function CompactStatCard({
+  title,
+  value,
+  subtitle,
+  tone = 'burgundy',
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  tone?: 'burgundy' | 'cyan' | 'coral';
+}) {
+  const iconBackground = tone === 'cyan' ? 'var(--nn-cyan)' : tone === 'coral' ? 'var(--nn-coral)' : 'var(--kd-accent)';
   return (
-    <div className="kd-card p-3">
-      <p className="text-xs kd-subtle">{title}</p>
-      <p className="text-2xl font-bold kd-title mt-1">{value}</p>
-      <p className="text-xs kd-subtle mt-1">{subtitle}</p>
+    <div className="nn-kpi-card">
+      <span className="nn-kpi-icon" style={{ background: iconBackground }}>
+        {value.slice(0, 1)}
+      </span>
+      <span>
+        <p className="text-xs kd-subtle">{title}</p>
+        <p className="text-2xl font-bold kd-title mt-1">{value}</p>
+        <p className="text-xs kd-subtle mt-1">{subtitle}</p>
+      </span>
     </div>
   );
 }
