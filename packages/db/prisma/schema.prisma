@@ -420,6 +420,7 @@ model Tariff {
   course     Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
   incomes    Income[]
   subTariffs SubTariff[]
+  courseRuns CourseRun[]
   incomeAdjustmentRequests IncomeAdjustmentRequest[] @relation("IncomeAdjustmentNewTariff")
 
   @@unique([tenantId, courseId, name])
@@ -574,6 +575,7 @@ model CourseRun {
   id          String   @id @default(uuid())
   tenantId    String
   courseId    String
+  tariffId    String?
   name        String   // display name e.g. "Aprel 2026 oqimi"
   startDate   DateTime // validated by app according to course category
   endDate     DateTime // computed in app by category-specific weekly rule
@@ -582,11 +584,13 @@ model CourseRun {
   premiumExtraLessons Int @default(2) // additional lessons for Premium/VIP students
   kuratorUserId String?
   isHidden    Boolean  @default(false)
+  isSystemManaged Boolean @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   course              Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tariff              Tariff?              @relation(fields: [tariffId], references: [id], onDelete: SetNull)
   kurator             User?                @relation("CourseRunKurator", fields: [kuratorUserId], references: [id], onDelete: SetNull)
   kuratorAssignments  KuratorAssignment[]
   attendances         ClassAttendance[]
@@ -594,6 +598,7 @@ model CourseRun {
 
   @@index([tenantId])
   @@index([courseId])
+  @@index([tariffId])
   @@index([startDate])
   @@index([tenantId, kuratorUserId])
   @@index([tenantId, courseId, isHidden, startDate, endDate])
@@ -723,6 +728,7 @@ model ClassAttendance {
   lessonDate     DateTime // the specific class date (Saturday or Sunday)
   lessonType     String   @default("base") // 'base' | 'premium_extra'
   attended       Boolean  @default(false)
+  status         String   @default("kelmadi") // 'keldi' | 'kelmadi' | 'yolda'
   source         String   @default("manual") // 'manual' | 'system' (e.g. Face ID auto check-in)
   markedByUserId String?
   createdAt      DateTime @default(now())
