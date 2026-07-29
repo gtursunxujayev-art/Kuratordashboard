@@ -83,11 +83,14 @@ export function BrandShell({
       <header className="nn-topnav">
         <div className="nn-topnav-inner">
           <Link href="/dashboard" className="nn-brand-lockup" aria-label="Najot Nur dashboard">
-            <Image src="/brand/najot-nur-mark.svg" width={46} height={46} alt="" priority />
-            <span className="leading-none">
-              <span className="block font-serif text-[1.35rem] tracking-[0.16em] text-[var(--kd-accent)]">NAJOT NUR</span>
-              <span className="block mt-1 text-[10px] tracking-[0.35em] text-[var(--kd-muted)]">ILM BILAN YUKSALISH</span>
-            </span>
+            <Image
+              src="/brand/najot-nur-official-lockup.png"
+              width={200}
+              height={62}
+              alt="Najot Nur — notiqlik mahorati markazi"
+              priority
+              className="h-12 w-auto object-contain"
+            />
           </Link>
 
           <nav className="nn-nav-scroll" aria-label="Asosiy navigatsiya">
