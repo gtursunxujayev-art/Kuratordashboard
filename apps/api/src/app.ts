@@ -12,6 +12,7 @@ import {
   validateCronSecret,
 } from './services/telegram-reports';
 import { handleFaceIdWebhook } from './services/attendance/faceid';
+import { finalizeExpiredIntensiveTransitAttendance } from './services/intensive-payments';
 
 dotenv.config();
 
@@ -53,12 +54,16 @@ function startTelegramInternalScheduler(): void {
     if (isTickRunning) return;
     isTickRunning = true;
     try {
-      const result = await processDueTelegramScheduledSlots(new Date());
+      const [result, intensiveAttendance] = await Promise.all([
+        processDueTelegramScheduledSlots(new Date()),
+        finalizeExpiredIntensiveTransitAttendance(new Date()),
+      ]);
       console.log(
         JSON.stringify({
           level: result.failed > 0 ? 'warn' : 'info',
           event: 'telegram_internal_scheduler_tick',
           ...result,
+          intensiveTransitFinalized: intensiveAttendance.finalized,
         }),
       );
     } catch (error) {
@@ -91,13 +96,15 @@ function triggerRequestDrivenSchedulerTick(reason: string): void {
   requestDrivenSchedulerLastRunAt = nowMs;
   requestDrivenSchedulerRunning = true;
   void processDueTelegramScheduledSlots(new Date())
-    .then((result) => {
+    .then(async (result) => {
+      const intensiveAttendance = await finalizeExpiredIntensiveTransitAttendance(new Date());
       console.log(
         JSON.stringify({
           level: result.failed > 0 ? 'warn' : 'info',
           event: 'telegram_internal_scheduler_request_tick',
           reason,
           ...result,
+          intensiveTransitFinalized: intensiveAttendance.finalized,
         }),
       );
     })
