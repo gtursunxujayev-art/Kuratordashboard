@@ -875,6 +875,8 @@ export const settingsRouter = router({
           baseLessons: true,
           premiumExtraLessons: true,
           kuratorUserId: true,
+          isSystemManaged: true,
+          tariff: { select: { id: true, name: true } },
           ...(withHiddenColumn ? { isHidden: true } : {}),
           createdAt: true,
           updatedAt: true,
@@ -1091,6 +1093,12 @@ export const settingsRouter = router({
       if (!existing) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
       }
+      if (existing.isSystemManaged) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Avtomatik Intensiv oqimi Kurs va Tarif sozlamalaridan boshqariladi',
+        });
+      }
 
       const nextStartDate = input.startDate
         ? parseLocalDateInput(input.startDate, "Boshlanish sanasi")
@@ -1224,7 +1232,7 @@ export const settingsRouter = router({
       const existing = await prisma.courseRun
         .findFirst({
           where: { id: input.courseRunId, tenantId: ctx.tenantId },
-          select: { id: true, name: true },
+          select: { id: true, name: true, isSystemManaged: true },
         })
         .catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -1235,6 +1243,9 @@ export const settingsRouter = router({
 
       if (!existing) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      }
+      if (existing.isSystemManaged) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Avtomatik Intensiv oqimini o\'chirib bo\'lmaydi' });
       }
 
       try {
@@ -1790,6 +1801,25 @@ export const settingsRouter = router({
         }
         throw error;
       });
+    }),
+
+  deleteExerciseDefinition: managerProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      const existing = await prisma.exerciseDefinition.findFirst({
+        where: { id: input.id, tenantId: ctx.tenantId },
+        select: { id: true, name: true },
+      });
+
+      if (!existing) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Mashq topilmadi' });
+      }
+
+      await prisma.exerciseDefinition.delete({
+        where: { id: existing.id },
+      });
+
+      return { success: true, id: existing.id };
     }),
 
   listKurators: protectedProcedure.query(async ({ ctx }) => {
