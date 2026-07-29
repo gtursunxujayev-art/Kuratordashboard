@@ -14,6 +14,7 @@ import {
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { isPremiumTariffName } from '../../utils/tariff';
+import { startOfDayLocal } from '../../utils/date-local';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -173,6 +174,13 @@ function normalizeInstagramUsername(value: string): string | null {
     .trim();
 
   return normalized.length > 0 ? normalized : null;
+}
+
+function resolveExerciseStatsStartDate(runStartDate: Date, exerciseStartDate?: Date | null): Date {
+  if (!exerciseStartDate) return runStartDate;
+  const runStart = startOfDayLocal(runStartDate);
+  const exerciseStart = startOfDayLocal(exerciseStartDate);
+  return exerciseStart > runStart ? exerciseStart : runStart;
 }
 
 export const studentsRouter = router({
@@ -386,7 +394,7 @@ export const studentsRouter = router({
       >();
 
       if (input.courseRunId && courseRun && courseRunCourseId && customerIds.length > 0) {
-        let exerciseDefs: Array<{ id: string; name: string; targetCount: number }> = [];
+        let exerciseDefs: Array<{ id: string; name: string; targetCount: number; startDate?: Date | null }> = [];
         try {
           exerciseDefs = await withExerciseDefinitionVisibilityFallback((withVisibilityColumns) =>
             prisma.exerciseDefinition.findMany({
@@ -396,7 +404,12 @@ export const studentsRouter = router({
                 isActive: true,
                 ...visibleExerciseDefinitionWhere(withVisibilityColumns),
               },
-              select: { id: true, name: true, targetCount: true },
+              select: {
+                id: true,
+                name: true,
+                targetCount: true,
+                ...(withVisibilityColumns ? { startDate: true } : {}),
+              },
               orderBy: { orderIndex: 'asc' },
             }),
           );
@@ -421,10 +434,9 @@ export const studentsRouter = router({
 
         const exerciseDefIds = exerciseDefs.map((def) => def.id);
 
-        const [exerciseCounts, attendanceTotals, attendanceAttended] = await Promise.all([
+        const [exerciseLogs, attendanceTotals, attendanceAttended] = await Promise.all([
           exerciseDefIds.length > 0
-            ? prisma.studentExerciseLog.groupBy({
-                by: ['customerId', 'exerciseDefinitionId'],
+            ? prisma.studentExerciseLog.findMany({
                 where: {
                   tenantId,
                   customerId: { in: customerIds },
@@ -438,7 +450,11 @@ export const studentsRouter = router({
                       }
                     : {}),
                 },
-                _count: { id: true },
+                select: {
+                  customerId: true,
+                  exerciseDefinitionId: true,
+                  completedAt: true,
+                },
               })
             : Promise.resolve([]),
           prisma.classAttendance.groupBy({
@@ -463,8 +479,19 @@ export const studentsRouter = router({
         ]);
 
         const doneByCustomerDef = new Map<string, number>();
-        for (const row of exerciseCounts) {
-          doneByCustomerDef.set(`${row.customerId}:${row.exerciseDefinitionId}`, row._count.id);
+        const exerciseStartById = new Map(
+          exerciseDefs.map((def) => [
+            def.id,
+            selectedRunRange
+              ? resolveExerciseStatsStartDate(selectedRunRange.startDate, def.startDate)
+              : (def.startDate ?? null),
+          ]),
+        );
+        for (const row of exerciseLogs) {
+          const effectiveStart = exerciseStartById.get(row.exerciseDefinitionId);
+          if (effectiveStart && startOfDayLocal(row.completedAt) < startOfDayLocal(effectiveStart)) continue;
+          const key = `${row.customerId}:${row.exerciseDefinitionId}`;
+          doneByCustomerDef.set(key, (doneByCustomerDef.get(key) ?? 0) + 1);
         }
 
         for (const customerId of customerIds) {
