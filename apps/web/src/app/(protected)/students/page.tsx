@@ -95,8 +95,11 @@ export default function StudentsPage() {
   const totalPages = data ? Math.ceil(data.pagination.total / data.pagination.limit) : 0;
 
   return (
-    <div className="p-4 md:p-6">
-      <h1 className="text-xl font-bold text-gray-900 mb-6">O'quvchilar</h1>
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>O&apos;quvchilar nazorati</h1>
+        <p>Kuratorga biriktirilgan o&apos;quvchilar, filtrlar va mashq/davomat holati.</p>
+      </section>
 
       {(filterOptionsError || courseRunsError || coursesError || error) && (
         <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -104,7 +107,7 @@ export default function StudentsPage() {
         </div>
       )}
 
-      <div className="flex flex-wrap gap-3 mb-4">
+      <div className="nn-filter-card flex flex-wrap gap-3">
         <select
           value={selectedCourseType}
           onChange={(e) => {
@@ -218,12 +221,12 @@ export default function StudentsPage() {
       </div>
 
       {data && (
-        <p className="text-sm text-gray-500 mb-3">
+        <p className="text-sm text-gray-500">
           Jami: <span className="font-medium text-gray-700">{data.pagination.total}</span> ta o'quvchi
         </p>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="nn-table-card">
         {isLoading ? (
           <div className="p-8 text-center text-gray-500 text-sm">Yuklanmoqda...</div>
         ) : !data || data.data.length === 0 ? (
