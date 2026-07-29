@@ -133,28 +133,26 @@ export default function IntensivPage() {
 
   return (
     <div className="nn-page space-y-5">
-      <section className="nn-hero">
-        <p className="nn-eyebrow">INTENSIV NAZORATI</p>
+      <section className="nn-hero intensiv-hero">
         <h1>Intensiv davomat va to'lovlar</h1>
-        <p>Ikki kunlik guruh holati va qolgan qarzlarni bir joyda boshqaring.</p>
       </section>
 
-      <section className="nn-filter-card">
+      <section className="nn-filter-card intensiv-filter-card">
         <div className="grid gap-3 md:grid-cols-3">
           <label className="text-sm font-medium kd-title">Kurs
-            <select value={courseId} onChange={(event) => { setCourseId(event.target.value); setTariffId(''); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1.5">
+            <select value={courseId} onChange={(event) => { setCourseId(event.target.value); setTariffId(''); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1">
               <option value="">Kursni tanlang</option>
               {coursesQuery.data?.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
             </select>
           </label>
           <label className="text-sm font-medium kd-title">Tarif
-            <select value={tariffId} disabled={!courseId} onChange={(event) => { setTariffId(event.target.value); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1.5 disabled:opacity-60">
+            <select value={tariffId} disabled={!courseId} onChange={(event) => { setTariffId(event.target.value); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1 disabled:opacity-60">
               <option value="">Tarifni tanlang</option>
               {tariffsQuery.data?.map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name}</option>)}
             </select>
           </label>
           <label className="text-sm font-medium kd-title">Sub tarif
-            <select value={subTariffId} disabled={!tariffId} onChange={(event) => { setSubTariffId(event.target.value); clearRowDrafts(); }} className="nn-form-control mt-1.5 disabled:opacity-60">
+            <select value={subTariffId} disabled={!tariffId} onChange={(event) => { setSubTariffId(event.target.value); clearRowDrafts(); }} className="nn-form-control mt-1 disabled:opacity-60">
               <option value="">Barcha sub tariflar</option>
               {subTariffsQuery.data?.map((subTariff) => <option key={subTariff.id} value={subTariff.id}>{subTariff.name}</option>)}
             </select>
