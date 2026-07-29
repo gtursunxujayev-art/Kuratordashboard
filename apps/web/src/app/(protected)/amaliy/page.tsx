@@ -612,10 +612,13 @@ export default function AmaliyPage() {
   const currentPractice = (practices ?? []).find((practice) => practice.id === selectedPracticeId);
 
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      <h1 className="text-xl font-bold kd-title">Amaliy</h1>
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>Amaliy mashqlar</h1>
+        <p>O&apos;quvchilar bo&apos;yicha uy vazifa va amaliy mashq nazorati.</p>
+      </section>
 
-      <div className="kd-card p-4 space-y-3">
+      <div className="nn-filter-card space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
