@@ -238,6 +238,10 @@ function activeCourseWindowForPeriod(period: PeriodRange): Record<string, unknow
   };
 }
 
+function isPracticeActiveForPeriod(startDate: Date | null | undefined, period: PeriodRange): boolean {
+  return !startDate || startOfTashkentDay(startDate).getTime() < period.to.getTime();
+}
+
 
 function ensureTelegramConfigured(): { token: string; webhookSecret: string; botUsername: string | null } {
   const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
@@ -408,16 +412,23 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
         } as any,
         _count: { id: true },
       } as any),
-      prisma.studentExerciseLog.groupBy({
-        by: ['customerId'],
+      (prisma.studentExerciseLog.findMany({
         where: {
           tenantId,
           customerId: { in: uniqueStudentIds },
           completedAt: { gte: period.from, lt: period.to },
           exerciseDefinition: { course: { category: { in: courseTypeAliases } } },
         } as any,
-        _count: { id: true },
-      } as any),
+        select: {
+          customerId: true,
+          completedAt: true,
+          exerciseDefinition: { select: { startDate: true } },
+        },
+      } as any) as unknown) as Promise<Array<{
+        customerId: string;
+        completedAt: Date;
+        exerciseDefinition: { startDate: Date | null } | null;
+      }>>,
     ]);
 
     const extractCount = (row: any): number =>
@@ -427,7 +438,12 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
     const pendingTaskMap = new Map(pendingTaskRows.map((row) => [row.customerId, extractCount(row)]));
     const attendanceTotalMap = new Map(attendanceTotals.map((row) => [row.customerId, extractCount(row)]));
     const attendanceAttendedMap = new Map(attendanceAttended.map((row) => [row.customerId, extractCount(row)]));
-    const exerciseMap = new Map(exerciseRows.map((row) => [row.customerId, extractCount(row)]));
+    const exerciseMap = new Map<string, number>();
+    for (const row of exerciseRows) {
+      const startDate = row.exerciseDefinition?.startDate;
+      if (startDate && startOfTashkentDay(row.completedAt) < startOfTashkentDay(startDate)) continue;
+      exerciseMap.set(row.customerId, (exerciseMap.get(row.customerId) ?? 0) + 1);
+    }
 
     return kurators
       .map((kurator): InternalKuratorSummaryRow => {
@@ -560,7 +576,12 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
             isActive: true,
             ...visibleExerciseDefinitionWhere(withVisibilityColumns),
           },
-          select: { id: true, name: true, type: true },
+          select: {
+            id: true,
+            name: true,
+            type: true,
+            ...(withVisibilityColumns ? { startDate: true } : {}),
+          },
           orderBy: [{ orderIndex: 'asc' }, { name: 'asc' }],
         }),
       ),
@@ -593,7 +614,10 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
       orderBy: { name: 'asc' },
     });
 
-    const practiceIds = practices.map((row) => row.id);
+    const activePractices = practices.filter((practice) =>
+      isPracticeActiveForPeriod((practice as { startDate?: Date | null }).startDate, period),
+    );
+    const practiceIds = activePractices.map((row) => row.id);
     const logs =
       practiceIds.length > 0
         ? await prisma.studentExerciseLog.findMany({
@@ -607,12 +631,23 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
               customerId: true,
               exerciseDefinitionId: true,
               points: true,
+              completedAt: true,
             },
           })
         : [];
 
     const pointsByCell = new Map<string, number>();
+    const practiceStartById = new Map(
+      activePractices.map((practice) => [
+        practice.id,
+        (practice as { startDate?: Date | null }).startDate ?? null,
+      ]),
+    );
     for (const log of logs) {
+      const practiceStart = practiceStartById.get(log.exerciseDefinitionId);
+      if (practiceStart && startOfTashkentDay(log.completedAt) < startOfTashkentDay(practiceStart)) {
+        continue;
+      }
       const key = `${log.customerId}:${log.exerciseDefinitionId}`;
       const current = pointsByCell.get(key) ?? 0;
       pointsByCell.set(key, current + Number(log.points ?? 0));
@@ -620,7 +655,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
 
     const rows = students.map((student) => {
       let totalPoints = 0;
-      const practicePoints = practices.map((practice) => {
+      const practicePoints = activePractices.map((practice) => {
         const points = pointsByCell.get(`${student.id}:${practice.id}`) ?? 0;
         if (practice.type !== 'extra') {
           totalPoints += points;
@@ -637,7 +672,7 @@ async function buildCourseSections(tenantId: string, period: PeriodRange): Promi
     sections.push({
       courseType: course.reportType,
       courseName: course.name,
-      practiceNames: practices.map((row) => row.name),
+      practiceNames: activePractices.map((row) => row.name),
       rows,
     });
   }
@@ -822,9 +857,17 @@ async function sendTenantCuratorSummaries(
             customerId: { in: allAssignedCustomerIds },
             completedAt: { gte: dayStart, lt: dayEnd },
           },
-          select: { customerId: true },
+          select: {
+            customerId: true,
+            completedAt: true,
+            exerciseDefinition: { select: { startDate: true } },
+          },
         })
-      : Promise.resolve([] as Array<{ customerId: string }>),
+      : Promise.resolve([] as Array<{
+          customerId: string;
+          completedAt: Date;
+          exerciseDefinition: { startDate: Date | null } | null;
+        }>),
     allAssignedCustomerIds.length > 0
       ? prisma.classAttendance.findMany({
           where: {
@@ -837,7 +880,14 @@ async function sendTenantCuratorSummaries(
       : Promise.resolve([] as Array<{ customerId: string; attended: boolean }>),
   ]);
 
-  const completedCustomers = new Set(exerciseLogs.map((row) => row.customerId));
+  const completedCustomers = new Set(
+    exerciseLogs
+      .filter((row) => {
+        const startDate = row.exerciseDefinition?.startDate;
+        return !startDate || startOfTashkentDay(row.completedAt) >= startOfTashkentDay(startDate);
+      })
+      .map((row) => row.customerId),
+  );
   const attendanceByCustomer = new Map<string, { keldi: number; kelmadi: number }>();
   for (const row of attendanceLogs) {
     const current = attendanceByCustomer.get(row.customerId) ?? { keldi: 0, kelmadi: 0 };
