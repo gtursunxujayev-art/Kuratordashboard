@@ -129,6 +129,15 @@ export default function HisobotPage() {
     filterOptionsError?.message ||
     kuratorsError?.message ||
     reportError?.message;
+  const reportSummary = report
+    ? {
+        students: report.students.length,
+        practices: report.practices.length,
+        averagePoints: report.students.length
+          ? report.students.reduce((sum, student) => sum + student.totalPoints, 0) / report.students.length
+          : 0,
+      }
+    : null;
   if (isLoading) {
     return (
       <div className="p-6">
@@ -140,12 +149,13 @@ export default function HisobotPage() {
   if (!isManager) return null;
 
   return (
-    <div className="px-8 md:px-14 lg:px-20 py-4 md:py-6 space-y-4">
-      <div className="kd-card p-4 md:p-5 space-y-3">
-        <h1 className="text-lg md:text-xl font-bold kd-title">Hisobot</h1>
-        <p className="text-xs md:text-sm kd-subtle">
-          Amaliy mashqlar bo&apos;yicha rangli ball matritsasi
-        </p>
+    <div className="nn-page">
+      <section className="nn-hero">
+        <h1>Hisobot</h1>
+        <p>Amaliy mashqlar bo&apos;yicha rangli ball matritsasi.</p>
+      </section>
+
+      <div className="nn-filter-card space-y-3">
 
         {topError && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -331,7 +341,7 @@ export default function HisobotPage() {
                   }
                 }}
                 disabled={generateShareToken.isPending}
-                className="px-3 py-1.5 rounded-md text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                className="nn-primary-button text-xs disabled:opacity-50"
               >
                 {generateShareToken.isPending ? 'Yaratilmoqda...' : "🔗 Umumiy havola olish"}
               </button>
@@ -339,6 +349,23 @@ export default function HisobotPage() {
           </div>
         )}
       </div>
+
+      {reportSummary && (
+        <div className="nn-kpi-grid">
+          <div className="nn-kpi-card">
+            <span className="nn-kpi-icon" style={{ background: 'var(--kd-accent)' }}>{reportSummary.students}</span>
+            <span><p className="text-xs kd-subtle">Jami o&apos;quvchi</p><p className="text-2xl font-bold kd-title">{reportSummary.students}</p></span>
+          </div>
+          <div className="nn-kpi-card">
+            <span className="nn-kpi-icon" style={{ background: 'var(--nn-cyan)' }}>{reportSummary.practices}</span>
+            <span><p className="text-xs kd-subtle">Mashqlar</p><p className="text-2xl font-bold kd-title">{reportSummary.practices}</p></span>
+          </div>
+          <div className="nn-kpi-card">
+            <span className="nn-kpi-icon" style={{ background: 'var(--nn-coral)' }}>{Math.round(reportSummary.averagePoints)}</span>
+            <span><p className="text-xs kd-subtle">O&apos;rtacha ball</p><p className="text-2xl font-bold kd-title">{reportSummary.averagePoints.toFixed(1)}</p></span>
+          </div>
+        </div>
+      )}
 
       {!courseId ? (
         <div className="kd-card p-6 text-center text-sm kd-subtle">
@@ -349,7 +376,7 @@ export default function HisobotPage() {
       ) : !report ? (
         <div className="kd-card p-6 text-center text-sm kd-subtle">Ma&apos;lumot topilmadi.</div>
       ) : (
-        <div className="kd-card p-0">
+        <div className="nn-table-card">
           <ReportTable
             report={report}
             datePreset={datePreset}
