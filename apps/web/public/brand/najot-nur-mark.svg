@@ -1,0 +1,8 @@
+<svg width="72" height="72" viewBox="0 0 72 72" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Najot Nur mark</title>
+  <desc id="desc">Shield inspired Najot Nur brand mark for the dashboard UI.</desc>
+  <path d="M36 4L62 13V31C62 48.8 50.2 61.5 36 68C21.8 61.5 10 48.8 10 31V13L36 4Z" fill="#99123F"/>
+  <path d="M36 8.8L57.5 16.2V31C57.5 45.8 48.1 56.6 36 62.8C23.9 56.6 14.5 45.8 14.5 31V16.2L36 8.8Z" stroke="#F7F1E6" stroke-width="2"/>
+  <path d="M24 24V46H29.2V33.2L42.4 46H48V24H42.8V36.7L29.6 24H24Z" fill="#F7F1E6"/>
+  <path d="M24 51H48" stroke="#F7F1E6" stroke-width="2.4" stroke-linecap="round"/>
+</svg>
