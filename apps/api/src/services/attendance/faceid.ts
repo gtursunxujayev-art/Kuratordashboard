@@ -426,7 +426,7 @@ async function markAttendance(params: {
     if (existing.attended) return 'already_marked';
     await prisma.classAttendance.update({
       where: { id: existing.id },
-      data: { attended: true, source: 'system', markedByUserId: null, updatedAt: new Date() },
+      data: { attended: true, status: 'keldi', source: 'system', markedByUserId: null, updatedAt: new Date() },
     });
     return 'marked';
   }
@@ -439,6 +439,7 @@ async function markAttendance(params: {
       lessonDate,
       lessonType: 'base',
       attended: true,
+      status: 'keldi',
       source: 'system',
       markedByUserId: null,
     },
