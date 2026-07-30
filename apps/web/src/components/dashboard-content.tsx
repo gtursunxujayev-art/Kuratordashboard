@@ -160,9 +160,8 @@ export function DashboardContent({ forcedCategory }: { forcedCategory?: 'offline
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero dashboard-hero">
         <h1>O&apos;quvchi samaradorligi</h1>
-        <p>Uy vazifalar, mashqlar va kurator kuzatuvini bitta joyda ko&apos;ring.</p>
       </section>
 
       <div className="nn-filter-card">
