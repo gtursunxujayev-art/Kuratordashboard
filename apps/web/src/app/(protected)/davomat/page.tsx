@@ -194,9 +194,8 @@ export default function DavomatPage() {
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero davomat-hero">
         <h1>Davomat</h1>
-        <p>Darsga qatnashish va guruh holatini nazorat qilish.</p>
       </section>
 
       <div className="nn-filter-card space-y-3">
