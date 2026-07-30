@@ -6,6 +6,7 @@ import { useToast } from '@/components/ui/toast';
 import { trpc } from '@/lib/trpc';
 
 type AttendanceStatus = 'keldi' | 'kelmadi' | 'yolda';
+type AttendanceValue = AttendanceStatus | '';
 
 const statusMeta: Record<AttendanceStatus, { label: string; className: string }> = {
   keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
@@ -22,15 +23,27 @@ function formatDay(date: string): string {
   return Number.isNaN(parsed.getTime()) ? date : new Intl.DateTimeFormat('uz-UZ', { day: 'numeric', month: 'short' }).format(parsed);
 }
 
-function AttendanceSelect({ value, onChange, disabled }: { value: AttendanceStatus; onChange: (next: AttendanceStatus) => void; disabled?: boolean }) {
+function getTelegramFailureMessage(reason?: string): string {
+  if (reason === 'dashboarduz_not_configured') {
+    return 'Dashboarduz Telegram ulanishi sozlanmagan';
+  }
+  return 'Dashboarduz Telegram guruhiga yuborilmadi';
+}
+
+function AttendanceSelect({ value, onChange, disabled }: { value: AttendanceValue; onChange: (next: AttendanceStatus) => void; disabled?: boolean }) {
+  const selectedClassName = value
+    ? statusMeta[value].className
+    : 'border-[var(--kd-border)] bg-[var(--kd-surface)] text-[var(--kd-muted)]';
+
   return (
     <select
       aria-label="Davomat holati"
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value as AttendanceStatus)}
-      className={`w-full min-w-[122px] rounded-lg border px-2.5 py-2 text-sm font-medium outline-none disabled:cursor-not-allowed disabled:opacity-60 ${statusMeta[value].className}`}
+      className={`w-full min-w-[122px] rounded-lg border px-2.5 py-2 text-sm font-medium outline-none disabled:cursor-not-allowed disabled:opacity-60 ${selectedClassName}`}
     >
+      <option value="" disabled>Tanlang</option>
       {Object.entries(statusMeta).map(([status, meta]) => <option key={status} value={status}>{meta.label}</option>)}
     </select>
   );
@@ -43,7 +56,7 @@ export default function IntensivPage() {
   const [courseId, setCourseId] = useState('');
   const [tariffId, setTariffId] = useState('');
   const [subTariffId, setSubTariffId] = useState('');
-  const [attendanceDrafts, setAttendanceDrafts] = useState<Record<string, { dayOne: AttendanceStatus; dayTwo: AttendanceStatus }>>({});
+  const [attendanceDrafts, setAttendanceDrafts] = useState<Record<string, { dayOne: AttendanceValue; dayTwo: AttendanceValue }>>({});
   const [paymentDrafts, setPaymentDrafts] = useState<Record<string, string>>({});
   const [savingAttendanceId, setSavingAttendanceId] = useState<string | null>(null);
   const [payingSaleId, setPayingSaleId] = useState<string | null>(null);
@@ -82,8 +95,8 @@ export default function IntensivPage() {
     setAttendanceDrafts((current) => ({
       ...current,
       [saleId]: {
-        dayOne: current[saleId]?.dayOne ?? student.dayOneStatus,
-        dayTwo: current[saleId]?.dayTwo ?? student.dayTwoStatus,
+        dayOne: current[saleId]?.dayOne ?? student.dayOneStatus ?? '',
+        dayTwo: current[saleId]?.dayTwo ?? student.dayTwoStatus ?? '',
         [key]: value,
       },
     }));
@@ -92,6 +105,10 @@ export default function IntensivPage() {
   const saveStudentAttendance = async (student: (typeof students)[number]) => {
     const draft = attendanceDrafts[student.saleId];
     if (!draft) return;
+    if (!draft.dayOne || !draft.dayTwo) {
+      toast.show('Avval ikkala kun uchun davomat holatini tanlang', 'error');
+      return;
+    }
     setSavingAttendanceId(student.saleId);
     try {
       await saveAttendance.mutateAsync({ saleId: student.saleId, dayOneStatus: draft.dayOne, dayTwoStatus: draft.dayTwo });
@@ -119,7 +136,11 @@ export default function IntensivPage() {
       const result = await recordPayment.mutateAsync({ saleId: student.saleId, amount });
       setPaymentDrafts((current) => ({ ...current, [student.saleId]: '' }));
       await utils.intensiv.list.invalidate();
-      toast.show(result.telegram.delivered ? "To'lov saqlandi va Telegramga yuborildi" : "To'lov saqlandi", 'success');
+      if (result.telegram.delivered) {
+        toast.show("To'lov saqlandi va Dashboarduz orqali Telegramga yuborildi", 'success');
+      } else {
+        toast.show(`To'lov saqlandi, ammo ${getTelegramFailureMessage(result.telegram.reason)}`, 'error');
+      }
     } catch (error) {
       toast.show(error instanceof Error ? error.message : "To'lovni saqlab bo'lmadi", 'error');
     } finally {
@@ -132,7 +153,7 @@ export default function IntensivPage() {
   }
 
   return (
-    <div className="nn-page space-y-5">
+    <div className="nn-page intensiv-page">
       <section className="nn-hero intensiv-hero">
         <h1>Intensiv davomat va to'lovlar</h1>
       </section>
@@ -193,9 +214,14 @@ export default function IntensivPage() {
               <tbody>
                 {students.map((student) => {
                   const draft = attendanceDrafts[student.saleId];
-                  const dayOne = draft?.dayOne ?? student.dayOneStatus;
-                  const dayTwo = draft?.dayTwo ?? student.dayTwoStatus;
-                  const attendanceChanged = Boolean(draft) && (dayOne !== student.dayOneStatus || dayTwo !== student.dayTwoStatus);
+                  const dayOne = draft?.dayOne ?? student.dayOneStatus ?? '';
+                  const dayTwo = draft?.dayTwo ?? student.dayTwoStatus ?? '';
+                  const attendanceChanged = Boolean(
+                    draft
+                    && dayOne
+                    && dayTwo
+                    && (dayOne !== student.dayOneStatus || dayTwo !== student.dayTwoStatus),
+                  );
                   const payment = paymentDrafts[student.saleId] || '';
                   const paymentAmount = Number(payment.replace(/\D/g, ''));
                   const paymentInvalid = Boolean(payment) && (!paymentAmount || paymentAmount > student.remainingDebt);
@@ -203,11 +229,13 @@ export default function IntensivPage() {
                     <td className="px-4 py-3 font-semibold kd-title whitespace-nowrap">{student.name}</td>
                     <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.phone}</td>
                     <td className="px-4 py-3"><AttendanceSelect value={dayOne} disabled={savingAttendanceId === student.saleId} onChange={(value) => updateAttendanceDraft(student.saleId, student, 'dayOne', value)} /></td>
-                    <td className="px-4 py-3"><AttendanceSelect value={dayTwo} disabled={savingAttendanceId === student.saleId} onChange={(value) => updateAttendanceDraft(student.saleId, student, 'dayTwo', value)} /></td>
+                    <td className="px-4 py-3"><div className="flex min-w-[240px] items-center gap-2">
+                      <AttendanceSelect value={dayTwo} disabled={savingAttendanceId === student.saleId} onChange={(value) => updateAttendanceDraft(student.saleId, student, 'dayTwo', value)} />
+                      <button type="button" disabled={!attendanceChanged || savingAttendanceId === student.saleId} onClick={() => void saveStudentAttendance(student)} className="nn-ghost-button shrink-0 !px-3 !py-2 disabled:opacity-40">{savingAttendanceId === student.saleId ? 'Saqlanmoqda...' : 'Davomat'}</button>
+                    </div></td>
                     <td className={`px-4 py-3 text-right font-semibold whitespace-nowrap ${student.remainingDebt ? 'text-rose-700' : 'kd-subtle'}`}>{student.remainingDebt ? formatMoney(student.remainingDebt) : '—'}</td>
-                    <td className="px-4 py-3"><input value={payment} disabled={!student.remainingDebt || payingSaleId === student.saleId} inputMode="numeric" placeholder="0" onChange={(event) => setPaymentDrafts((current) => ({ ...current, [student.saleId]: event.target.value.replace(/\D/g, '') }))} className={`nn-form-control min-w-[130px] !py-2 ${paymentInvalid ? '!border-red-400' : ''}`} /></td>
+                    <td className="px-4 py-3"><input value={payment} disabled={!student.remainingDebt || payingSaleId === student.saleId} inputMode="numeric" placeholder="0" onChange={(event) => setPaymentDrafts((current) => ({ ...current, [student.saleId]: event.target.value.replace(/\D/g, '') }))} className={`nn-form-control min-w-[130px] !py-2 text-center tabular-nums ${paymentInvalid ? '!border-red-400' : ''}`} /></td>
                     <td className="px-4 py-3"><div className="flex justify-end gap-2">
-                      <button type="button" disabled={!attendanceChanged || savingAttendanceId === student.saleId} onClick={() => void saveStudentAttendance(student)} className="nn-ghost-button !px-3 !py-2 disabled:opacity-40">{savingAttendanceId === student.saleId ? 'Saqlanmoqda...' : 'Davomat'}</button>
                       <button type="button" disabled={!student.remainingDebt || paymentInvalid || !paymentAmount || payingSaleId === student.saleId} onClick={() => void pay(student)} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40">{payingSaleId === student.saleId ? 'Yuborilmoqda...' : "To'lov"}</button>
                     </div></td>
                   </tr>;
