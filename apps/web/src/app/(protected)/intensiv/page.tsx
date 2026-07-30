@@ -7,6 +7,7 @@ import { trpc } from '@/lib/trpc';
 
 type AttendanceStatus = 'keldi' | 'kelmadi' | 'yolda';
 type AttendanceValue = AttendanceStatus | '';
+type AttendanceDay = 'dayOne' | 'dayTwo';
 
 const statusMeta: Record<AttendanceStatus, { label: string; className: string }> = {
   keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
@@ -56,9 +57,9 @@ export default function IntensivPage() {
   const [courseId, setCourseId] = useState('');
   const [tariffId, setTariffId] = useState('');
   const [subTariffId, setSubTariffId] = useState('');
-  const [attendanceDrafts, setAttendanceDrafts] = useState<Record<string, { dayOne: AttendanceValue; dayTwo: AttendanceValue }>>({});
+  const [attendanceDrafts, setAttendanceDrafts] = useState<Record<string, AttendanceStatus>>({});
   const [paymentDrafts, setPaymentDrafts] = useState<Record<string, string>>({});
-  const [savingAttendanceId, setSavingAttendanceId] = useState<string | null>(null);
+  const [savingAttendanceKeys, setSavingAttendanceKeys] = useState<Record<string, boolean>>({});
   const [payingSaleId, setPayingSaleId] = useState<string | null>(null);
 
   const coursesQuery = trpc.intensiv.courses.useQuery(undefined, { enabled: isManager });
@@ -74,8 +75,10 @@ export default function IntensivPage() {
   const students = useMemo(() => listQuery.data?.students ?? [], [listQuery.data?.students]);
   const summary = useMemo(() => {
     const statuses = students.flatMap((student) => {
-      const draft = attendanceDrafts[student.saleId];
-      return [draft?.dayOne ?? student.dayOneStatus, draft?.dayTwo ?? student.dayTwoStatus];
+      return [
+        attendanceDrafts[`${student.saleId}:dayOne`] ?? student.dayOneStatus,
+        attendanceDrafts[`${student.saleId}:dayTwo`] ?? student.dayTwoStatus,
+      ];
     });
     const totalDebt = students.reduce((sum, student) => sum + student.remainingDebt, 0);
     return {
@@ -91,37 +94,33 @@ export default function IntensivPage() {
     setPaymentDrafts({});
   };
 
-  const updateAttendanceDraft = (saleId: string, student: (typeof students)[number], key: 'dayOne' | 'dayTwo', value: AttendanceStatus) => {
-    setAttendanceDrafts((current) => ({
-      ...current,
-      [saleId]: {
-        dayOne: current[saleId]?.dayOne ?? student.dayOneStatus ?? '',
-        dayTwo: current[saleId]?.dayTwo ?? student.dayTwoStatus ?? '',
-        [key]: value,
-      },
-    }));
-  };
-
-  const saveStudentAttendance = async (student: (typeof students)[number]) => {
-    const draft = attendanceDrafts[student.saleId];
-    if (!draft) return;
-    if (!draft.dayOne || !draft.dayTwo) {
-      toast.show('Avval ikkala kun uchun davomat holatini tanlang', 'error');
-      return;
-    }
-    setSavingAttendanceId(student.saleId);
+  const saveAttendanceDay = async (
+    student: (typeof students)[number],
+    day: AttendanceDay,
+    status: AttendanceStatus,
+  ) => {
+    const cellKey = `${student.saleId}:${day}`;
+    setAttendanceDrafts((current) => ({ ...current, [cellKey]: status }));
+    setSavingAttendanceKeys((current) => ({ ...current, [cellKey]: true }));
     try {
-      await saveAttendance.mutateAsync({ saleId: student.saleId, dayOneStatus: draft.dayOne, dayTwoStatus: draft.dayTwo });
+      await saveAttendance.mutateAsync({ saleId: student.saleId, day, status });
+      await utils.intensiv.list.invalidate();
       setAttendanceDrafts((current) => {
-        const { [student.saleId]: _, ...rest } = current;
+        if (current[cellKey] !== status) return current;
+        const { [cellKey]: _, ...rest } = current;
         return rest;
       });
-      await utils.intensiv.list.invalidate();
-      toast.show('Davomat saqlandi', 'success');
     } catch (error) {
+      setAttendanceDrafts((current) => {
+        const { [cellKey]: _, ...rest } = current;
+        return rest;
+      });
       toast.show(error instanceof Error ? error.message : 'Davomatni saqlab bo\'lmadi', 'error');
     } finally {
-      setSavingAttendanceId(null);
+      setSavingAttendanceKeys((current) => {
+        const { [cellKey]: _, ...rest } = current;
+        return rest;
+      });
     }
   };
 
@@ -213,26 +212,18 @@ export default function IntensivPage() {
               </thead>
               <tbody>
                 {students.map((student) => {
-                  const draft = attendanceDrafts[student.saleId];
-                  const dayOne = draft?.dayOne ?? student.dayOneStatus ?? '';
-                  const dayTwo = draft?.dayTwo ?? student.dayTwoStatus ?? '';
-                  const attendanceChanged = Boolean(
-                    draft
-                    && dayOne
-                    && dayTwo
-                    && (dayOne !== student.dayOneStatus || dayTwo !== student.dayTwoStatus),
-                  );
+                  const dayOneKey = `${student.saleId}:dayOne`;
+                  const dayTwoKey = `${student.saleId}:dayTwo`;
+                  const dayOne = attendanceDrafts[dayOneKey] ?? student.dayOneStatus ?? '';
+                  const dayTwo = attendanceDrafts[dayTwoKey] ?? student.dayTwoStatus ?? '';
                   const payment = paymentDrafts[student.saleId] || '';
                   const paymentAmount = Number(payment.replace(/\D/g, ''));
                   const paymentInvalid = Boolean(payment) && (!paymentAmount || paymentAmount > student.remainingDebt);
                   return <tr key={student.saleId} className="border-b border-[var(--kd-border)] last:border-0">
                     <td className="px-4 py-3 font-semibold kd-title whitespace-nowrap">{student.name}</td>
                     <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.phone}</td>
-                    <td className="px-4 py-3"><AttendanceSelect value={dayOne} disabled={savingAttendanceId === student.saleId} onChange={(value) => updateAttendanceDraft(student.saleId, student, 'dayOne', value)} /></td>
-                    <td className="px-4 py-3"><div className="flex min-w-[240px] items-center gap-2">
-                      <AttendanceSelect value={dayTwo} disabled={savingAttendanceId === student.saleId} onChange={(value) => updateAttendanceDraft(student.saleId, student, 'dayTwo', value)} />
-                      <button type="button" disabled={!attendanceChanged || savingAttendanceId === student.saleId} onClick={() => void saveStudentAttendance(student)} className="nn-ghost-button shrink-0 !px-3 !py-2 disabled:opacity-40">{savingAttendanceId === student.saleId ? 'Saqlanmoqda...' : 'Davomat'}</button>
-                    </div></td>
+                    <td className="px-4 py-3"><AttendanceSelect value={dayOne} disabled={savingAttendanceKeys[dayOneKey]} onChange={(value) => void saveAttendanceDay(student, 'dayOne', value)} /></td>
+                    <td className="px-4 py-3"><AttendanceSelect value={dayTwo} disabled={savingAttendanceKeys[dayTwoKey]} onChange={(value) => void saveAttendanceDay(student, 'dayTwo', value)} /></td>
                     <td className={`px-4 py-3 text-right font-semibold whitespace-nowrap ${student.remainingDebt ? 'text-rose-700' : 'kd-subtle'}`}>{student.remainingDebt ? formatMoney(student.remainingDebt) : '—'}</td>
                     <td className="px-4 py-3"><input value={payment} disabled={!student.remainingDebt || payingSaleId === student.saleId} inputMode="numeric" placeholder="0" onChange={(event) => setPaymentDrafts((current) => ({ ...current, [student.saleId]: event.target.value.replace(/\D/g, '') }))} className={`nn-form-control min-w-[130px] !py-2 text-center tabular-nums ${paymentInvalid ? '!border-red-400' : ''}`} /></td>
                     <td className="px-4 py-3"><div className="flex justify-end gap-2">
