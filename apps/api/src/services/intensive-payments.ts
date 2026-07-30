@@ -5,12 +5,14 @@ type TelegramDispatch = {
   delivered: boolean;
   sentCount: number;
   failedCount: number;
-  reason?: 'bot_token_missing' | 'groups_missing' | 'send_failed';
+  reason?: 'dashboarduz_not_configured' | 'send_failed';
   errors?: string[];
 };
 
 function getGroupIds(): string[] {
   const values = [
+    process.env.DASHBOARDUZ_PAYMENT_GROUP_ID,
+    process.env.DASHBOARDUZ_PAYMENT_GROUP_IDS,
     process.env.OFLINE_GROUP_ID,
     process.env.OFFLINE_GROUP_ID,
     process.env.OFLINE_GROUP_IDS,
@@ -19,6 +21,87 @@ function getGroupIds(): string[] {
   return Array.from(new Set(
     values.flatMap((value) => String(value || '').split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean)),
   ));
+}
+
+function getDashboarduzTelegramEndpoint(): string | null {
+  const explicitEndpoint = process.env.DASHBOARDUZ_TELEGRAM_ENDPOINT?.trim();
+  if (explicitEndpoint) return explicitEndpoint;
+
+  const apiUrl = process.env.DASHBOARDUZ_API_URL?.trim().replace(/\/+$/, '');
+  return apiUrl ? `${apiUrl}/debug/telegram` : null;
+}
+
+async function sendReceiptViaDashboarduz(params: {
+  tenantId: string;
+  text: string;
+}): Promise<TelegramDispatch> {
+  const endpoint = getDashboarduzTelegramEndpoint();
+  const secret = (
+    process.env.DASHBOARDUZ_TELEGRAM_SECRET
+    || process.env.DASHBOARDUZ_TELEGRAM_DEBUG_KEY
+  )?.trim();
+  const configuredGroups = getGroupIds();
+  if (!endpoint || !secret || !configuredGroups.length) {
+    return {
+      attempted: false,
+      delivered: false,
+      sentCount: 0,
+      failedCount: 0,
+      reason: 'dashboarduz_not_configured',
+      errors: [
+        'Dashboarduz URL, Telegram secret yoki intensiv to‘lov guruhi sozlanmagan',
+      ],
+    };
+  }
+
+  const errors: string[] = [];
+  let sentCount = 0;
+  let failedCount = 0;
+
+  for (const groupId of configuredGroups) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-debug-key': secret,
+        },
+        body: JSON.stringify({
+          tenantId: params.tenantId,
+          text: params.text,
+          group_id: groupId,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const body = await response.json() as {
+        ok?: boolean;
+        deliveredCount?: number;
+        failedCount?: number;
+        error?: string;
+        results?: Array<{ groupId?: string; ok?: boolean; error?: string }>;
+      };
+      if (!response.ok || !body.ok) {
+        throw new Error(body.error || `Dashboarduz Telegram gateway ${response.status}`);
+      }
+      sentCount += body.deliveredCount ?? body.results?.filter((item) => item.ok).length ?? 0;
+      failedCount += body.failedCount ?? body.results?.filter((item) => !item.ok).length ?? 0;
+      for (const result of body.results ?? []) {
+        if (!result.ok) errors.push(`${result.groupId ?? groupId ?? 'group'}: ${result.error ?? 'Yuborilmadi'}`);
+      }
+    } catch (error) {
+      failedCount += 1;
+      errors.push(`${groupId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return {
+    attempted: true,
+    delivered: sentCount > 0,
+    sentCount,
+    failedCount,
+    ...(sentCount ? {} : { reason: 'send_failed' as const }),
+    ...(errors.length ? { errors: errors.slice(0, 3) } : {}),
+  };
 }
 
 function toHashtag(value: string | null | undefined): string | null {
@@ -47,15 +130,6 @@ export async function sendIntensivePaymentReceipt(params: {
   saleId: string;
   repaymentId: string;
 }): Promise<TelegramDispatch> {
-  const token = process.env.TELEGRAM_BOT_TOKEN?.trim();
-  if (!token) {
-    return { attempted: false, delivered: false, sentCount: 0, failedCount: 0, reason: 'bot_token_missing' };
-  }
-  const groupIds = getGroupIds();
-  if (!groupIds.length) {
-    return { attempted: false, delivered: false, sentCount: 0, failedCount: 0, reason: 'groups_missing' };
-  }
-
   const [sale, repayment] = await Promise.all([
     prisma.income.findFirst({
       where: { id: params.saleId, tenantId: params.tenantId },
@@ -105,30 +179,7 @@ export async function sendIntensivePaymentReceipt(params: {
     `Deadline: ${sale.deadline ? formatDate(sale.deadline) : '-'}`, '', '@Moliya_b0limi', '@najotnur_oflayn',
   ].join('\n');
 
-  const errors: string[] = [];
-  let sentCount = 0;
-  for (const groupId of groupIds) {
-    try {
-      const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: groupId, text, disable_web_page_preview: true }),
-      });
-      const body = await response.json() as { ok?: boolean; description?: string };
-      if (!response.ok || !body.ok) throw new Error(body.description || `Telegram API ${response.status}`);
-      sentCount += 1;
-    } catch (error) {
-      errors.push(`${groupId}: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-  return {
-    attempted: true,
-    delivered: sentCount > 0,
-    sentCount,
-    failedCount: groupIds.length - sentCount,
-    ...(sentCount ? {} : { reason: 'send_failed' as const }),
-    ...(errors.length ? { errors: errors.slice(0, 3) } : {}),
-  };
+  return sendReceiptViaDashboarduz({ tenantId: params.tenantId, text });
 }
 
 export async function finalizeExpiredIntensiveTransitAttendance(now = new Date()): Promise<{ finalized: number }> {
