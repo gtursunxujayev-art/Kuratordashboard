@@ -120,8 +120,8 @@ export const intensivRouter = router({
           return {
             saleId: sale.id, customerId: sale.customerId, name: sale.customer.name,
             phone: sale.customer.customerNumber,
-            dayOneStatus: attendance.get(`${sale.customerId}:${localDateKey(dayOne)}`) ?? 'kelmadi',
-            dayTwoStatus: attendance.get(`${sale.customerId}:${localDateKey(dayTwo)}`) ?? 'kelmadi',
+            dayOneStatus: attendance.get(`${sale.customerId}:${localDateKey(dayOne)}`) ?? null,
+            dayTwoStatus: attendance.get(`${sale.customerId}:${localDateKey(dayTwo)}`) ?? null,
             remainingDebt,
           };
         }),
