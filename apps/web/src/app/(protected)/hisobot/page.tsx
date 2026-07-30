@@ -150,9 +150,8 @@ export default function HisobotPage() {
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero hisobot-hero">
         <h1>Hisobot</h1>
-        <p>Amaliy mashqlar bo&apos;yicha rangli ball matritsasi.</p>
       </section>
 
       <div className="nn-filter-card space-y-3">
