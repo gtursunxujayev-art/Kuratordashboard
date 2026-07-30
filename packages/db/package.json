@@ -11,6 +11,7 @@
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
+    "verify:shared-schema": "tsx scripts/verify-shared-schema.ts",
     "studio": "prisma studio",
     "db:push": "prisma db push",
     "build": "npm run generate && tsc --project tsconfig.json"
