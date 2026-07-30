@@ -96,9 +96,8 @@ export default function StudentsPage() {
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero students-hero">
         <h1>O&apos;quvchilar nazorati</h1>
-        <p>Kuratorga biriktirilgan o&apos;quvchilar, filtrlar va mashq/davomat holati.</p>
       </section>
 
       {(filterOptionsError || courseRunsError || coursesError || error) && (
