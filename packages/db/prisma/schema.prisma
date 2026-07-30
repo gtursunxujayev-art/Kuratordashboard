@@ -24,82 +24,98 @@ model Tenant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users            User[]
-  integrations     Integration[]
-  leads            Lead[]
-  contacts         Contact[]
-  calls            Call[]
-  notifications    Notification[]
-  auditLogs        AuditLog[]
-  webhookEvents    WebhookEvent[]
-  customers        Customer[]
-  courses          Course[]
-  tariffs          Tariff[]
-  subTariffs       SubTariff[]
-  incomes          Income[]
-  incomeAdjustmentRequests IncomeAdjustmentRequest[]
-  historicalImportSessions HistoricalImportSession[]
+  users                      User[]
+  integrations               Integration[]
+  leads                      Lead[]
+  contacts                   Contact[]
+  calls                      Call[]
+  notifications              Notification[]
+  auditLogs                  AuditLog[]
+  webhookEvents              WebhookEvent[]
+  customers                  Customer[]
+  courses                    Course[]
+  tariffs                    Tariff[]
+  subTariffs                 SubTariff[]
+  incomes                    Income[]
+  incomeAdjustmentRequests   IncomeAdjustmentRequest[]
+  historicalImportSessions   HistoricalImportSession[]
+  corporateCallDurations     CorporateCallDuration[]
+  attendanceEvents           AttendanceEvent[]
+  attendanceDaySummaries     AttendanceDaySummary[]
+  attendanceAdjustments      AttendanceAdjustment[]
+  attendanceAdjustmentAudits AttendanceAdjustmentAudit[]
+  metaAdInsights             MetaAdInsight[]
+  analyticsAiReports         AnalyticsAiReport[]
 
   // KD-specific relations
-  courseRuns        CourseRun[]
-  kuratorAssignments KuratorAssignment[]
-  exerciseDefinitions ExerciseDefinition[]
-  exerciseColorOptions ExerciseColorOption[]
+  courseRuns                    CourseRun[]
+  kuratorAssignments            KuratorAssignment[]
+  exerciseDefinitions           ExerciseDefinition[]
+  exerciseColorOptions          ExerciseColorOption[]
   exerciseDefinitionColorPoints ExerciseDefinitionColorPoint[]
-  studentExerciseLogs StudentExerciseLog[]
-  classAttendances  ClassAttendance[]
-  kuratorTasks      KuratorTask[]
-  regionConfigs     RegionConfig[]
-  scheduleTemplates CourseScheduleTemplate[]
-  courseRunMembers  CourseRunMember[]
-  telegramLinkTokens TelegramLinkToken[]
-  telegramReportReceivers TelegramReportReceiver[]
-  reportDeliveryLogs ReportDeliveryLog[]
+  studentExerciseLogs           StudentExerciseLog[]
+  classAttendances              ClassAttendance[]
+  kuratorTasks                  KuratorTask[]
+  regionConfigs                 RegionConfig[]
+  scheduleTemplates             CourseScheduleTemplate[]
+  courseRunMembers              CourseRunMember[]
+  telegramLinkTokens            TelegramLinkToken[]
+  telegramReportReceivers       TelegramReportReceiver[]
+  reportDeliveryLogs            ReportDeliveryLog[]
 
   @@index([subdomain])
   @@map("tenants")
 }
 
 model User {
-  id           String   @id @default(uuid())
-  tenantId     String
-  username     String?  @unique
-  email        String?
-  phone        String?
-  passwordHash String?
-  name         String?
-  roles        String[] @default(["Agent"]) // Admin, Manager, Agent, Finance, Tashkiliy, Kurator
-  authProvider String
-  providerId   String?
-  telegramId   String?  @unique
-  googleId     String?  @unique
+  id                      String    @id @default(uuid())
+  tenantId                String
+  username                String?   @unique
+  email                   String?
+  phone                   String?
+  passwordHash            String?
+  name                    String?
+  roles                   String[]  @default(["Agent"]) // Admin, Manager, Agent, Finance, Tashkiliy, Kurator
+  authProvider            String
+  providerId              String?
+  telegramId              String?   @unique
+  googleId                String?   @unique
   amocrmResponsibleUserId String?
-  utelManagerExternalId String?
-  isActive     Boolean  @default(true)
-  lastLoginAt  DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  utelManagerExternalId   String?
+  isActive                Boolean   @default(true)
+  lastLoginAt             DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
 
-  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  auditLogs    AuditLog[]
-  linkedAccounts UserAuthLink[]
-  managedIncomes Income[] @relation("IncomeManager")
-  requestedIncomeAdjustments IncomeAdjustmentRequest[] @relation("IncomeAdjustmentRequestedBy")
-  reviewedIncomeAdjustments IncomeAdjustmentRequest[] @relation("IncomeAdjustmentReviewedBy")
-  createdHistoricalImportSessions HistoricalImportSession[] @relation("HistoricalImportCreatedBy")
+  tenant                          Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  auditLogs                       AuditLog[]
+  linkedAccounts                  UserAuthLink[]
+  managedIncomes                  Income[]                    @relation("IncomeManager")
+  requestedIncomeAdjustments      IncomeAdjustmentRequest[]   @relation("IncomeAdjustmentRequestedBy")
+  reviewedIncomeAdjustments       IncomeAdjustmentRequest[]   @relation("IncomeAdjustmentReviewedBy")
+  createdHistoricalImportSessions HistoricalImportSession[]   @relation("HistoricalImportCreatedBy")
+  corporateCallDurations          CorporateCallDuration[]     @relation("CorporateCallDurationManager")
+  attendanceEvents                AttendanceEvent[]           @relation("AttendanceEventUser")
+  attendanceDaySummaries          AttendanceDaySummary[]      @relation("AttendanceDaySummaryUser")
+  attendanceAdjustmentSubjects    AttendanceAdjustment[]      @relation("AttendanceAdjustmentSubject")
+  createdAttendanceAdjustments    AttendanceAdjustment[]      @relation("AttendanceAdjustmentCreatedBy")
+  attendanceAdjustmentAudits      AttendanceAdjustmentAudit[] @relation("AttendanceAdjustmentAuditActor")
 
   // KD-specific relations
-  kuratorAssignments KuratorAssignment[]
-  kuratorTasks       KuratorTask[]
-  exerciseLogsMarked StudentExerciseLog[]
-  attendancesMarked  ClassAttendance[]
-  ownedCourseRuns    CourseRun[] @relation("CourseRunKurator")
-  telegramLinkTokens TelegramLinkToken[]
+  kuratorAssignments             KuratorAssignment[]
+  kuratorTasks                   KuratorTask[]
+  exerciseLogsMarked             StudentExerciseLog[]
+  attendancesMarked              ClassAttendance[]
+  ownedCourseRuns                CourseRun[]              @relation("CourseRunKurator")
+  telegramLinkTokens             TelegramLinkToken[]
   createdTelegramReportReceivers TelegramReportReceiver[] @relation("TelegramReportReceiverCreatedBy")
 
   @@unique([tenantId, email])
   @@unique([tenantId, phone])
   @@index([tenantId])
+  @@index([tenantId, isActive])
+  @@index([tenantId, amocrmResponsibleUserId])
+  @@index([tenantId, utelManagerExternalId])
   @@index([username])
   @@index([email])
   @@index([phone])
@@ -111,12 +127,12 @@ model User {
 }
 
 model UserAuthLink {
-  id        String   @id @default(uuid())
-  userId    String
-  provider  String
+  id         String   @id @default(uuid())
+  userId     String
+  provider   String
   providerId String
-  verified  Boolean  @default(false)
-  createdAt DateTime @default(now())
+  verified   Boolean  @default(false)
+  createdAt  DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -130,18 +146,18 @@ model UserAuthLink {
 // ============================================
 
 model Integration {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   tenantId        String
   type            String
-  status          String   @default("pending")
+  status          String    @default("pending")
   config          Json?
   tokensEncrypted String?
   refreshToken    String?
   expiresAt       DateTime?
   lastSyncAt      DateTime?
   errorMessage    String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -151,33 +167,90 @@ model Integration {
   @@map("integrations")
 }
 
+model MetaAdInsight {
+  id           String   @id @default(uuid())
+  tenantId     String
+  date         DateTime
+  accountId    String
+  campaignId   String?
+  campaignName String?
+  adSetId      String?
+  adSetName    String?
+  adId         String?
+  adName       String?
+  impressions  Int      @default(0)
+  clicks       Int      @default(0)
+  spend        Float    @default(0)
+  ctr          Float    @default(0)
+  cpc          Float    @default(0)
+  cpm          Float    @default(0)
+  leads        Int      @default(0)
+  raw          Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, date, accountId, campaignId, adSetId, adId])
+  @@index([tenantId])
+  @@index([tenantId, date])
+  @@index([tenantId, accountId, date])
+  @@index([date])
+  @@index([accountId])
+  @@index([campaignId])
+  @@map("meta_ad_insights")
+}
+
+model AnalyticsAiReport {
+  id            String   @id @default(uuid())
+  tenantId      String
+  userId        String?
+  range         String
+  dateFrom      DateTime
+  dateTo        DateTime
+  focus         String
+  promptVersion String   @default("sales-intelligence-v1")
+  model         String?
+  inputSummary  Json?
+  result        Json?
+  createdAt     DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([dateFrom, dateTo])
+  @@map("analytics_ai_reports")
+}
+
 // ============================================
 // CRM DATA (from Dashboarduz)
 // ============================================
 
 model Lead {
-  id          String   @id @default(uuid())
-  tenantId    String
-  amocrmId    String?
-  title       String
-  contactId   String?
-  status      String?
-  pipelineId  String?
+  id                String    @id @default(uuid())
+  tenantId          String
+  amocrmId          String?
+  title             String
+  contactId         String?
+  status            String?
+  pipelineId        String?
   responsibleUserId String?
-  metadata    Json?
-  source      String?
+  metadata          Json?
+  source            String?
   externalCreatedAt DateTime?
   externalUpdatedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact Contact? @relation(fields: [contactId], references: [id])
   calls   Call[]
 
+  @@unique([tenantId, amocrmId])
   @@index([tenantId])
   @@index([amocrmId])
-  @@unique([tenantId, amocrmId])
   @@index([contactId])
   @@index([status])
   @@index([createdAt])
@@ -186,15 +259,15 @@ model Lead {
 }
 
 model Contact {
-  id         String   @id @default(uuid())
-  tenantId   String
-  name       String?
-  phone      String?
-  email      String?
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String?
+  phone       String?
+  email       String?
   externalIds Json?
-  metadata   Json?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   leads  Lead[]
@@ -213,28 +286,29 @@ model Contact {
 // ============================================
 
 model Call {
-  id            String   @id @default(uuid())
-  tenantId      String
-  provider      String   @default("unknown")
+  id             String    @id @default(uuid())
+  tenantId       String
+  provider       String    @default("unknown")
   callIdExternal String
-  from          String
-  to            String
-  direction     String
-  duration      Int?
-  status        String
-  recordingUrl  String?
-  recordingId   String?
-  metadata      Json?
-  leadId        String?
-  contactId     String?
-  startedAt     DateTime
-  endedAt       DateTime?
-  createdAt     DateTime @default(now())
+  from           String
+  to             String
+  direction      String
+  duration       Int?
+  status         String
+  recordingUrl   String?
+  recordingId    String?
+  metadata       Json?
+  leadId         String?
+  contactId      String?
+  startedAt      DateTime
+  endedAt        DateTime?
+  createdAt      DateTime  @default(now())
 
   tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   lead    Lead?    @relation(fields: [leadId], references: [id])
   contact Contact? @relation(fields: [contactId], references: [id])
 
+  @@unique([tenantId, provider, callIdExternal])
   @@index([tenantId])
   @@index([provider])
   @@index([callIdExternal])
@@ -242,8 +316,9 @@ model Call {
   @@index([to])
   @@index([leadId])
   @@index([contactId])
-  @@unique([tenantId, provider, callIdExternal])
   @@index([startedAt])
+  @@index([tenantId, provider, startedAt])
+  @@index([tenantId, startedAt])
   @@map("calls")
 }
 
@@ -252,23 +327,24 @@ model Call {
 // ============================================
 
 model Notification {
-  id          String   @id @default(uuid())
-  tenantId    String
-  type        String
-  channel     String?
-  payload     Json
-  status      String   @default("pending")
-  attempts    Int      @default(0)
-  maxAttempts Int      @default(3)
-  nextRetryAt DateTime?
-  sentAt      DateTime?
+  id           String    @id @default(uuid())
+  tenantId     String
+  type         String
+  channel      String?
+  payload      Json
+  status       String    @default("pending")
+  attempts     Int       @default(0)
+  maxAttempts  Int       @default(3)
+  nextRetryAt  DateTime?
+  sentAt       DateTime?
   errorMessage String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, status])
+  @@index([tenantId, status, createdAt])
   @@index([status, nextRetryAt])
   @@index([createdAt])
   @@map("notifications")
@@ -279,25 +355,25 @@ model Notification {
 // ============================================
 
 model WebhookEvent {
-  id          String   @id @default(uuid())
-  tenantId    String?
-  source      String
-  eventType   String
+  id             String    @id @default(uuid())
+  tenantId       String?
+  source         String
+  eventType      String
   idempotencyKey String?
-  rawPayload  Json
-  signature   String?
-  processed   Boolean  @default(false)
-  processedAt DateTime?
-  errorMessage String?
-  retryCount  Int      @default(0)
-  createdAt   DateTime @default(now())
+  rawPayload     Json
+  signature      String?
+  processed      Boolean   @default(false)
+  processedAt    DateTime?
+  errorMessage   String?
+  retryCount     Int       @default(0)
+  createdAt      DateTime  @default(now())
 
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
 
+  @@unique([tenantId, source, idempotencyKey])
   @@index([tenantId])
   @@index([source, processed])
   @@index([source, idempotencyKey])
-  @@unique([tenantId, source, idempotencyKey])
   @@index([createdAt])
   @@map("webhook_events")
 }
@@ -307,16 +383,16 @@ model WebhookEvent {
 // ============================================
 
 model AuditLog {
-  id        String   @id @default(uuid())
-  tenantId  String
-  userId    String?
-  action    String
-  resource  String?
+  id         String   @id @default(uuid())
+  tenantId   String
+  userId     String?
+  action     String
+  resource   String?
   resourceId String?
-  ip        String?
-  userAgent String?
-  metadata  Json?
-  createdAt DateTime @default(now())
+  ip         String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -334,72 +410,75 @@ model AuditLog {
 // ============================================
 
 model Customer {
-  id              String   @id @default(uuid())
-  tenantId        String
-  customerNumber  String
-  name            String
-  telegramUsername String?
+  id                        String   @id @default(uuid())
+  tenantId                  String
+  customerNumber            String
+  name                      String
+  telegramUsername          String?
   // KD-specific fields (added via migration — nullable, backward compatible)
-  phone           String?
-  faceIdExternalId String? // Face ID device user.id, learned on first phone match
-  gender          String?  // 'male' | 'female'
-  region          String?
-  secondaryPhone  String?
-  specialty       String?
-  address         String?
-  instagramUsername String?
-  socialMediaConsent Boolean?
-  profileCourseId String?
-  profileTariffId String?
-  profileSubTariffId String?
-  legacyProfileImportKey String?
+  faceIdExternalId          String? // Face ID device user.id, learned on first phone match
+  gender                    String? // 'male' | 'female'
+  region                    String?
+  secondaryPhone            String?
+  specialty                 String?
+  address                   String?
+  instagramUsername         String?
+  socialMediaConsent        Boolean?
+  profileCourseId           String?
+  profileTariffId           String?
+  profileSubTariffId        String?
+  legacyProfileImportKey    String?
   legacyProfileImportSource String?
   historicalImportSessionId String?
-  legacyProfileMeta Json?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  legacyProfileMeta         Json?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
 
-  tenant  Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  incomes Income[]
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  incomes                  Income[]
   incomeAdjustmentRequests IncomeAdjustmentRequest[]
 
   // KD-specific relations
-  kuratorAssignments  KuratorAssignment[]
-  exerciseLogs        StudentExerciseLog[]
-  attendances         ClassAttendance[]
-  kuratorTasks        KuratorTask[]
+  kuratorAssignments   KuratorAssignment[]
+  exerciseLogs         StudentExerciseLog[]
+  attendances          ClassAttendance[]
+  kuratorTasks         KuratorTask[]
   courseRunMemberships CourseRunMember[]
 
   @@unique([tenantId, customerNumber])
+  @@unique([tenantId, legacyProfileImportKey])
   @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, profileCourseId])
+  @@index([tenantId, profileTariffId])
+  @@index([tenantId, profileSubTariffId])
   @@index([customerNumber])
   @@index([profileCourseId])
   @@index([profileTariffId])
   @@index([profileSubTariffId])
-  @@unique([tenantId, legacyProfileImportKey])
   @@index([tenantId, faceIdExternalId])
   @@map("customers")
 }
 
 model Course {
-  id        String   @id @default(uuid())
-  tenantId  String
-  name      String
-  startDate DateTime?
-  endDate   DateTime?
-  category  String   @default("offline")
-  isActive  Boolean  @default(true)
-  isHiddenFromIncomeForm Boolean @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                     String    @id @default(uuid())
+  tenantId               String
+  name                   String
+  startDate              DateTime?
+  endDate                DateTime?
+  category               String    @default("offline")
+  isActive               Boolean   @default(true)
+  isHiddenFromIncomeForm Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
 
-  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tariffs   Tariff[]
-  incomes   Income[]
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tariffs                  Tariff[]
+  incomes                  Income[]
   incomeAdjustmentRequests IncomeAdjustmentRequest[] @relation("IncomeAdjustmentNewCourse")
 
   // KD-specific
-  courseRuns CourseRun[]
+  courseRuns          CourseRun[]
   exerciseDefinitions ExerciseDefinition[]
 
   @@unique([tenantId, name])
@@ -416,11 +495,11 @@ model Tariff {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  course     Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  incomes    Income[]
-  subTariffs SubTariff[]
-  courseRuns CourseRun[]
+  tenant                   Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course                   Course                    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  incomes                  Income[]
+  subTariffs               SubTariff[]
+  courseRuns               CourseRun[]
   incomeAdjustmentRequests IncomeAdjustmentRequest[] @relation("IncomeAdjustmentNewTariff")
 
   @@unique([tenantId, courseId, name])
@@ -448,38 +527,39 @@ model SubTariff {
 }
 
 model Income {
-  id                 String   @id @default(uuid())
-  tenantId           String
-  customerId         String
-  managerUserId      String
-  type               String
-  relatedDebtIncomeId String?
-  courseId           String?
-  tariffId           String?
-  entryDate          DateTime
-  deadline           DateTime?
-  coursePriceAmount  Int?
-  debtAmount         Int?
-  paymentAmount      Int
-  remainingDebtAmount Int
-  lifecycleStatus    String   @default("active")
-  legacyImportKey    String?
-  legacyImportSource String?
+  id                        String    @id @default(uuid())
+  tenantId                  String
+  customerId                String
+  managerUserId             String
+  type                      String
+  relatedDebtIncomeId       String?
+  courseId                  String?
+  tariffId                  String?
+  entryDate                 DateTime
+  deadline                  DateTime?
+  coursePriceAmount         Int?
+  debtAmount                Int?
+  paymentAmount             Int
+  remainingDebtAmount       Int
+  lifecycleStatus           String    @default("active")
+  legacyImportKey           String?
+  legacyImportSource        String?
   historicalImportSessionId String?
-  legacyImportMeta   Json?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  legacyImportMeta          Json?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
 
-  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  manager  User     @relation("IncomeManager", fields: [managerUserId], references: [id], onDelete: Restrict)
-  course   Course?  @relation(fields: [courseId], references: [id], onDelete: SetNull)
-  tariff   Tariff?  @relation(fields: [tariffId], references: [id], onDelete: SetNull)
+  tenant             Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer           Customer                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  manager            User                      @relation("IncomeManager", fields: [managerUserId], references: [id], onDelete: Restrict)
+  course             Course?                   @relation(fields: [courseId], references: [id], onDelete: SetNull)
+  tariff             Tariff?                   @relation(fields: [tariffId], references: [id], onDelete: SetNull)
   adjustmentRequests IncomeAdjustmentRequest[]
 
   relatedDebtIncome Income?  @relation("DebtRepaymentSource", fields: [relatedDebtIncomeId], references: [id], onDelete: SetNull)
   repayments        Income[] @relation("DebtRepaymentSource")
 
+  @@unique([tenantId, legacyImportKey])
   @@index([tenantId])
   @@index([customerId])
   @@index([managerUserId])
@@ -488,33 +568,38 @@ model Income {
   @@index([remainingDebtAmount])
   @@index([lifecycleStatus])
   @@index([tenantId, type, lifecycleStatus, entryDate])
+  @@index([tenantId, entryDate])
+  @@index([tenantId, lifecycleStatus, entryDate])
+  @@index([tenantId, managerUserId, entryDate])
+  @@index([tenantId, managerUserId, lifecycleStatus, entryDate])
+  @@index([tenantId, courseId, tariffId, entryDate])
+  @@index([tenantId, relatedDebtIncomeId, lifecycleStatus])
   @@index([tenantId, courseId, type, lifecycleStatus, customerId])
   @@index([tenantId, customerId, type, lifecycleStatus, entryDate])
   @@index([relatedDebtIncomeId])
   @@index([historicalImportSessionId])
-  @@unique([tenantId, legacyImportKey])
   @@map("incomes")
 }
 
 model HistoricalImportSession {
-  id                 String   @id @default(uuid())
-  tenantId           String
-  createdByUserId    String
-  status             String   @default("prepared")
+  id                    String    @id @default(uuid())
+  tenantId              String
+  createdByUserId       String
+  status                String    @default("prepared")
   fallbackManagerUserId String?
-  sourceFiles        Json?
-  managerAliasMap    Json?
-  incomeRows         Json?
-  customerRows       Json?
-  preview            Json?
-  progress           Json?
-  failureReport      Json?
-  errorMessage       String?
-  startedAt          DateTime?
-  completedAt        DateTime?
-  cancelledAt        DateTime?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  sourceFiles           Json?
+  managerAliasMap       Json?
+  incomeRows            Json?
+  customerRows          Json?
+  preview               Json?
+  progress              Json?
+  failureReport         Json?
+  errorMessage          String?
+  startedAt             DateTime?
+  completedAt           DateTime?
+  cancelledAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy User   @relation("HistoricalImportCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
@@ -526,23 +611,24 @@ model HistoricalImportSession {
 }
 
 model IncomeAdjustmentRequest {
-  id               String   @id @default(uuid())
-  tenantId         String
-  type             String
-  status           String   @default("pending")
-  incomeId         String
-  customerId       String
-  requestedByUserId String
-  reviewedByUserId String?
-  reason           String?
-  reviewNote       String?
-  requestedAmount  Int?
-  newCourseId      String?
-  newTariffId      String?
+  id                 String    @id @default(uuid())
+  tenantId           String
+  type               String
+  status             String    @default("pending")
+  incomeId           String
+  customerId         String
+  requestedByUserId  String
+  reviewedByUserId   String?
+  reason             String?
+  reviewNote         String?
+  requestedAmount    Int?
+  refundCardNumber   String?
+  newCourseId        String?
+  newTariffId        String?
   newAgreementAmount Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  reviewedAt       DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  reviewedAt         DateTime?
 
   tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   income      Income   @relation(fields: [incomeId], references: [id], onDelete: Cascade)
@@ -563,6 +649,140 @@ model IncomeAdjustmentRequest {
   @@map("income_adjustment_requests")
 }
 
+model CorporateCallDuration {
+  id              String   @id @default(uuid())
+  tenantId        String
+  managerUserId   String
+  callDate        DateTime
+  durationSeconds Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  manager User   @relation("CorporateCallDurationManager", fields: [managerUserId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, managerUserId, callDate])
+  @@index([tenantId])
+  @@index([managerUserId])
+  @@index([callDate])
+  @@map("corporate_call_durations")
+}
+
+model AttendanceEvent {
+  id             String   @id @default(uuid())
+  tenantId       String
+  userId         String?
+  externalUserId String?
+  externalPhone  String?
+  firstName      String?
+  lastName       String?
+  externalRole   String?
+  eventType      String
+  action         String
+  eventAt        DateTime
+  localDate      String
+  localTime      String?
+  source         String   @default("FACE_ID")
+  branchName     String?
+  latitude       Float?
+  longitude      Float?
+  lateMinutes    Int      @default(0)
+  idempotencyKey String?
+  rawPayload     Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User?                  @relation("AttendanceEventUser", fields: [userId], references: [id], onDelete: SetNull)
+  adjustments AttendanceAdjustment[]
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
+  @@index([userId])
+  @@index([localDate])
+  @@index([eventAt])
+  @@index([eventType, action])
+  @@map("attendance_events")
+}
+
+model AttendanceDaySummary {
+  id                String    @id @default(uuid())
+  tenantId          String
+  userId            String
+  summaryDate       String
+  workedSeconds     Int       @default(0)
+  requiredSeconds   Int       @default(32400)
+  missingSeconds    Int       @default(0)
+  lateMinutes       Int       @default(0)
+  lateCount         Int       @default(0)
+  absence           Boolean   @default(false)
+  unmatchedInCount  Int       @default(0)
+  unmatchedOutCount Int       @default(0)
+  anomalyCount      Int       @default(0)
+  firstInAt         DateTime?
+  lastOutAt         DateTime?
+  sourceUpdatedAt   DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation("AttendanceDaySummaryUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId, summaryDate])
+  @@index([tenantId])
+  @@index([userId])
+  @@index([summaryDate])
+  @@index([tenantId, summaryDate])
+  @@map("attendance_day_summaries")
+}
+
+model AttendanceAdjustment {
+  id              String   @id @default(uuid())
+  tenantId        String
+  userId          String?
+  eventId         String?
+  summaryDate     String?
+  action          String
+  reason          String
+  beforeData      Json?
+  afterData       Json?
+  createdByUserId String
+  createdAt       DateTime @default(now())
+
+  tenant       Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user         User?                       @relation("AttendanceAdjustmentSubject", fields: [userId], references: [id], onDelete: SetNull)
+  event        AttendanceEvent?            @relation(fields: [eventId], references: [id], onDelete: SetNull)
+  createdBy    User                        @relation("AttendanceAdjustmentCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  auditEntries AttendanceAdjustmentAudit[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([eventId])
+  @@index([summaryDate])
+  @@index([createdByUserId])
+  @@map("attendance_adjustments")
+}
+
+model AttendanceAdjustmentAudit {
+  id           String   @id @default(uuid())
+  adjustmentId String
+  tenantId     String
+  actorUserId  String
+  action       String
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  adjustment AttendanceAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+  tenant     Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  actor      User                 @relation("AttendanceAdjustmentAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([adjustmentId])
+  @@index([actorUserId])
+  @@index([createdAt])
+  @@map("attendance_adjustment_audits")
+}
+
 // ============================================
 // KD-SPECIFIC TABLES
 // ============================================
@@ -572,29 +792,29 @@ model IncomeAdjustmentRequest {
 // - online: Monday start
 // - offline/intensiv: Saturday start
 model CourseRun {
-  id          String   @id @default(uuid())
-  tenantId    String
-  courseId    String
-  tariffId    String?
-  name        String   // display name e.g. "Aprel 2026 oqimi"
-  startDate   DateTime // validated by app according to course category
-  endDate     DateTime // computed in app by category-specific weekly rule
-  durationWeeks Int    @default(6)
-  baseLessons Int      @default(12) // 12 Saturday+Sunday lessons
-  premiumExtraLessons Int @default(2) // additional lessons for Premium/VIP students
-  kuratorUserId String?
-  isHidden    Boolean  @default(false)
-  isSystemManaged Boolean @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  tenantId            String
+  courseId            String
+  tariffId            String?
+  name                String // display name e.g. "Aprel 2026 oqimi"
+  startDate           DateTime // validated by app according to course category
+  endDate             DateTime // computed in app by category-specific weekly rule
+  durationWeeks       Int      @default(6)
+  baseLessons         Int      @default(12) // 12 Saturday+Sunday lessons
+  premiumExtraLessons Int      @default(2) // additional lessons for Premium/VIP students
+  kuratorUserId       String?
+  isHidden            Boolean  @default(false)
+  isSystemManaged     Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  course              Course               @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  tariff              Tariff?              @relation(fields: [tariffId], references: [id], onDelete: SetNull)
-  kurator             User?                @relation("CourseRunKurator", fields: [kuratorUserId], references: [id], onDelete: SetNull)
-  kuratorAssignments  KuratorAssignment[]
-  attendances         ClassAttendance[]
-  members             CourseRunMember[]
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course             Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tariff             Tariff?             @relation(fields: [tariffId], references: [id], onDelete: SetNull)
+  kurator            User?               @relation("CourseRunKurator", fields: [kuratorUserId], references: [id], onDelete: SetNull)
+  kuratorAssignments KuratorAssignment[]
+  attendances        ClassAttendance[]
+  members            CourseRunMember[]
 
   @@index([tenantId])
   @@index([courseId])
@@ -626,22 +846,22 @@ model CourseRunMember {
 
 // Defines an exercise type students should complete in a course
 model ExerciseDefinition {
-  id          String   @id @default(uuid())
+  id          String    @id @default(uuid())
   tenantId    String
   courseId    String
-  name        String   // e.g. "Shat", "Uy ishi"
-  type        String   // 'class' | 'homework'
-  targetCount Int      @default(1) // how many times per period
+  name        String // e.g. "Shat", "Uy ishi"
+  type        String // 'class' | 'homework'
+  targetCount Int       @default(1) // how many times per period
   startDate   DateTime?
-  orderIndex  Int      @default(0)
-  isActive    Boolean  @default(true)
-  isHidden    Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  orderIndex  Int       @default(0)
+  isActive    Boolean   @default(true)
+  isHidden    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
 
-  tenant      Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  course      Course              @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  tenant       Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  course       Course                         @relation(fields: [courseId], references: [id], onDelete: Cascade)
   exerciseLogs StudentExerciseLog[]
-  colorPoints ExerciseDefinitionColorPoint[]
+  colorPoints  ExerciseDefinitionColorPoint[]
 
   @@index([tenantId])
   @@index([courseId])
@@ -662,11 +882,11 @@ model StudentExerciseLog {
   note                 String?
   createdAt            DateTime @default(now())
 
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer           Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  exerciseDefinition ExerciseDefinition @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
+  tenant             Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer           Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  exerciseDefinition ExerciseDefinition   @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
   colorOption        ExerciseColorOption? @relation(fields: [colorOptionId], references: [id], onDelete: SetNull)
-  loggedBy           User               @relation(fields: [loggedByUserId], references: [id], onDelete: Restrict)
+  loggedBy           User                 @relation(fields: [loggedByUserId], references: [id], onDelete: Restrict)
 
   @@index([tenantId])
   @@index([customerId])
@@ -690,8 +910,8 @@ model ExerciseColorOption {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  exerciseLogs StudentExerciseLog[]
+  tenant           Tenant                         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  exerciseLogs     StudentExerciseLog[]
   definitionPoints ExerciseDefinitionColorPoint[]
 
   @@index([tenantId])
@@ -708,8 +928,8 @@ model ExerciseDefinitionColorPoint {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  exerciseDefinition ExerciseDefinition @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
+  tenant             Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  exerciseDefinition ExerciseDefinition  @relation(fields: [exerciseDefinitionId], references: [id], onDelete: Cascade)
   colorOption        ExerciseColorOption @relation(fields: [colorOptionId], references: [id], onDelete: Cascade)
 
   @@unique([exerciseDefinitionId, colorOptionId])
@@ -734,10 +954,10 @@ model ClassAttendance {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  courseRun  CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
-  markedBy   User?     @relation(fields: [markedByUserId], references: [id], onDelete: SetNull)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  courseRun CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+  markedBy  User?     @relation(fields: [markedByUserId], references: [id], onDelete: SetNull)
 
   @@unique([tenantId, customerId, courseRunId, lessonDate, lessonType])
   @@index([tenantId])
@@ -752,18 +972,18 @@ model ClassAttendance {
 
 // Links a Kurator user to students for a specific course run
 model KuratorAssignment {
-  id          String   @id @default(uuid())
-  tenantId    String
+  id            String   @id @default(uuid())
+  tenantId      String
   kuratorUserId String
-  customerId  String
-  courseRunId String
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  customerId    String
+  courseRunId   String
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
 
-  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  kurator     User      @relation(fields: [kuratorUserId], references: [id], onDelete: Cascade)
-  customer    Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  courseRun   CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kurator   User      @relation(fields: [kuratorUserId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  courseRun CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, kuratorUserId, customerId, courseRunId])
   @@index([tenantId])
@@ -777,15 +997,15 @@ model KuratorAssignment {
 
 // Tasks assigned to kurators (for/about specific students)
 model KuratorTask {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   tenantId      String
   kuratorUserId String
   customerId    String?
   title         String
   dueDate       DateTime?
   completedAt   DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   kurator  User      @relation(fields: [kuratorUserId], references: [id], onDelete: Cascade)
@@ -819,7 +1039,7 @@ model RegionConfig {
 model CourseScheduleTemplate {
   id                  String   @id @default(uuid())
   tenantId            String
-  courseCategory      String   // e.g. 'offline'
+  courseCategory      String // e.g. 'offline'
   durationWeeks       Int      @default(6)
   baseLessons         Int      @default(12)
   premiumExtraLessons Int      @default(2)
@@ -834,13 +1054,13 @@ model CourseScheduleTemplate {
 }
 
 model TelegramLinkToken {
-  id          String   @id @default(uuid())
-  tenantId    String
-  userId      String
-  tokenHash   String   @unique
-  expiresAt   DateTime
-  usedAt      DateTime?
-  createdAt   DateTime @default(now())
+  id        String    @id @default(uuid())
+  tenantId  String
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -862,8 +1082,8 @@ model TelegramReportReceiver {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenant         Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdByUser  User   @relation("TelegramReportReceiverCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  tenant        Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdByUser User   @relation("TelegramReportReceiverCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, chatId])
   @@index([tenantId, isActive])
@@ -890,15 +1110,15 @@ model ReportDeliveryLog {
 }
 
 model TelegramScheduleRun {
-  id          String   @id @default(uuid())
-  jobKey      String
-  slotTime    DateTime
-  status      String   // running | sent | failed
-  error       String?
-  startedAt   DateTime @default(now())
-  finishedAt  DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String    @id @default(uuid())
+  jobKey     String
+  slotTime   DateTime
+  status     String // running | sent | failed
+  error      String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@unique([jobKey, slotTime])
   @@index([slotTime])
