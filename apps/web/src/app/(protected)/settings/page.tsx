@@ -56,9 +56,8 @@ export default function SettingsPage() {
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero settings-hero">
         <h1>Sozlamalar</h1>
-        <p>Kurslar, oqimlar, mashqlar va foydalanuvchilarni boshqarish.</p>
       </section>
 
       <div className="grid gap-4 lg:grid-cols-[240px,1fr]">
