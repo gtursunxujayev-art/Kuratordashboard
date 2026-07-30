@@ -613,9 +613,8 @@ export default function AmaliyPage() {
 
   return (
     <div className="nn-page">
-      <section className="nn-hero">
+      <section className="nn-hero amaliy-hero">
         <h1>Amaliy mashqlar</h1>
-        <p>O&apos;quvchilar bo&apos;yicha uy vazifa va amaliy mashq nazorati.</p>
       </section>
 
       <div className="nn-filter-card space-y-3">
