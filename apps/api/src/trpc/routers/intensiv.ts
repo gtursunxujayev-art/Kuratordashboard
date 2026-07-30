@@ -129,7 +129,11 @@ export const intensivRouter = router({
     }),
 
   saveAttendance: managerProcedure
-    .input(z.object({ saleId: z.string(), dayOneStatus: attendanceStatusSchema, dayTwoStatus: attendanceStatusSchema }))
+    .input(z.object({
+      saleId: z.string(),
+      day: z.enum(['dayOne', 'dayTwo']),
+      status: attendanceStatusSchema,
+    }))
     .mutation(async ({ ctx, input }) => {
       const sale = await prisma.income.findFirst({
         where: { id: input.saleId, tenantId: ctx.tenantId, ...ACTIVE_SALE, course: { category: { contains: 'intens', mode: 'insensitive' } } },
@@ -144,16 +148,38 @@ export const intensivRouter = router({
       if (!membership) {
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: "O'quvchi avtomatik Intensiv oqimiga biriktirilmagan" });
       }
-      const days = [
-        { date: startOfDayLocal(run.startDate), status: input.dayOneStatus },
-        { date: addDaysLocal(startOfDayLocal(run.startDate), 1), status: input.dayTwoStatus },
-      ];
-      await prisma.$transaction(days.map((day) => prisma.classAttendance.upsert({
-        where: { tenantId_customerId_courseRunId_lessonDate_lessonType: { tenantId: ctx.tenantId, customerId: sale.customerId, courseRunId: run.id, lessonDate: day.date, lessonType: 'base' } },
-        create: { tenantId: ctx.tenantId, customerId: sale.customerId, courseRunId: run.id, lessonDate: day.date, lessonType: 'base', status: day.status, attended: day.status === 'keldi', source: 'manual', markedByUserId: ctx.user.userId },
-        update: { status: day.status, attended: day.status === 'keldi', source: 'manual', markedByUserId: ctx.user.userId },
-      })));
-      return { success: true };
+      const lessonDate = input.day === 'dayOne'
+        ? startOfDayLocal(run.startDate)
+        : addDaysLocal(startOfDayLocal(run.startDate), 1);
+      await prisma.classAttendance.upsert({
+        where: {
+          tenantId_customerId_courseRunId_lessonDate_lessonType: {
+            tenantId: ctx.tenantId,
+            customerId: sale.customerId,
+            courseRunId: run.id,
+            lessonDate,
+            lessonType: 'base',
+          },
+        },
+        create: {
+          tenantId: ctx.tenantId,
+          customerId: sale.customerId,
+          courseRunId: run.id,
+          lessonDate,
+          lessonType: 'base',
+          status: input.status,
+          attended: input.status === 'keldi',
+          source: 'manual',
+          markedByUserId: ctx.user.userId,
+        },
+        update: {
+          status: input.status,
+          attended: input.status === 'keldi',
+          source: 'manual',
+          markedByUserId: ctx.user.userId,
+        },
+      });
+      return { success: true, day: input.day, status: input.status };
     }),
 
   recordPayment: managerProcedure
