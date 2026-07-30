@@ -380,6 +380,60 @@ body {
   font-size: 0.875rem;
 }
 
+.students-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.students-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
+.amaliy-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.amaliy-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
+.dashboard-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.dashboard-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
+.hisobot-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.hisobot-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
+.davomat-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.davomat-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
+.settings-hero {
+  min-height: 0;
+  padding: 0.8rem 1.25rem;
+}
+
+.settings-hero h1 {
+  font-size: clamp(1.65rem, 2.5vw, 2.25rem);
+}
+
 .nn-kpi-grid {
   display: grid;
   gap: 0.9rem;
