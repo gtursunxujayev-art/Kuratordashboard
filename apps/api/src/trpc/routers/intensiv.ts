@@ -81,7 +81,7 @@ export const intensivRouter = router({
         select: {
           id: true, customerId: true, entryDate: true, createdAt: true, coursePriceAmount: true, debtAmount: true, paymentAmount: true,
           remainingDebtAmount: true, legacyImportMeta: true,
-          customer: { select: { id: true, name: true, customerNumber: true, phone: true } },
+          customer: { select: { id: true, name: true, customerNumber: true } },
         },
         orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }, { createdAt: 'desc' }],
       });
@@ -119,7 +119,7 @@ export const intensivRouter = router({
           const remainingDebt = Math.max(agreement - (paidBySale.get(sale.id) ?? sale.paymentAmount), 0);
           return {
             saleId: sale.id, customerId: sale.customerId, name: sale.customer.name,
-            phone: sale.customer.phone || sale.customer.customerNumber,
+            phone: sale.customer.customerNumber,
             dayOneStatus: attendance.get(`${sale.customerId}:${localDateKey(dayOne)}`) ?? 'kelmadi',
             dayTwoStatus: attendance.get(`${sale.customerId}:${localDateKey(dayTwo)}`) ?? 'kelmadi',
             remainingDebt,
