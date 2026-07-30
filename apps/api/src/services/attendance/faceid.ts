@@ -295,17 +295,18 @@ async function matchStudent(
     }
   }
 
-  // 2) Phone match. Compare on the last 9 digits then confirm a full normalized match.
+  // 2) Phone match. Dashboarduz stores the phone in customers.customerNumber.
+  // Compare on the last 9 digits then confirm a full normalized match.
   if (parsed.phone && parsed.phone.length >= 7) {
     const last9 = parsed.phone.slice(-9);
     const candidates = await prisma.customer.findMany({
-      where: { ...tenantWhere, phone: { contains: last9 } },
-      select: { id: true, tenantId: true, phone: true, faceIdExternalId: true },
+      where: { ...tenantWhere, customerNumber: { contains: last9 } },
+      select: { id: true, tenantId: true, customerNumber: true, faceIdExternalId: true },
       take: 25,
     });
 
     const exact = candidates.filter((c) => {
-      const normalized = normalizePhone(c.phone);
+      const normalized = normalizePhone(c.customerNumber);
       return normalized.length >= 7 && normalized.slice(-9) === last9;
     });
 
