@@ -82,6 +82,8 @@ export const intensivRouter = router({
           id: true, customerId: true, entryDate: true, createdAt: true, coursePriceAmount: true, debtAmount: true, paymentAmount: true,
           remainingDebtAmount: true, legacyImportMeta: true,
           customer: { select: { id: true, name: true, customerNumber: true } },
+          tariff: { select: { name: true } },
+          manager: { select: { name: true, username: true } },
         },
         orderBy: [{ customerId: 'asc' }, { entryDate: 'desc' }, { createdAt: 'desc' }],
       });
@@ -120,6 +122,8 @@ export const intensivRouter = router({
           return {
             saleId: sale.id, customerId: sale.customerId, name: sale.customer.name,
             phone: sale.customer.customerNumber,
+            tariffName: sale.tariff?.name ?? '-',
+            managerName: sale.manager.name || sale.manager.username || '-',
             dayOneStatus: attendance.get(`${sale.customerId}:${localDateKey(dayOne)}`) ?? null,
             dayTwoStatus: attendance.get(`${sale.customerId}:${localDateKey(dayTwo)}`) ?? null,
             remainingDebt,
