@@ -8,8 +8,17 @@ import { managerProcedure, router } from '../trpc';
 
 const ACTIVE_SALE = { type: 'new_sale', lifecycleStatus: 'active' } as const;
 const attendanceStatusSchema = z.enum(['keldi', 'kelmadi', 'yolda']);
-const SALES_MANAGER_ROLES = ['Admin', 'Manager', 'TeamLeader', 'Agent', 'OnlineAgent', 'OfflineAgent'];
+const SALES_MANAGER_ROLES = ['Admin', 'Manager', 'TeamLeader', 'Agent', 'OnlineAgent', 'OfflineAgent'] as const;
+const SALES_MANAGER_ROLE_TOKENS = new Set(SALES_MANAGER_ROLES.map((role) => role.toLowerCase()));
 const MAX_MONEY_AMOUNT = 2_147_483_647;
+
+function hasSalesManagerRole(roles: readonly string[] | null | undefined): boolean {
+  return Array.isArray(roles) && roles.some((role) => SALES_MANAGER_ROLE_TOKENS.has(role.trim().toLowerCase()));
+}
+
+function displayManagerName(manager: { id: string; name: string | null; username: string | null }): string {
+  return manager.name?.trim() || manager.username?.trim() || manager.id;
+}
 
 function readSubTariffId(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -43,15 +52,21 @@ async function requireSystemRun(tenantId: string, courseId: string, tariffId: st
 }
 
 export const intensivRouter = router({
-  managers: managerProcedure.query(async ({ ctx }) => prisma.user.findMany({
-    where: {
-      tenantId: ctx.tenantId,
-      isActive: true,
-      roles: { hasSome: SALES_MANAGER_ROLES },
-    },
-    select: { id: true, name: true, username: true },
-    orderBy: [{ name: 'asc' }, { username: 'asc' }],
-  })),
+  managers: managerProcedure.query(async ({ ctx }) => {
+    const users = await prisma.user.findMany({
+      where: { tenantId: ctx.tenantId, isActive: true },
+      select: { id: true, name: true, username: true, roles: true },
+      orderBy: [{ name: 'asc' }, { username: 'asc' }],
+    });
+
+    return users
+      .filter((user) => hasSalesManagerRole(user.roles))
+      .map(({ id, name, username }) => ({
+        id,
+        name: displayManagerName({ id, name, username }),
+        username,
+      }));
+  }),
 
   courses: managerProcedure.query(async ({ ctx }) => prisma.course.findMany({
     where: { tenantId: ctx.tenantId, isActive: true, category: { contains: 'intens', mode: 'insensitive' } },
@@ -173,9 +188,8 @@ export const intensivRouter = router({
               id: input.managerUserId,
               tenantId: ctx.tenantId,
               isActive: true,
-              roles: { hasSome: SALES_MANAGER_ROLES },
             },
-            select: { id: true },
+            select: { id: true, roles: true },
           }),
           tx.course.findFirst({
             where: {
@@ -209,7 +223,9 @@ export const intensivRouter = router({
           }),
         ]);
 
-        if (!manager) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol menejer topilmadi' });
+        if (!manager || !hasSalesManagerRole(manager.roles)) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol menejer topilmadi' });
+        }
         if (!course || !tariff) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol Intensiv kurs yoki tarif topilmadi' });
         if (!systemRun) {
           throw new TRPCError({
