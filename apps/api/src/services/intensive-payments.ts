@@ -128,9 +128,9 @@ function readSubTariffId(value: unknown): string | null {
 export async function sendIntensivePaymentReceipt(params: {
   tenantId: string;
   saleId: string;
-  repaymentId: string;
+  paymentIncomeId: string;
 }): Promise<TelegramDispatch> {
-  const [sale, repayment] = await Promise.all([
+  const [sale, paymentIncome] = await Promise.all([
     prisma.income.findFirst({
       where: { id: params.saleId, tenantId: params.tenantId },
       select: {
@@ -145,11 +145,11 @@ export async function sendIntensivePaymentReceipt(params: {
       },
     }),
     prisma.income.findFirst({
-      where: { id: params.repaymentId, tenantId: params.tenantId },
+      where: { id: params.paymentIncomeId, tenantId: params.tenantId },
       select: { manager: { select: { name: true, username: true } } },
     }),
   ]);
-  if (!sale?.customer || !repayment) {
+  if (!sale?.customer || !paymentIncome) {
     return { attempted: false, delivered: false, sentCount: 0, failedCount: 0, reason: 'send_failed', errors: ['To\'lov ma\'lumotlari topilmadi'] };
   }
 
@@ -168,7 +168,7 @@ export async function sendIntensivePaymentReceipt(params: {
     : '-';
   const tags = [
     toHashtag(sale.course?.name), toHashtag(sale.tariff?.name), toHashtag(subTariff?.name),
-    toHashtag(repayment.manager.name || repayment.manager.username),
+    toHashtag(paymentIncome.manager.name || paymentIncome.manager.username),
   ].filter(Boolean);
   const agreement = sale.coursePriceAmount ?? sale.debtAmount ?? 0;
   const payments = paymentRows.map((row, index) => `${index + 1}) ${formatAmount(row.paymentAmount)} - ${formatDate(row.entryDate)}`);
