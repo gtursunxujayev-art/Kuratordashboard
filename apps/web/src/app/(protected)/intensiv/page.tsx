@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type FormEvent } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 import { trpc } from '@/lib/trpc';
@@ -8,6 +8,23 @@ import { trpc } from '@/lib/trpc';
 type AttendanceStatus = 'keldi' | 'kelmadi' | 'yolda';
 type AttendanceValue = AttendanceStatus | '';
 type AttendanceDay = 'dayOne' | 'dayTwo';
+type NewCustomerDraft = {
+  managerUserId: string;
+  customerNumber: string;
+  customerName: string;
+  subTariffId: string;
+  agreementAmount: string;
+  paymentAmount: string;
+};
+
+const emptyNewCustomerDraft: NewCustomerDraft = {
+  managerUserId: '',
+  customerNumber: '',
+  customerName: '',
+  subTariffId: '',
+  agreementAmount: '',
+  paymentAmount: '',
+};
 
 const statusMeta: Record<AttendanceStatus, { label: string; className: string }> = {
   keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
@@ -61,7 +78,10 @@ export default function IntensivPage() {
   const [paymentDrafts, setPaymentDrafts] = useState<Record<string, string>>({});
   const [savingAttendanceKeys, setSavingAttendanceKeys] = useState<Record<string, boolean>>({});
   const [payingSaleId, setPayingSaleId] = useState<string | null>(null);
+  const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
+  const [newCustomerDraft, setNewCustomerDraft] = useState<NewCustomerDraft>(emptyNewCustomerDraft);
 
+  const managersQuery = trpc.intensiv.managers.useQuery(undefined, { enabled: isManager });
   const coursesQuery = trpc.intensiv.courses.useQuery(undefined, { enabled: isManager });
   const tariffsQuery = trpc.intensiv.tariffs.useQuery({ courseId }, { enabled: isManager && Boolean(courseId) });
   const subTariffsQuery = trpc.intensiv.subTariffs.useQuery({ tariffId }, { enabled: isManager && Boolean(tariffId) });
@@ -71,8 +91,11 @@ export default function IntensivPage() {
   );
   const saveAttendance = trpc.intensiv.saveAttendance.useMutation();
   const recordPayment = trpc.intensiv.recordPayment.useMutation();
+  const createCustomerSale = trpc.intensiv.createCustomerSale.useMutation();
 
   const students = useMemo(() => listQuery.data?.students ?? [], [listQuery.data?.students]);
+  const selectedCourse = coursesQuery.data?.find((course) => course.id === courseId);
+  const selectedTariff = tariffsQuery.data?.find((tariff) => tariff.id === tariffId);
   const summary = useMemo(() => {
     const statuses = students.flatMap((student) => {
       return [
@@ -92,6 +115,69 @@ export default function IntensivPage() {
   const clearRowDrafts = () => {
     setAttendanceDrafts({});
     setPaymentDrafts({});
+  };
+
+  const closeNewCustomerForm = () => {
+    setShowNewCustomerForm(false);
+    setNewCustomerDraft(emptyNewCustomerDraft);
+  };
+
+  const openNewCustomerForm = () => {
+    if (!courseId || !tariffId) return;
+    setNewCustomerDraft({ ...emptyNewCustomerDraft, subTariffId });
+    setShowNewCustomerForm(true);
+  };
+
+  const updateNewCustomerDraft = (key: keyof NewCustomerDraft, value: string) => {
+    setNewCustomerDraft((current) => ({ ...current, [key]: value }));
+  };
+
+  const submitNewCustomer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const agreementAmount = Number(newCustomerDraft.agreementAmount);
+    const paymentAmount = Number(newCustomerDraft.paymentAmount);
+    if (!newCustomerDraft.managerUserId || !newCustomerDraft.customerNumber.trim() || !newCustomerDraft.customerName.trim()) {
+      toast.show("Menejer, telefon raqami va mijoz ismini kiriting", 'error');
+      return;
+    }
+    if (subTariffsQuery.data?.length && !newCustomerDraft.subTariffId) {
+      toast.show('Sub tarifni tanlang', 'error');
+      return;
+    }
+    if (
+      !newCustomerDraft.agreementAmount.trim()
+      || !newCustomerDraft.paymentAmount.trim()
+      || !Number.isSafeInteger(agreementAmount)
+      || !Number.isSafeInteger(paymentAmount)
+      || agreementAmount < 0
+      || paymentAmount < 0
+      || paymentAmount > agreementAmount
+    ) {
+      toast.show("Shartnoma va to'lov summalarini to'g'ri kiriting; to'lov shartnomadan oshmasligi kerak", 'error');
+      return;
+    }
+
+    try {
+      const result = await createCustomerSale.mutateAsync({
+        managerUserId: newCustomerDraft.managerUserId,
+        customerNumber: newCustomerDraft.customerNumber,
+        customerName: newCustomerDraft.customerName,
+        courseId,
+        tariffId,
+        ...(newCustomerDraft.subTariffId ? { subTariffId: newCustomerDraft.subTariffId } : {}),
+        agreementAmount,
+        paymentAmount,
+      });
+      closeNewCustomerForm();
+      await utils.intensiv.list.invalidate();
+      if (result.telegram.delivered) {
+        toast.show(`${result.customerName} qo'shildi va Dashboarduz orqali Telegramga yuborildi`, 'success');
+      } else {
+        toast.show(`${result.customerName} qo'shildi, ammo ${getTelegramFailureMessage(result.telegram.reason)}`, 'error');
+      }
+    } catch (error) {
+      toast.show(error instanceof Error ? error.message : "Mijozni qo'shib bo'lmadi", 'error');
+    }
   };
 
   const saveAttendanceDay = async (
@@ -158,27 +244,127 @@ export default function IntensivPage() {
       </section>
 
       <section className="nn-filter-card intensiv-filter-card">
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
           <label className="text-sm font-medium kd-title">Kurs
-            <select value={courseId} onChange={(event) => { setCourseId(event.target.value); setTariffId(''); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1">
+            <select value={courseId} onChange={(event) => { setCourseId(event.target.value); setTariffId(''); setSubTariffId(''); clearRowDrafts(); closeNewCustomerForm(); }} className="nn-form-control mt-1">
               <option value="">Kursni tanlang</option>
               {coursesQuery.data?.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
             </select>
           </label>
           <label className="text-sm font-medium kd-title">Tarif
-            <select value={tariffId} disabled={!courseId} onChange={(event) => { setTariffId(event.target.value); setSubTariffId(''); clearRowDrafts(); }} className="nn-form-control mt-1 disabled:opacity-60">
+            <select value={tariffId} disabled={!courseId} onChange={(event) => { setTariffId(event.target.value); setSubTariffId(''); clearRowDrafts(); closeNewCustomerForm(); }} className="nn-form-control mt-1 disabled:opacity-60">
               <option value="">Tarifni tanlang</option>
               {tariffsQuery.data?.map((tariff) => <option key={tariff.id} value={tariff.id}>{tariff.name}</option>)}
             </select>
           </label>
           <label className="text-sm font-medium kd-title">Sub tarif
-            <select value={subTariffId} disabled={!tariffId} onChange={(event) => { setSubTariffId(event.target.value); clearRowDrafts(); }} className="nn-form-control mt-1 disabled:opacity-60">
+            <select value={subTariffId} disabled={!tariffId} onChange={(event) => { setSubTariffId(event.target.value); clearRowDrafts(); closeNewCustomerForm(); }} className="nn-form-control mt-1 disabled:opacity-60">
               <option value="">Barcha sub tariflar</option>
               {subTariffsQuery.data?.map((subTariff) => <option key={subTariff.id} value={subTariff.id}>{subTariff.name}</option>)}
             </select>
           </label>
+          <button
+            type="button"
+            disabled={!courseId || !tariffId}
+            onClick={openNewCustomerForm}
+            className="nn-primary-button !h-8 !px-3 !py-1.5 text-sm disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            + Yangi mijoz qo'shish
+          </button>
         </div>
       </section>
+
+      {showNewCustomerForm && (
+        <section className="nn-table-card overflow-x-auto p-3">
+          <form onSubmit={(event) => void submitNewCustomer(event)} className="flex min-w-max items-end gap-2 whitespace-nowrap">
+            <label className="w-48 shrink-0 text-xs font-medium kd-title">Menejer
+              <select
+                required
+                value={newCustomerDraft.managerUserId}
+                onChange={(event) => updateNewCustomerDraft('managerUserId', event.target.value)}
+                className="nn-form-control mt-1 !h-10 !py-0"
+              >
+                <option value="">Menejerni tanlang</option>
+                {managersQuery.data?.map((manager) => (
+                  <option key={manager.id} value={manager.id}>{manager.name || manager.username || '-'}</option>
+                ))}
+              </select>
+            </label>
+            <label className="w-44 shrink-0 text-xs font-medium kd-title">Telefon
+              <input
+                required
+                inputMode="tel"
+                value={newCustomerDraft.customerNumber}
+                onChange={(event) => updateNewCustomerDraft('customerNumber', event.target.value)}
+                placeholder="998901234567"
+                className="nn-form-control mt-1 !h-10 !py-0"
+              />
+            </label>
+            <label className="w-52 shrink-0 text-xs font-medium kd-title">Ism
+              <input
+                required
+                value={newCustomerDraft.customerName}
+                onChange={(event) => updateNewCustomerDraft('customerName', event.target.value)}
+                placeholder="Mijoz ismi"
+                className="nn-form-control mt-1 !h-10 !py-0"
+              />
+            </label>
+            <label className="w-48 shrink-0 text-xs font-medium kd-title">Kurs
+              <input readOnly value={selectedCourse?.name ?? ''} className="nn-form-control mt-1 !h-10 !py-0 opacity-75" />
+            </label>
+            <label className="w-44 shrink-0 text-xs font-medium kd-title">Tarif
+              <input readOnly value={selectedTariff?.name ?? ''} className="nn-form-control mt-1 !h-10 !py-0 opacity-75" />
+            </label>
+            <label className="w-48 shrink-0 text-xs font-medium kd-title">Sub tarif
+              <select
+                required={Boolean(subTariffsQuery.data?.length)}
+                disabled={!subTariffsQuery.data?.length}
+                value={newCustomerDraft.subTariffId}
+                onChange={(event) => updateNewCustomerDraft('subTariffId', event.target.value)}
+                className="nn-form-control mt-1 !h-10 !py-0 disabled:opacity-60"
+              >
+                <option value="">{subTariffsQuery.data?.length ? 'Sub tarifni tanlang' : "Sub tarif yo'q"}</option>
+                {subTariffsQuery.data?.map((subTariff) => <option key={subTariff.id} value={subTariff.id}>{subTariff.name}</option>)}
+              </select>
+            </label>
+            <label className="w-44 shrink-0 text-xs font-medium kd-title">Shartnoma summasi
+              <input
+                required
+                inputMode="numeric"
+                value={newCustomerDraft.agreementAmount}
+                onChange={(event) => updateNewCustomerDraft('agreementAmount', event.target.value.replace(/\D/g, ''))}
+                placeholder="0"
+                className="nn-form-control mt-1 !h-10 !py-0 text-center tabular-nums"
+              />
+            </label>
+            <label className="w-40 shrink-0 text-xs font-medium kd-title">To'lov
+              <input
+                required
+                inputMode="numeric"
+                value={newCustomerDraft.paymentAmount}
+                onChange={(event) => updateNewCustomerDraft('paymentAmount', event.target.value.replace(/\D/g, ''))}
+                placeholder="0"
+                className="nn-form-control mt-1 !h-10 !py-0 text-center tabular-nums"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={createCustomerSale.isPending}
+              className="nn-primary-button !h-10 shrink-0 !px-4 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {createCustomerSale.isPending ? "Qo'shilmoqda..." : "Qo'shish"}
+            </button>
+            <button
+              type="button"
+              disabled={createCustomerSale.isPending}
+              onClick={closeNewCustomerForm}
+              className="nn-ghost-button !h-10 shrink-0 !px-4 disabled:opacity-50"
+            >
+              Bekor qilish
+            </button>
+          </form>
+        </section>
+      )}
 
       {listQuery.data && <section className="nn-kpi-grid grid-cols-2 lg:grid-cols-4">
         <div className="nn-kpi-card"><span className="nn-kpi-icon">{summary.students}</span><span><p>O'quvchi</p><strong>{summary.students}</strong></span></div>
