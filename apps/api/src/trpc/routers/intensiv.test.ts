@@ -9,6 +9,7 @@ describeDatabase('intensive customer sale integration', () => {
   let tenantId = '';
   let adminUserId = '';
   let managerUserId = '';
+  let normalizedManagerUserId = '';
   let courseId = '';
   let tariffId = '';
   let secondTariffId = '';
@@ -61,7 +62,7 @@ describeDatabase('intensive customer sale integration', () => {
     ]);
     adminUserId = admin.id;
     managerUserId = manager.id;
-    await Promise.all([
+    const [, , normalizedManager] = await Promise.all([
       prisma.user.create({
         data: {
           tenantId,
@@ -81,7 +82,17 @@ describeDatabase('intensive customer sale integration', () => {
           isActive: false,
         },
       }),
+      prisma.user.create({
+        data: {
+          tenantId,
+          username: `intensive-lowercase-agent-${suffix}`,
+          name: null,
+          roles: ['agent'],
+          authProvider: 'local',
+        },
+      }),
     ]);
+    normalizedManagerUserId = normalizedManager.id;
     const course = await prisma.course.create({
       data: {
         tenantId,
@@ -117,11 +128,31 @@ describeDatabase('intensive customer sale integration', () => {
     await prisma.$disconnect();
   });
 
-  it('returns only active Dashboarduz sales-manager roles', async () => {
+  it('returns active Dashboarduz sales-manager roles with case-insensitive matching', async () => {
     const managers = await caller().managers();
     expect(managers.map((manager) => manager.id)).toContain(managerUserId);
+    expect(managers).toContainEqual(expect.objectContaining({
+      id: normalizedManagerUserId,
+      name: `intensive-lowercase-agent-${suffix}`,
+    }));
     expect(managers.some((manager) => manager.name === 'Not A Sales Manager')).toBe(false);
     expect(managers.some((manager) => manager.name === 'Inactive Agent')).toBe(false);
+  });
+
+  it('accepts every manager offered by the normalized manager list', async () => {
+    const created = await caller().createCustomerSale({
+      managerUserId: normalizedManagerUserId,
+      customerNumber: '998901110000',
+      customerName: 'Normalized Role Manager Customer',
+      courseId,
+      tariffId: secondTariffId,
+      agreementAmount: 0,
+      paymentAmount: 0,
+    });
+
+    expect(await prisma.income.findUniqueOrThrow({ where: { id: created.saleId } })).toMatchObject({
+      managerUserId: normalizedManagerUserId,
+    });
   });
 
   it('requires an active sub-tariff when the selected tariff has options', async () => {
