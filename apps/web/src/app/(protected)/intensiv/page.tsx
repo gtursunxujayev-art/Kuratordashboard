@@ -277,74 +277,91 @@ export default function IntensivPage() {
       {showNewCustomerForm && (
         <section className="nn-table-card overflow-x-auto p-3">
           <form onSubmit={(event) => void submitNewCustomer(event)} className="flex min-w-max items-end gap-2 whitespace-nowrap">
-            <label className="w-48 shrink-0 text-xs font-medium kd-title">Menejer
+            <label className="flex w-48 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Menejer</span>
               <select
                 required
                 value={newCustomerDraft.managerUserId}
                 onChange={(event) => updateNewCustomerDraft('managerUserId', event.target.value)}
-                className="nn-form-control mt-1 !h-10 !py-0"
+                disabled={managersQuery.isLoading || managersQuery.isError || !managersQuery.data?.length}
+                className="nn-form-control !h-10 !py-0 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <option value="">Menejerni tanlang</option>
+                <option value="">
+                  {managersQuery.isLoading
+                    ? 'Menejerlar yuklanmoqda...'
+                    : managersQuery.isError
+                      ? 'Menejerlarni yuklab bo\'lmadi'
+                      : managersQuery.data?.length
+                        ? 'Menejerni tanlang'
+                        : 'Faol menejer topilmadi'}
+                </option>
                 {managersQuery.data?.map((manager) => (
-                  <option key={manager.id} value={manager.id}>{manager.name || manager.username || '-'}</option>
+                  <option key={manager.id} value={manager.id}>{manager.name || manager.username || manager.id}</option>
                 ))}
               </select>
             </label>
-            <label className="w-44 shrink-0 text-xs font-medium kd-title">Telefon
+            <label className="flex w-44 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Telefon</span>
               <input
                 required
                 inputMode="tel"
                 value={newCustomerDraft.customerNumber}
                 onChange={(event) => updateNewCustomerDraft('customerNumber', event.target.value)}
                 placeholder="998901234567"
-                className="nn-form-control mt-1 !h-10 !py-0"
+                className="nn-form-control !h-10 !py-0"
               />
             </label>
-            <label className="w-52 shrink-0 text-xs font-medium kd-title">Ism
+            <label className="flex w-52 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Ism</span>
               <input
                 required
                 value={newCustomerDraft.customerName}
                 onChange={(event) => updateNewCustomerDraft('customerName', event.target.value)}
                 placeholder="Mijoz ismi"
-                className="nn-form-control mt-1 !h-10 !py-0"
+                className="nn-form-control !h-10 !py-0"
               />
             </label>
-            <label className="w-48 shrink-0 text-xs font-medium kd-title">Kurs
-              <input readOnly value={selectedCourse?.name ?? ''} className="nn-form-control mt-1 !h-10 !py-0 opacity-75" />
+            <label className="flex w-48 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Kurs</span>
+              <input readOnly value={selectedCourse?.name ?? ''} className="nn-form-control !h-10 !py-0 opacity-75" />
             </label>
-            <label className="w-44 shrink-0 text-xs font-medium kd-title">Tarif
-              <input readOnly value={selectedTariff?.name ?? ''} className="nn-form-control mt-1 !h-10 !py-0 opacity-75" />
+            <label className="flex w-44 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Tarif</span>
+              <input readOnly value={selectedTariff?.name ?? ''} className="nn-form-control !h-10 !py-0 opacity-75" />
             </label>
-            <label className="w-48 shrink-0 text-xs font-medium kd-title">Sub tarif
+            <label className="flex w-48 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Sub tarif</span>
               <select
                 required={Boolean(subTariffsQuery.data?.length)}
                 disabled={!subTariffsQuery.data?.length}
                 value={newCustomerDraft.subTariffId}
                 onChange={(event) => updateNewCustomerDraft('subTariffId', event.target.value)}
-                className="nn-form-control mt-1 !h-10 !py-0 disabled:opacity-60"
+                className="nn-form-control !h-10 !py-0 disabled:opacity-60"
               >
                 <option value="">{subTariffsQuery.data?.length ? 'Sub tarifni tanlang' : "Sub tarif yo'q"}</option>
                 {subTariffsQuery.data?.map((subTariff) => <option key={subTariff.id} value={subTariff.id}>{subTariff.name}</option>)}
               </select>
             </label>
-            <label className="w-44 shrink-0 text-xs font-medium kd-title">Shartnoma summasi
+            <label className="flex w-44 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>Shartnoma summasi</span>
               <input
                 required
                 inputMode="numeric"
                 value={newCustomerDraft.agreementAmount}
                 onChange={(event) => updateNewCustomerDraft('agreementAmount', event.target.value.replace(/\D/g, ''))}
                 placeholder="0"
-                className="nn-form-control mt-1 !h-10 !py-0 text-center tabular-nums"
+                className="nn-form-control !h-10 !py-0 text-center tabular-nums"
               />
             </label>
-            <label className="w-40 shrink-0 text-xs font-medium kd-title">To'lov
+            <label className="flex w-40 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+              <span>To'lov</span>
               <input
                 required
                 inputMode="numeric"
                 value={newCustomerDraft.paymentAmount}
                 onChange={(event) => updateNewCustomerDraft('paymentAmount', event.target.value.replace(/\D/g, ''))}
                 placeholder="0"
-                className="nn-form-control mt-1 !h-10 !py-0 text-center tabular-nums"
+                className="nn-form-control !h-10 !py-0 text-center tabular-nums"
               />
             </label>
             <button
