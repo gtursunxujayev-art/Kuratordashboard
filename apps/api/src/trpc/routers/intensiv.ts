@@ -8,6 +8,8 @@ import { managerProcedure, router } from '../trpc';
 
 const ACTIVE_SALE = { type: 'new_sale', lifecycleStatus: 'active' } as const;
 const attendanceStatusSchema = z.enum(['keldi', 'kelmadi', 'yolda']);
+const SALES_MANAGER_ROLES = ['Admin', 'Manager', 'TeamLeader', 'Agent', 'OnlineAgent', 'OfflineAgent'];
+const MAX_MONEY_AMOUNT = 2_147_483_647;
 
 function readSubTariffId(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -41,6 +43,16 @@ async function requireSystemRun(tenantId: string, courseId: string, tariffId: st
 }
 
 export const intensivRouter = router({
+  managers: managerProcedure.query(async ({ ctx }) => prisma.user.findMany({
+    where: {
+      tenantId: ctx.tenantId,
+      isActive: true,
+      roles: { hasSome: SALES_MANAGER_ROLES },
+    },
+    select: { id: true, name: true, username: true },
+    orderBy: [{ name: 'asc' }, { username: 'asc' }],
+  })),
+
   courses: managerProcedure.query(async ({ ctx }) => prisma.course.findMany({
     where: { tenantId: ctx.tenantId, isActive: true, category: { contains: 'intens', mode: 'insensitive' } },
     select: { id: true, name: true, startDate: true },
@@ -132,6 +144,196 @@ export const intensivRouter = router({
       };
     }),
 
+  createCustomerSale: managerProcedure
+    .input(z.object({
+      managerUserId: z.string().min(1),
+      customerNumber: z.string().min(1).max(64),
+      customerName: z.string().trim().min(1).max(160),
+      courseId: z.string().min(1),
+      tariffId: z.string().min(1),
+      subTariffId: z.string().min(1).optional(),
+      agreementAmount: z.number().int().min(0).max(MAX_MONEY_AMOUNT),
+      paymentAmount: z.number().int().min(0).max(MAX_MONEY_AMOUNT),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const customerNumber = input.customerNumber.replace(/\D/g, '');
+      if (!customerNumber) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Telefon raqami faqat raqamlardan iborat bo\'lishi kerak' });
+      }
+      if (input.paymentAmount > input.agreementAmount) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: "To'lov summasi shartnoma summasidan katta bo'lishi mumkin emas" });
+      }
+
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtext(${`intensive-sale:${ctx.tenantId}:${customerNumber}`}))`);
+
+        const [manager, course, tariff, activeSubTariffCount, systemRun] = await Promise.all([
+          tx.user.findFirst({
+            where: {
+              id: input.managerUserId,
+              tenantId: ctx.tenantId,
+              isActive: true,
+              roles: { hasSome: SALES_MANAGER_ROLES },
+            },
+            select: { id: true },
+          }),
+          tx.course.findFirst({
+            where: {
+              id: input.courseId,
+              tenantId: ctx.tenantId,
+              isActive: true,
+              category: { contains: 'intens', mode: 'insensitive' },
+            },
+            select: { id: true },
+          }),
+          tx.tariff.findFirst({
+            where: {
+              id: input.tariffId,
+              tenantId: ctx.tenantId,
+              courseId: input.courseId,
+              isActive: true,
+            },
+            select: { id: true },
+          }),
+          tx.subTariff.count({
+            where: { tenantId: ctx.tenantId, tariffId: input.tariffId, isActive: true },
+          }),
+          tx.courseRun.findFirst({
+            where: {
+              tenantId: ctx.tenantId,
+              courseId: input.courseId,
+              tariffId: input.tariffId,
+              isSystemManaged: true,
+            },
+            select: { id: true },
+          }),
+        ]);
+
+        if (!manager) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol menejer topilmadi' });
+        if (!course || !tariff) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol Intensiv kurs yoki tarif topilmadi' });
+        if (!systemRun) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Bu Intensiv tarif uchun avtomatik oqim topilmadi',
+          });
+        }
+        if (activeSubTariffCount > 0 && !input.subTariffId) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: 'Sub tarifni tanlang' });
+        }
+        if (input.subTariffId) {
+          const subTariff = await tx.subTariff.findFirst({
+            where: {
+              id: input.subTariffId,
+              tenantId: ctx.tenantId,
+              tariffId: input.tariffId,
+              isActive: true,
+            },
+            select: { id: true },
+          });
+          if (!subTariff) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Faol sub tarif topilmadi' });
+        }
+
+        let customer = await tx.customer.findUnique({
+          where: { tenantId_customerNumber: { tenantId: ctx.tenantId, customerNumber } },
+          select: { id: true, name: true },
+        });
+        const customerReused = Boolean(customer);
+        if (!customer) {
+          customer = await tx.customer.create({
+            data: {
+              tenantId: ctx.tenantId,
+              customerNumber,
+              name: input.customerName.trim(),
+            },
+            select: { id: true, name: true },
+          });
+        }
+
+        const duplicateSale = await tx.income.findFirst({
+          where: {
+            tenantId: ctx.tenantId,
+            customerId: customer.id,
+            courseId: input.courseId,
+            tariffId: input.tariffId,
+            ...ACTIVE_SALE,
+          },
+          select: { id: true },
+        });
+        if (duplicateSale) {
+          throw new TRPCError({
+            code: 'CONFLICT',
+            message: 'Bu mijoz tanlangan kurs va tarifda allaqachon faol',
+          });
+        }
+
+        const remainingDebt = input.agreementAmount - input.paymentAmount;
+        const sale = await tx.income.create({
+          data: {
+            tenantId: ctx.tenantId,
+            customerId: customer.id,
+            managerUserId: manager.id,
+            type: 'new_sale',
+            lifecycleStatus: 'active',
+            courseId: course.id,
+            tariffId: tariff.id,
+            entryDate: new Date(),
+            deadline: null,
+            coursePriceAmount: input.agreementAmount,
+            debtAmount: input.agreementAmount,
+            paymentAmount: input.paymentAmount,
+            remainingDebtAmount: remainingDebt,
+            ...(input.subTariffId
+              ? { legacyImportMeta: { saleSubTariffId: input.subTariffId } as Prisma.InputJsonValue }
+              : {}),
+          },
+          select: { id: true },
+        });
+
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: {
+            profileCourseId: course.id,
+            profileTariffId: tariff.id,
+            profileSubTariffId: input.subTariffId ?? null,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            tenantId: ctx.tenantId,
+            userId: ctx.user.userId,
+            action: 'intensive_sale_create',
+            resource: 'income',
+            resourceId: sale.id,
+            metadata: {
+              customerId: customer.id,
+              managerUserId: manager.id,
+              courseId: course.id,
+              tariffId: tariff.id,
+              subTariffId: input.subTariffId ?? null,
+              agreementAmount: input.agreementAmount,
+              paymentAmount: input.paymentAmount,
+              customerReused,
+            },
+          },
+        });
+
+        return {
+          saleId: sale.id,
+          customerId: customer.id,
+          customerName: customer.name,
+          customerReused,
+          remainingDebt,
+        };
+      }, { isolationLevel: 'Serializable', maxWait: 10_000, timeout: 30_000 });
+
+      const telegram = await sendIntensivePaymentReceipt({
+        tenantId: ctx.tenantId,
+        saleId: result.saleId,
+        paymentIncomeId: result.saleId,
+      });
+      return { ...result, telegram };
+    }),
+
   saveAttendance: managerProcedure
     .input(z.object({
       saleId: z.string(),
@@ -212,7 +414,7 @@ export const intensivRouter = router({
         await tx.auditLog.create({ data: { tenantId: ctx.tenantId, userId: ctx.user.userId, action: 'intensive_repayment_create', resource: 'income', resourceId: repayment.id, metadata: { saleId: sale.id, amount: input.amount, creditedManagerUserId: sale.managerUserId } } });
         return { repaymentId: repayment.id, saleId: sale.id, remainingDebt: nextDebt };
       }, { isolationLevel: 'Serializable', maxWait: 10_000, timeout: 30_000 });
-      const telegram = await sendIntensivePaymentReceipt({ tenantId: ctx.tenantId, saleId: result.saleId, repaymentId: result.repaymentId });
+      const telegram = await sendIntensivePaymentReceipt({ tenantId: ctx.tenantId, saleId: result.saleId, paymentIncomeId: result.repaymentId });
       return { ...result, telegram };
     }),
 });
