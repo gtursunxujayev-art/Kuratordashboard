@@ -179,6 +179,10 @@ export default function IntensivPage() {
 
   const openNewCustomerForm = () => {
     if (!courseId || !tariffId) return;
+    if (showNewCustomerForm) {
+      closeNewCustomerForm();
+      return;
+    }
     setNewCustomerDraft({ ...emptyNewCustomerDraft, subTariffId });
     setShowNewCustomerForm(true);
   };
@@ -397,29 +401,29 @@ export default function IntensivPage() {
                 {subTariffsQuery.data?.map((subTariff) => <option key={subTariff.id} value={subTariff.id}>{subTariff.name}</option>)}
               </select>
             </label>
-            <label className="flex w-44 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
-              <span>Shartnoma summasi</span>
-              <input
-                required
-                inputMode="numeric"
-                value={newCustomerDraft.agreementAmount}
-                onChange={(event) => updateNewCustomerDraft('agreementAmount', event.target.value.replace(/\D/g, ''))}
-                placeholder="0"
-                className="nn-form-control !h-10 !py-0 text-center tabular-nums"
-              />
-            </label>
-            <label className="flex w-40 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
-              <span>To'lov</span>
-              <input
-                required
-                inputMode="numeric"
-                value={newCustomerDraft.paymentAmount}
-                onChange={(event) => updateNewCustomerDraft('paymentAmount', event.target.value.replace(/\D/g, ''))}
-                placeholder="0"
-                className="nn-form-control !h-10 !py-0 text-center tabular-nums"
-              />
-            </label>
-            <div className="flex shrink-0 items-end gap-2">
+            <div className="flex shrink-0 items-end gap-2 whitespace-nowrap">
+              <label className="flex w-44 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+                <span>Shartnoma summasi</span>
+                <input
+                  required
+                  inputMode="numeric"
+                  value={newCustomerDraft.agreementAmount}
+                  onChange={(event) => updateNewCustomerDraft('agreementAmount', event.target.value.replace(/\D/g, ''))}
+                  placeholder="0"
+                  className="nn-form-control !h-10 !py-0 text-center tabular-nums"
+                />
+              </label>
+              <label className="flex w-40 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+                <span>To'lov</span>
+                <input
+                  required
+                  inputMode="numeric"
+                  value={newCustomerDraft.paymentAmount}
+                  onChange={(event) => updateNewCustomerDraft('paymentAmount', event.target.value.replace(/\D/g, ''))}
+                  placeholder="0"
+                  className="nn-form-control !h-10 !py-0 text-center tabular-nums"
+                />
+              </label>
               <button
                 type="submit"
                 disabled={createCustomerSale.isPending}
