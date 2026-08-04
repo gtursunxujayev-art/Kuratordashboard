@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent, type ChangeEvent } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 import { trpc } from '@/lib/trpc';
@@ -29,7 +29,7 @@ const emptyNewCustomerDraft: NewCustomerDraft = {
 const statusMeta: Record<AttendanceStatus, { label: string; className: string }> = {
   keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
   kelmadi: { label: 'Kelmadi', className: 'border-red-200 bg-red-50 text-red-700' },
-  yolda: { label: "Yo'lda", className: 'border-sky-200 bg-sky-50 text-sky-700' },
+  yolda: { label: "Yo'lda", className: 'border-gray-200 bg-gray-50 text-gray-600' },
 };
 
 function formatMoney(amount: number): string {
@@ -80,6 +80,7 @@ export default function IntensivPage() {
   const [payingSaleId, setPayingSaleId] = useState<string | null>(null);
   const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
   const [newCustomerDraft, setNewCustomerDraft] = useState<NewCustomerDraft>(emptyNewCustomerDraft);
+  const [searchTerm, setSearchTerm] = useState('');
 
   const managersQuery = trpc.intensiv.managers.useQuery(undefined, { enabled: isManager });
   const coursesQuery = trpc.intensiv.courses.useQuery(undefined, { enabled: isManager });
@@ -96,6 +97,17 @@ export default function IntensivPage() {
   const students = useMemo(() => listQuery.data?.students ?? [], [listQuery.data?.students]);
   const selectedCourse = coursesQuery.data?.find((course) => course.id === courseId);
   const selectedTariff = tariffsQuery.data?.find((tariff) => tariff.id === tariffId);
+  const filteredStudents = useMemo(() => {
+    const query = searchTerm.trim().toLowerCase();
+    const digitQuery = searchTerm.replace(/\D/g, '');
+    if (!query && !digitQuery) return students;
+    return students.filter((student) => {
+      const name = student.name.toLowerCase();
+      const phone = student.phone.toLowerCase();
+      const phoneDigits = student.phone.replace(/\D/g, '');
+      return name.includes(query) || phone.includes(query) || Boolean(digitQuery && phoneDigits.includes(digitQuery));
+    });
+  }, [searchTerm, students]);
   const summary = useMemo(() => {
     const statuses = students.flatMap((student) => {
       return [
@@ -115,6 +127,7 @@ export default function IntensivPage() {
   const clearRowDrafts = () => {
     setAttendanceDrafts({});
     setPaymentDrafts({});
+    setSearchTerm('');
   };
 
   const closeNewCustomerForm = () => {
@@ -364,30 +377,41 @@ export default function IntensivPage() {
                 className="nn-form-control !h-10 !py-0 text-center tabular-nums"
               />
             </label>
-            <button
-              type="submit"
-              disabled={createCustomerSale.isPending}
-              className="nn-primary-button !h-10 shrink-0 !px-4 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {createCustomerSale.isPending ? "Qo'shilmoqda..." : "Qo'shish"}
-            </button>
-            <button
-              type="button"
-              disabled={createCustomerSale.isPending}
-              onClick={closeNewCustomerForm}
-              className="nn-ghost-button !h-10 shrink-0 !px-4 disabled:opacity-50"
-            >
-              Bekor qilish
-            </button>
+            <div className="flex shrink-0 items-end gap-2">
+              <button
+                type="submit"
+                disabled={createCustomerSale.isPending}
+                className="nn-primary-button !h-10 shrink-0 !px-4 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createCustomerSale.isPending ? 'Kiritilmoqda...' : 'Kiritish'}
+              </button>
+              <button
+                type="button"
+                disabled={createCustomerSale.isPending}
+                onClick={closeNewCustomerForm}
+                className="nn-ghost-button !h-10 shrink-0 !px-4 disabled:opacity-50"
+              >
+                Bekor qilish
+              </button>
+            </div>
           </form>
         </section>
       )}
 
-      {listQuery.data && <section className="nn-kpi-grid grid-cols-2 lg:grid-cols-4">
-        <div className="nn-kpi-card"><span className="nn-kpi-icon">{summary.students}</span><span><p>O'quvchi</p><strong>{summary.students}</strong></span></div>
-        <div className="nn-kpi-card"><span className="nn-kpi-icon bg-emerald-100 text-emerald-700">{summary.present}</span><span><p>Keldi</p><strong>{summary.present}</strong></span></div>
-        <div className="nn-kpi-card"><span className="nn-kpi-icon bg-orange-100 text-orange-700">{summary.debtors}</span><span><p>Qarzdor</p><strong>{summary.debtors}</strong></span></div>
-        <div className="nn-kpi-card"><span className="nn-kpi-icon bg-rose-100 text-rose-700">₮</span><span><p>Jami qarz</p><strong className="text-base">{formatMoney(summary.totalDebt)}</strong></span></div>
+      {listQuery.data && <section className="grid gap-2 grid-cols-2 lg:grid-cols-5">
+        <label className="nn-kpi-card !min-h-0 !gap-2 !rounded-xl !p-2.5 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
+          <span className="w-full">Qidirish</span>
+          <input
+            value={searchTerm}
+            onChange={(event: ChangeEvent<HTMLInputElement>) => setSearchTerm(event.target.value)}
+            placeholder="Ism yoki telefon"
+            className="nn-form-control !h-9 !py-0 text-sm"
+          />
+        </label>
+        <div className="nn-kpi-card !min-h-0 !gap-1 !rounded-xl !p-2.5"><span className="nn-kpi-icon !h-8 !w-8 text-xs">{summary.students}</span><span><p className="text-xs">O'quvchi</p><strong className="text-sm">{summary.students}</strong></span></div>
+        <div className="nn-kpi-card !min-h-0 !gap-1 !rounded-xl !p-2.5"><span className="nn-kpi-icon !h-8 !w-8 bg-emerald-100 text-xs text-emerald-700">{summary.present}</span><span><p className="text-xs">Keldi</p><strong className="text-sm">{summary.present}</strong></span></div>
+        <div className="nn-kpi-card !min-h-0 !gap-1 !rounded-xl !p-2.5"><span className="nn-kpi-icon !h-8 !w-8 bg-orange-100 text-xs text-orange-700">{summary.debtors}</span><span><p className="text-xs">Qarzdor</p><strong className="text-sm">{summary.debtors}</strong></span></div>
+        <div className="nn-kpi-card !min-h-0 !gap-1 !rounded-xl !p-2.5"><span className="nn-kpi-icon !h-8 !w-8 bg-rose-100 text-xs text-rose-700">₮</span><span><p className="text-xs">Jami qarz</p><strong className="text-sm">{formatMoney(summary.totalDebt)}</strong></span></div>
       </section>}
 
       <section className="nn-table-card overflow-hidden">
@@ -399,6 +423,8 @@ export default function IntensivPage() {
           <div className="p-10 text-center text-red-600">{listQuery.error.message}</div>
         ) : students.length === 0 ? (
           <div className="p-10 text-center kd-subtle">Tanlangan Kurs, Tarif va Sub tarif uchun faol o'quvchi topilmadi.</div>
+        ) : filteredStudents.length === 0 ? (
+          <div className="p-10 text-center kd-subtle">Qidiruv bo'yicha o'quvchi topilmadi.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[1320px] text-sm">
@@ -416,7 +442,7 @@ export default function IntensivPage() {
                 </tr>
               </thead>
               <tbody>
-                {students.map((student) => {
+                {filteredStudents.map((student) => {
                   const dayOneKey = `${student.saleId}:dayOne`;
                   const dayTwoKey = `${student.saleId}:dayTwo`;
                   const dayOne = attendanceDrafts[dayOneKey] ?? student.dayOneStatus ?? '';
