@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type FormEvent, type ChangeEvent } from 'react';
+import { useMemo, useState, useRef, useEffect, type FormEvent, type ChangeEvent } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 import { trpc } from '@/lib/trpc';
@@ -26,10 +26,10 @@ const emptyNewCustomerDraft: NewCustomerDraft = {
   paymentAmount: '',
 };
 
-const statusMeta: Record<AttendanceStatus, { label: string; className: string }> = {
-  keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
-  kelmadi: { label: 'Kelmadi', className: 'border-red-200 bg-red-50 text-red-700' },
-  yolda: { label: "Yo'lda", className: 'border-gray-200 bg-gray-50 text-gray-600' },
+const statusMeta: Record<AttendanceStatus, { label: string; className: string; optionClassName: string }> = {
+  keldi: { label: 'Keldi', className: 'border-emerald-200 bg-emerald-50 text-emerald-700', optionClassName: 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100' },
+  kelmadi: { label: 'Kelmadi', className: 'border-red-200 bg-red-50 text-red-700', optionClassName: 'bg-red-50 text-red-700 hover:bg-red-100' },
+  yolda: { label: "Yo'lda", className: 'border-gray-200 bg-gray-50 text-gray-600', optionClassName: 'bg-gray-50 text-gray-600 hover:bg-gray-100' },
 };
 
 function formatMoney(amount: number): string {
@@ -49,21 +49,63 @@ function getTelegramFailureMessage(reason?: string): string {
 }
 
 function AttendanceSelect({ value, onChange, disabled }: { value: AttendanceValue; onChange: (next: AttendanceStatus) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
   const selectedClassName = value
     ? statusMeta[value].className
     : 'border-[var(--kd-border)] bg-[var(--kd-surface)] text-[var(--kd-muted)]';
 
   return (
-    <select
-      aria-label="Davomat holati"
-      value={value}
-      disabled={disabled}
-      onChange={(event) => onChange(event.target.value as AttendanceStatus)}
-      className={`w-full min-w-[122px] rounded-lg border px-2.5 py-2 text-sm font-medium outline-none disabled:cursor-not-allowed disabled:opacity-60 ${selectedClassName}`}
-    >
-      <option value="" disabled>Tanlang</option>
-      {Object.entries(statusMeta).map(([status, meta]) => <option key={status} value={status}>{meta.label}</option>)}
-    </select>
+    <div ref={rootRef} className="relative min-w-[122px]">
+      <button
+        type="button"
+        aria-label="Davomat holati"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={() => setOpen((c) => !c)}
+        className={`flex w-full items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-sm font-medium outline-none disabled:cursor-not-allowed disabled:opacity-60 ${selectedClassName}`}
+      >
+        <span>{value ? statusMeta[value].label : 'Tanlang'}</span>
+        <span aria-hidden="true" className="text-xs leading-none">▾</span>
+      </button>
+      {open && (
+        <div role="listbox" aria-label="Davomat holati" className="absolute left-0 top-full z-50 mt-1 w-full overflow-hidden rounded-lg border border-[var(--kd-border)] bg-white py-1 shadow-lg">
+          {Object.entries(statusMeta).map(([status, meta]) => (
+            <button
+              key={status}
+              type="button"
+              role="option"
+              aria-selected={value === status}
+              onClick={() => {
+                setOpen(false);
+                onChange(status as AttendanceStatus);
+              }}
+              className={`block w-full px-2.5 py-2 text-left text-sm font-semibold ${meta.optionClassName}`}
+            >
+              {meta.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -257,7 +299,7 @@ export default function IntensivPage() {
       </section>
 
       <section className="nn-filter-card intensiv-filter-card">
-        <div className="grid items-end gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <div className="grid items-end gap-3 md:grid-cols-[minmax(0,0.5fr)_minmax(0,0.5fr)_minmax(0,1fr)_auto]">
           <label className="text-sm font-medium kd-title">Kurs
             <select value={courseId} onChange={(event) => { setCourseId(event.target.value); setTariffId(''); setSubTariffId(''); clearRowDrafts(); closeNewCustomerForm(); }} className="nn-form-control mt-1">
               <option value="">Kursni tanlang</option>
@@ -289,7 +331,7 @@ export default function IntensivPage() {
 
       {showNewCustomerForm && (
         <section className="nn-table-card overflow-x-auto p-3">
-          <form onSubmit={(event) => void submitNewCustomer(event)} className="flex min-w-max items-end gap-2 whitespace-nowrap">
+          <form onSubmit={(event) => void submitNewCustomer(event)} className="flex flex-wrap items-end gap-2">
             <label className="flex w-48 shrink-0 flex-col gap-1 text-xs font-semibold leading-none text-[color:var(--kd-text)]">
               <span>Menejer</span>
               <select
