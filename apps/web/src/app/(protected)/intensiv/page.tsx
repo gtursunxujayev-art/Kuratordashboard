@@ -479,6 +479,7 @@ export default function IntensivPage() {
                   <th className="px-4 py-3 text-left font-semibold">O'quvchi</th>
                   <th className="px-4 py-3 text-left font-semibold">Telefon</th>
                   <th className="px-4 py-3 text-left font-semibold">Tarif</th>
+                  <th className="px-4 py-3 text-left font-semibold">Sub tarif</th>
                   <th className="px-4 py-3 text-left font-semibold">Menejer</th>
                   <th className="px-4 py-3 text-left font-semibold">1-kun <span className="kd-subtle font-normal">{formatDay(listQuery.data.dates.dayOne)}</span></th>
                   <th className="px-4 py-3 text-left font-semibold">2-kun <span className="kd-subtle font-normal">{formatDay(listQuery.data.dates.dayTwo)}</span></th>
@@ -500,6 +501,7 @@ export default function IntensivPage() {
                     <td className="px-4 py-3 font-semibold kd-title whitespace-nowrap">{student.name}</td>
                     <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.phone}</td>
                     <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.tariffName}</td>
+                    <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.subTariffName ?? '—'}</td>
                     <td className="px-4 py-3 kd-subtle whitespace-nowrap">{student.managerName}</td>
                     <td className="px-4 py-3"><AttendanceSelect value={dayOne} disabled={savingAttendanceKeys[dayOneKey]} onChange={(value) => void saveAttendanceDay(student, 'dayOne', value)} /></td>
                     <td className="px-4 py-3"><AttendanceSelect value={dayTwo} disabled={savingAttendanceKeys[dayTwoKey]} onChange={(value) => void saveAttendanceDay(student, 'dayTwo', value)} /></td>

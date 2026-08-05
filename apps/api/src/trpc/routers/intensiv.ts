@@ -121,7 +121,8 @@ export const intensivRouter = router({
       }
       const selectedSales = Array.from(selectedByCustomer.values());
       const saleIds = selectedSales.map((sale) => sale.id);
-      const [attendanceRows, payments] = await Promise.all([
+      const subTariffIds = Array.from(new Set(selectedSales.map((sale) => readSubTariffId(sale.legacyImportMeta)).filter((id): id is string => Boolean(id))));
+      const [attendanceRows, payments, subTariffs] = await Promise.all([
         selectedSales.length ? prisma.classAttendance.findMany({
           where: { tenantId: ctx.tenantId, courseRunId: run.id, customerId: { in: selectedSales.map((sale) => sale.customerId) }, lessonType: 'base', lessonDate: { gte: startOfDayLocal(run.startDate), lte: startOfDayLocal(run.endDate) } },
           select: { customerId: true, lessonDate: true, status: true, attended: true },
@@ -130,7 +131,12 @@ export const intensivRouter = router({
           where: { tenantId: ctx.tenantId, lifecycleStatus: 'active', OR: [{ id: { in: saleIds } }, { relatedDebtIncomeId: { in: saleIds } }] },
           select: { id: true, relatedDebtIncomeId: true, paymentAmount: true },
         }) : Promise.resolve([]),
+        subTariffIds.length ? prisma.subTariff.findMany({
+          where: { id: { in: subTariffIds }, tenantId: ctx.tenantId },
+          select: { id: true, name: true },
+        }) : Promise.resolve([]),
       ]);
+      const subTariffNameMap = new Map(subTariffs.map((st) => [st.id, st.name]));
       const paidBySale = new Map<string, number>();
       for (const payment of payments) {
         const saleId = payment.relatedDebtIncomeId || payment.id;
@@ -150,6 +156,7 @@ export const intensivRouter = router({
             saleId: sale.id, customerId: sale.customerId, name: sale.customer.name,
             phone: sale.customer.customerNumber,
             tariffName: sale.tariff?.name ?? '-',
+            subTariffName: subTariffNameMap.get(readSubTariffId(sale.legacyImportMeta) ?? '') ?? null,
             managerName: sale.manager.name || sale.manager.username || '-',
             dayOneStatus: attendance.get(`${sale.customerId}:${localDateKey(dayOne)}`) ?? null,
             dayTwoStatus: attendance.get(`${sale.customerId}:${localDateKey(dayTwo)}`) ?? null,
