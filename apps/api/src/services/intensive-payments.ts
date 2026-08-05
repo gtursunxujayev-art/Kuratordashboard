@@ -41,7 +41,17 @@ async function sendReceiptViaDashboarduz(params: {
     || process.env.DASHBOARDUZ_TELEGRAM_DEBUG_KEY
   )?.trim();
   const configuredGroups = getGroupIds();
+  console.log('[telegram-receipt] config check', {
+    hasEndpoint: Boolean(endpoint),
+    endpoint: endpoint ? endpoint.replace(/^(https?:\/\/[^/]+).*/, '$1/...') : null,
+    hasSecret: Boolean(secret),
+    secretLength: secret?.length ?? 0,
+    groupIds: configuredGroups,
+  });
   if (!endpoint || !secret || !configuredGroups.length) {
+    console.warn('[telegram-receipt] SKIPPED — missing config', {
+      endpoint: Boolean(endpoint), secret: Boolean(secret), groups: configuredGroups.length,
+    });
     return {
       attempted: false,
       delivered: false,
@@ -49,7 +59,7 @@ async function sendReceiptViaDashboarduz(params: {
       failedCount: 0,
       reason: 'dashboarduz_not_configured',
       errors: [
-        'Dashboarduz URL, Telegram secret yoki intensiv to‘lov guruhi sozlanmagan',
+        'Dashboarduz URL, Telegram secret yoki intensiv to'lov guruhi sozlanmagan',
       ],
     };
   }
@@ -60,6 +70,7 @@ async function sendReceiptViaDashboarduz(params: {
 
   for (const groupId of configuredGroups) {
     try {
+      console.log('[telegram-receipt] sending to group', { groupId, endpoint, tenantId: params.tenantId });
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -80,6 +91,7 @@ async function sendReceiptViaDashboarduz(params: {
         error?: string;
         results?: Array<{ groupId?: string; ok?: boolean; error?: string }>;
       };
+      console.log('[telegram-receipt] gateway response', { status: response.status, ok: body.ok, body });
       if (!response.ok || !body.ok) {
         throw new Error(body.error || `Dashboarduz Telegram gateway ${response.status}`);
       }
@@ -90,11 +102,13 @@ async function sendReceiptViaDashboarduz(params: {
       }
     } catch (error) {
       failedCount += 1;
-      errors.push(`${groupId}: ${error instanceof Error ? error.message : String(error)}`);
+      const errMsg = error instanceof Error ? error.message : String(error);
+      console.error('[telegram-receipt] FAILED for group', { groupId, error: errMsg });
+      errors.push(`${groupId}: ${errMsg}`);
     }
   }
 
-  return {
+  const result: TelegramDispatch = {
     attempted: true,
     delivered: sentCount > 0,
     sentCount,
@@ -102,6 +116,8 @@ async function sendReceiptViaDashboarduz(params: {
     ...(sentCount ? {} : { reason: 'send_failed' as const }),
     ...(errors.length ? { errors: errors.slice(0, 3) } : {}),
   };
+  console.log('[telegram-receipt] final result', result);
+  return result;
 }
 
 function toHashtag(value: string | null | undefined): string | null {
