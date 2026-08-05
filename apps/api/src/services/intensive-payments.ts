@@ -59,7 +59,7 @@ async function sendReceiptViaDashboarduz(params: {
       failedCount: 0,
       reason: 'dashboarduz_not_configured',
       errors: [
-        'Dashboarduz URL, Telegram secret yoki intensiv to'lov guruhi sozlanmagan',
+        "Dashboarduz URL, Telegram secret yoki intensiv to'lov guruhi sozlanmagan",
       ],
     };
   }
