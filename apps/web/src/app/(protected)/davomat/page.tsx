@@ -228,16 +228,12 @@ export default function DavomatPage() {
       </section>
 
       <div className="nn-filter-card space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className="block text-xs kd-subtle mb-1">Kurs</label>
             <select
               value={selectedCourseId}
-              onChange={(event) => {
-                const nextCourseId = event.target.value;
-                setSelectedCourseId(nextCourseId);
-                setSelectedCourseRunId('');
-              }}
+              onChange={(event) => setSelectedCourseId(event.target.value)}
               className="w-full px-3 py-2 border rounded-lg text-sm"
             >
               <option value="">Kursni tanlang...</option>
@@ -247,22 +243,11 @@ export default function DavomatPage() {
                 </option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="block text-xs kd-subtle mb-1">Oqim</label>
-            <select
-              value={selectedCourseRunId}
-              onChange={(event) => setSelectedCourseRunId(event.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-              disabled={!selectedCourseId}
-            >
-              <option value="">{selectedCourseId ? "Oqimni tanlang..." : "Avval kursni tanlang"}</option>
-              {courseRuns.map((run) => (
-                <option key={run.id} value={run.id}>
-                  {run.name}
-                </option>
-              ))}
-            </select>
+            {selectedCourseId && (
+              <p className="text-xs kd-subtle mt-1">
+                {activeCourseRun ? `Oqim: ${activeCourseRun.name}` : "Bu kurs uchun oqim topilmadi"}
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs kd-subtle mb-1">Sana</label>
@@ -312,7 +297,7 @@ export default function DavomatPage() {
       {!selectedCourseId ? (
         <div className="kd-card p-6 text-center kd-subtle text-sm">Avval kursni tanlang</div>
       ) : !selectedCourseRunId ? (
-        <div className="kd-card p-6 text-center kd-subtle text-sm">Davomat saqlash uchun oqimni tanlang</div>
+        <div className="kd-card p-6 text-center kd-subtle text-sm">Bu kurs uchun oqim topilmadi</div>
       ) : attendanceQuery.isLoading ? (
         <div className="kd-card p-6 text-center kd-subtle text-sm">Yuklanmoqda...</div>
       ) : attendanceQuery.error ? (
