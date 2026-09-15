@@ -16,6 +16,37 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
 
   const { data: student, isLoading } = trpc.students.detail.useQuery({ customerId });
 
+  const [clientBotLink, setClientBotLink] = useState<string | null>(null);
+  const [clientBotMessage, setClientBotMessage] = useState('');
+  const [clientBotError, setClientBotError] = useState('');
+
+  const createLinkTokenMutation = trpc.clientBot.createLinkToken.useMutation({
+    onSuccess: (result) => {
+      setClientBotError('');
+      setClientBotLink(result.deepLink);
+      setClientBotMessage("Havola yaratildi. Uni o'quvchiga yuboring.");
+    },
+    onError: (err) => {
+      setClientBotLink(null);
+      setClientBotError(err.message);
+    },
+  });
+
+  const resendTicketsMutation = trpc.clientBot.resendTickets.useMutation({
+    onSuccess: (result) => {
+      setClientBotError('');
+      setClientBotMessage(
+        result.issuedCount > 0
+          ? `${result.issuedCount} ta QR chipta yuborildi.`
+          : "Faol oflayn/intensiv oqim topilmadi.",
+      );
+    },
+    onError: (err) => {
+      setClientBotMessage('');
+      setClientBotError(err.message);
+    },
+  });
+
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     name: '',
@@ -262,6 +293,46 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
                   label="Ijtimoiy tarmoqqa rozi"
                   value={socialConsentToLabel(student.socialMediaConsent)}
                 />
+
+                <div className="pt-2 border-t border-gray-100">
+                  <p className="text-xs font-medium text-gray-500 mb-2">Client bot (QR davomat)</p>
+                  <InfoRow
+                    label="Holati"
+                    value={student.telegramChatId ? "Bog'langan" : "Bog'lanmagan"}
+                  />
+                  {(isAdmin || isManager) && (
+                    <div className="flex flex-wrap gap-2 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => createLinkTokenMutation.mutate({ customerId })}
+                        disabled={createLinkTokenMutation.isLoading}
+                        className="px-3 py-1.5 border border-gray-200 text-gray-700 text-xs rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {createLinkTokenMutation.isLoading ? 'Yaratilmoqda...' : "Ulash havolasi olish"}
+                      </button>
+                      {student.telegramChatId && (
+                        <button
+                          type="button"
+                          onClick={() => resendTicketsMutation.mutate({ customerId })}
+                          disabled={resendTicketsMutation.isLoading}
+                          className="px-3 py-1.5 border border-gray-200 text-gray-700 text-xs rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {resendTicketsMutation.isLoading ? 'Yuborilmoqda...' : 'QR chipta yuborish'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {clientBotLink && (
+                    <p className="text-xs break-all mt-2">
+                      Havola:{' '}
+                      <a href={clientBotLink} target="_blank" rel="noreferrer" className="text-blue-600 underline">
+                        {clientBotLink}
+                      </a>
+                    </p>
+                  )}
+                  {clientBotMessage && <p className="text-xs text-green-600 mt-1">{clientBotMessage}</p>}
+                  {clientBotError && <p className="text-xs text-red-600 mt-1">{clientBotError}</p>}
+                </div>
 
                 {student.incomes.length > 0 && (
                   <div className="pt-2 border-t border-gray-100">
