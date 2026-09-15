@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/auth-context';
 import { BrandShell } from '@/components/layout/brand-shell';
 import { ToastProvider } from '@/components/ui/toast';
+import { QrScannerListener } from '@/components/scanner/qr-scanner-listener';
 
 export default function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useAuth();
@@ -45,6 +46,7 @@ export default function ProtectedLayout({ children }: { children: React.ReactNod
 
   return (
     <ToastProvider>
+      <QrScannerListener />
       <BrandShell theme={theme} onToggleTheme={toggleTheme}>
         {children}
       </BrandShell>
