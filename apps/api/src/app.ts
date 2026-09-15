@@ -13,6 +13,7 @@ import {
 } from './services/telegram-reports';
 import { handleFaceIdWebhook } from './services/attendance/faceid';
 import { finalizeExpiredIntensiveTransitAttendance } from './services/intensive-payments';
+import { getClientBotWebhookSecret, handleClientBotWebhook } from './services/client-bot';
 
 dotenv.config();
 
@@ -204,6 +205,32 @@ app.post('/webhooks/telegram', async (req, res) => {
       JSON.stringify({
         level: 'error',
         event: 'telegram_webhook_failed',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return res.status(500).json({ ok: false, error: 'Webhook processing failed' });
+  }
+});
+
+app.post('/webhooks/client-bot', async (req, res) => {
+  const expectedSecret = getClientBotWebhookSecret();
+  if (!expectedSecret) {
+    return res.status(503).json({ ok: false, error: 'CLIENT_BOT_WEBHOOK_SECRET sozlanmagan' });
+  }
+
+  const providedSecret = String(req.header('x-telegram-bot-api-secret-token') || '');
+  if (providedSecret !== expectedSecret) {
+    return res.status(401).json({ ok: false, error: 'Invalid webhook secret' });
+  }
+
+  try {
+    const result = await handleClientBotWebhook(req.body);
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        level: 'error',
+        event: 'client_bot_webhook_failed',
         message: error instanceof Error ? error.message : String(error),
       }),
     );
