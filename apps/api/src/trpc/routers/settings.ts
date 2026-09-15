@@ -5,6 +5,7 @@ import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { hashPassword } from '../../services/auth/password';
 import { startOfDayLocal } from '../../utils/date-local';
+import { computeEndDate, requiredStartDayForCategory, requiredStartDayLabel } from '../../utils/course-schedule';
 import {
   createTelegramLinkToken,
   deleteTelegramReceiver,
@@ -285,45 +286,9 @@ function throwMissingRegionsMigrationError(): never {
   });
 }
 
-function normalizeCourseCategory(value: string): 'online' | 'intensiv' | 'offline' | 'additional_service' {
-  const normalized = value.trim().toLowerCase();
-  if (
-    normalized.includes('additional')
-    || normalized.includes("qo'shimcha")
-    || normalized.includes("qo‘shimcha")
-    || normalized.includes('xizmat')
-    || normalized.includes('servis')
-    || normalized.includes('service')
-  ) {
-    return 'additional_service';
-  }
-  if (normalized.includes('intens')) return 'intensiv';
-  if (normalized.includes('online') || normalized.includes('onlayn')) return 'online';
-  return 'offline';
-}
-
-function requiredStartDayByCategory(category: string): 1 | 6 | null {
-  const normalized = normalizeCourseCategory(category);
-  if (normalized === 'additional_service') return null;
-  return normalized === 'online' ? 1 : 6;
-}
-
-function requiredStartDayLabel(day: 1 | 6): string {
-  return day === 1 ? 'dushanba' : 'shanba';
-}
-
-function computeEndDate(startDate: Date, durationWeeks: number, courseCategory: string): Date {
-  // Online starts Monday, Offline/Intensiv starts Saturday.
-  // Additional-service courses can start any day and span full calendar weeks from that day.
-  const requiredDay = requiredStartDayByCategory(courseCategory);
-  const dayOffset =
-    requiredDay === null
-      ? (durationWeeks * 7 - 1)
-      : (requiredDay === 1 ? (durationWeeks * 7 - 1) : (durationWeeks * 7 - 6));
-  const end = new Date(startDate);
-  end.setDate(end.getDate() + dayOffset);
-  return end;
-}
+// normalizeCourseCategory / requiredStartDayForCategory / requiredStartDayLabel /
+// computeEndDate now live in ../../utils/course-schedule (shared with amaliy.ts,
+// dashboard.ts, faceid.ts) so the Friday/Saturday cutover logic stays in one place.
 
 function parseLocalDateInput(value: string, fieldLabel: string): Date {
   const raw = value.trim();
@@ -986,7 +951,7 @@ export const settingsRouter = router({
           message: "Kursning boshlanish sanasi topilmadi. Avval kurs start date ni kiriting.",
         });
       }
-      const requiredStartDay = requiredStartDayByCategory(course.category);
+      const requiredStartDay = requiredStartDayForCategory(course.category, start);
       if (requiredStartDay !== null && start.getDay() !== requiredStartDay) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -1120,7 +1085,7 @@ export const settingsRouter = router({
         });
       }
 
-      const requiredStartDay = requiredStartDayByCategory(existing.course.category);
+      const requiredStartDay = requiredStartDayForCategory(existing.course.category, nextStartDate);
       if (requiredStartDay !== null && nextStartDate.getDay() !== requiredStartDay) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
