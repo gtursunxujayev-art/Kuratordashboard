@@ -62,6 +62,8 @@ model Tenant {
   telegramLinkTokens            TelegramLinkToken[]
   telegramReportReceivers       TelegramReportReceiver[]
   reportDeliveryLogs            ReportDeliveryLog[]
+  clientTelegramLinkTokens      ClientTelegramLinkToken[]
+  attendanceTickets             AttendanceTicket[]
 
   @@index([subdomain])
   @@map("tenants")
@@ -415,6 +417,8 @@ model Customer {
   customerNumber            String
   name                      String
   telegramUsername          String?
+  telegramChatId            String?   @unique // client bot chat id, set once linked via /start
+  telegramLinkedAt          DateTime?
   // KD-specific fields (added via migration — nullable, backward compatible)
   faceIdExternalId          String? // Face ID device user.id, learned on first phone match
   gender                    String? // 'male' | 'female'
@@ -445,6 +449,10 @@ model Customer {
   kuratorTasks         KuratorTask[]
   courseRunMemberships CourseRunMember[]
 
+  // Client bot relations
+  clientTelegramLinkTokens ClientTelegramLinkToken[]
+  attendanceTickets        AttendanceTicket[]
+
   @@unique([tenantId, customerNumber])
   @@unique([tenantId, legacyProfileImportKey])
   @@index([tenantId])
@@ -457,6 +465,7 @@ model Customer {
   @@index([profileTariffId])
   @@index([profileSubTariffId])
   @@index([tenantId, faceIdExternalId])
+  @@index([tenantId, telegramChatId])
   @@map("customers")
 }
 
@@ -815,6 +824,7 @@ model CourseRun {
   kuratorAssignments KuratorAssignment[]
   attendances        ClassAttendance[]
   members            CourseRunMember[]
+  attendanceTickets  AttendanceTicket[]
 
   @@index([tenantId])
   @@index([courseId])
@@ -949,7 +959,7 @@ model ClassAttendance {
   lessonType     String   @default("base") // 'base' | 'premium_extra'
   attended       Boolean  @default(false)
   status         String   @default("kelmadi") // 'keldi' | 'kelmadi' | 'yolda'
-  source         String   @default("manual") // 'manual' | 'system' (e.g. Face ID auto check-in)
+  source         String   @default("manual") // 'manual' | 'system' (Face ID) | 'qr' (QR ticket scan)
   markedByUserId String?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
@@ -1069,6 +1079,52 @@ model TelegramLinkToken {
   @@index([expiresAt])
   @@index([usedAt])
   @@map("telegram_link_tokens")
+}
+
+// One-time invite token linking a Customer (client) to the client bot, generated
+// by staff and sent to the client. Distinct from TelegramLinkToken (staff-only).
+model ClientTelegramLinkToken {
+  id              String    @id @default(uuid())
+  tenantId        String
+  customerId      String
+  tokenHash       String    @unique
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdByUserId String
+  createdAt       DateTime  @default(now())
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, customerId])
+  @@index([expiresAt])
+  @@index([usedAt])
+  @@map("client_telegram_link_tokens")
+}
+
+// QR "ticket" issued to a linked client for one offline/intensiv course run.
+// tokenHash is the SHA-256 of the opaque random token encoded in the QR image;
+// the raw token is never stored. One active ticket per (customer, courseRun).
+model AttendanceTicket {
+  id          String    @id @default(uuid())
+  tenantId    String
+  customerId  String
+  courseRunId String
+  tokenHash   String    @unique
+  issuedAt    DateTime  @default(now())
+  deliveredAt DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  courseRun CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, customerId, courseRunId])
+  @@index([tenantId, courseRunId])
+  @@index([revokedAt])
+  @@map("attendance_tickets")
 }
 
 model TelegramReportReceiver {
