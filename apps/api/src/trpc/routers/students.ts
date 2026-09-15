@@ -192,6 +192,10 @@ export const studentsRouter = router({
         tariffId: z.string().optional(),
         region: z.string().optional(),
         search: z.string().optional(),
+        // Students with an active course enrollment (Income) but no current/future
+        // CourseRunMember roster row for that course — either because the course has
+        // no run at all, or because they were never added to an existing run's roster.
+        withoutOqim: z.boolean().optional(),
         page: z.number().int().min(1).default(1),
         limit: z.number().int().min(1).max(500).default(50),
       }),
@@ -300,6 +304,88 @@ export const studentsRouter = router({
           orderBy: { entryDate: 'desc' as const },
         },
       });
+
+      if (input.withoutOqim) {
+        const CANDIDATE_CAP = 5000;
+        const candidates = await prisma.customer.findMany({
+          where: buildWhere(columnSupport),
+          select: buildCustomerSelect(columnSupport),
+          orderBy: { name: 'asc' },
+          take: CANDIDATE_CAP,
+        });
+
+        const candidateIds = candidates.map((c) => c.id);
+        if (candidateIds.length === 0) {
+          return { data: [], pagination: { page: input.page, limit: input.limit, total: 0 } };
+        }
+
+        const enrollmentWhere: Record<string, unknown> = {
+          tenantId,
+          customerId: { in: candidateIds },
+          ...ACTIVE_ENROLLMENT_FILTER,
+          courseId: input.courseId ?? { not: null },
+        };
+        const activeEnrollments = await prisma.income.findMany({
+          where: enrollmentWhere,
+          select: { customerId: true, courseId: true },
+          distinct: ['customerId', 'courseId'],
+        });
+
+        const today = startOfDayLocal(new Date());
+        const rosterRows = await prisma.courseRunMember.findMany({
+          where: {
+            tenantId,
+            customerId: { in: candidateIds },
+            courseRun: { endDate: { gte: today } },
+          },
+          select: { customerId: true, courseRun: { select: { courseId: true } } },
+        }).catch((error) => {
+          if (isMissingCourseRunsTableError(error)) return [];
+          throw error;
+        });
+        const hasRosterSet = new Set(rosterRows.map((r) => `${r.customerId}:${r.courseRun.courseId}`));
+
+        const enrolledCoursesByCustomer = new Map<string, string[]>();
+        for (const enrollment of activeEnrollments) {
+          if (!enrollment.courseId) continue;
+          const list = enrolledCoursesByCustomer.get(enrollment.customerId) ?? [];
+          list.push(enrollment.courseId);
+          enrolledCoursesByCustomer.set(enrollment.customerId, list);
+        }
+
+        const withoutOqimIdSet = new Set(
+          candidateIds.filter((id) => {
+            const courseIds = enrolledCoursesByCustomer.get(id) ?? [];
+            if (courseIds.length === 0) return false;
+            return courseIds.some((courseId) => !hasRosterSet.has(`${id}:${courseId}`));
+          }),
+        );
+
+        const filteredCustomers = candidates.filter((c) => withoutOqimIdSet.has(c.id));
+        const total = filteredCustomers.length;
+        const pageStart = (input.page - 1) * input.limit;
+        const pageSlice = filteredCustomers.slice(pageStart, pageStart + input.limit);
+
+        const enriched = pageSlice.map((customer) => ({
+          id: customer.id,
+          customerNumber: customer.customerNumber,
+          name: customer.name,
+          telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
+          gender: columnSupport.gender ? (customer.gender ?? null) : null,
+          region: columnSupport.region ? (customer.region ?? null) : null,
+          tariffName: customer.incomes[0]?.tariff?.name ?? null,
+          exerciseStats: [] as Array<{ name: string; done: number; total: number }>,
+          attendance: {
+            attended: 0,
+            total: 0,
+            base: { attended: 0, total: 0 },
+            premiumExtra: { attended: 0, total: 0 },
+            isPremiumEligible: false,
+          },
+        }));
+
+        return { data: enriched, pagination: { page: input.page, limit: input.limit, total } };
+      }
 
       const runQuery = async (support: CustomerColumnSupport) => {
         const effectiveWhere = buildWhere(support);
