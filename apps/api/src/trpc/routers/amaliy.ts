@@ -13,6 +13,7 @@ import {
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { addDaysLocal, startOfDayLocal } from '../../utils/date-local';
 import { isPremiumTariffName } from '../../utils/tariff';
+import { isClassDayForRun } from '../../utils/course-schedule';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -110,11 +111,6 @@ function isTransactionClosedError(error: unknown): boolean {
   );
 }
 
-function isClassDay(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6;
-}
-
 function parseDateInput(dateInput: string): Date {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/;
   const match = dateOnly.exec(dateInput.trim());
@@ -140,13 +136,16 @@ function toDateKeyLocal(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function isEligibleExerciseDate(type: string, date: Date): boolean {
+// category/runStartDate are optional: when omitted (no specific course run in scope),
+// the 'class' check falls back to using `date` itself as the schedule reference, i.e.
+// whatever the Fri/Sat-vs-Sat/Sun cutover says for that calendar date globally.
+function isEligibleExerciseDate(type: string, date: Date, category?: string, runStartDate?: Date): boolean {
   const day = date.getDay();
   if (type === 'homework') {
     return day >= 1 && day <= 5;
   }
   if (type === 'class') {
-    return day === 0 || day === 6;
+    return isClassDayForRun(date, category ?? 'offline', runStartDate ?? date);
   }
   if (type === 'extra') {
     return day >= 1 && day <= 5;
@@ -159,12 +158,14 @@ function buildExerciseSlotDates(params: {
   endDate: Date;
   type: string;
   targetCount: number;
+  category?: string;
+  runStartDate?: Date;
 }) {
   const start = startOfDayLocal(params.startDate);
   const end = startOfDayLocal(params.endDate);
   const allEligible: Date[] = [];
   for (let cursor = new Date(start); cursor.getTime() <= end.getTime(); cursor = addDaysLocal(cursor, 1)) {
-    if (isEligibleExerciseDate(params.type, cursor)) {
+    if (isEligibleExerciseDate(params.type, cursor, params.category, params.runStartDate)) {
       allEligible.push(new Date(cursor));
     }
   }
@@ -187,12 +188,16 @@ function buildAttendanceSlotDates(params: {
   startDate: Date;
   endDate: Date;
   targetCount: number;
+  category?: string;
+  runStartDate?: Date;
 }) {
   const start = startOfDayLocal(params.startDate);
   const end = startOfDayLocal(params.endDate);
+  const category = params.category ?? 'offline';
+  const runStartDate = params.runStartDate ?? params.startDate;
   const classDays: Date[] = [];
   for (let cursor = new Date(start); cursor.getTime() <= end.getTime(); cursor = addDaysLocal(cursor, 1)) {
-    if (isClassDay(cursor)) {
+    if (isClassDayForRun(cursor, category, runStartDate)) {
       classDays.push(new Date(cursor));
     }
   }
@@ -232,6 +237,7 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
           baseLessons: true,
           premiumExtraLessons: true,
           kuratorUserId: true,
+          course: { select: { category: true } },
         },
       }),
     );
@@ -381,6 +387,7 @@ export const amaliyRouter = router({
             courseId: true,
             type: true,
             targetCount: true,
+            course: { select: { category: true } },
             ...(withVisibilityColumns ? { startDate: true } : {}),
           },
         }),
@@ -463,7 +470,10 @@ export const amaliyRouter = router({
       }
 
       const date = parseDateInput(input.date);
-      if (!input.includeCompleted && !isEligibleExerciseDate(exercise.type, date)) {
+      if (
+        !input.includeCompleted
+        && !isEligibleExerciseDate(exercise.type, date, exercise.course.category, selectedRunDateRange?.startDate)
+      ) {
         return [];
       }
       const dayStart = startOfDayLocal(date);
@@ -510,6 +520,8 @@ export const amaliyRouter = router({
             endDate: selectedRunDateRange.endDate,
             type: exercise.type,
             targetCount: exercise.targetCount,
+            category: exercise.course.category,
+            runStartDate: selectedRunDateRange.startDate,
           })
         : { slotDates: [] as Date[], hasInsufficientEligibleDates: false };
       const slotDateObjects = slotInfo.slotDates;
@@ -680,6 +692,7 @@ export const amaliyRouter = router({
             endDate: true,
             baseLessons: true,
             premiumExtraLessons: true,
+            course: { select: { category: true } },
           },
         })
         .catch((error) => {
@@ -695,7 +708,7 @@ export const amaliyRouter = router({
 
       const selectedDate = startOfDayLocal(parseDateInput(input.date));
       const selectedDateEnd = addDaysLocal(selectedDate, 1);
-      const isLessonDay = isClassDay(selectedDate);
+      const isLessonDay = isClassDayForRun(selectedDate, courseRun.course.category, courseRun.startDate);
 
       const runCustomerIds = await resolveCourseRunMemberCustomerIds({
         tenantId,
@@ -876,11 +889,15 @@ export const amaliyRouter = router({
         startDate: courseRun.startDate,
         endDate: courseRun.endDate,
         targetCount: courseRun.baseLessons,
+        category: courseRun.course.category,
+        runStartDate: courseRun.startDate,
       });
       const premiumSlotsInfo = buildAttendanceSlotDates({
         startDate: courseRun.startDate,
         endDate: courseRun.endDate,
         targetCount: courseRun.premiumExtraLessons,
+        category: courseRun.course.category,
+        runStartDate: courseRun.startDate,
       });
       const baseSlotDates = baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
       const premiumSlotDates = premiumSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
@@ -997,6 +1014,7 @@ export const amaliyRouter = router({
             endDate: true,
             baseLessons: true,
             premiumExtraLessons: true,
+            course: { select: { category: true } },
           },
         })
         .catch((error) => {
@@ -1023,11 +1041,15 @@ export const amaliyRouter = router({
         startDate: courseRun.startDate,
         endDate: courseRun.endDate,
         targetCount: courseRun.baseLessons,
+        category: courseRun.course.category,
+        runStartDate: courseRun.startDate,
       });
       const premiumSlotsInfo = buildAttendanceSlotDates({
         startDate: courseRun.startDate,
         endDate: courseRun.endDate,
         targetCount: courseRun.premiumExtraLessons,
+        category: courseRun.course.category,
+        runStartDate: courseRun.startDate,
       });
 
       const allowedBaseDateKeys = new Set(baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date)));
@@ -1169,8 +1191,13 @@ export const amaliyRouter = router({
       }
 
       const date = parseDateInput(input.date);
-      const classDay = isClassDay(date);
       const courseRun = await getCourseRunForDate(tenantId, date, input.courseRunId);
+      // Display-only fallback when no run is resolved: no specific run's schedule to
+      // consult, so fall back to the plain-date cutover check. Has no attendance-
+      // marking consequence since the request short-circuits with empty results below.
+      const classDay = courseRun
+        ? isClassDayForRun(date, courseRun.course.category, courseRun.startDate)
+        : isClassDayForRun(date, 'offline', date);
 
       if (!courseRun) {
         return {
@@ -1365,6 +1392,8 @@ export const amaliyRouter = router({
                   endDate: courseRun.endDate,
                   type: def.type,
                   targetCount: def.targetCount,
+                  category: courseRun.course.category,
+                  runStartDate: courseRun.startDate,
                 });
                 const slots = slotInfo.slotDates.map((slotDate) => {
                   const dateKey = toDateKeyLocal(slotDate);
@@ -1460,7 +1489,13 @@ export const amaliyRouter = router({
           tenantId,
           courseId: definition.courseId,
         },
-        select: { id: true, courseId: true, startDate: true, endDate: true },
+        select: {
+          id: true,
+          courseId: true,
+          startDate: true,
+          endDate: true,
+          course: { select: { category: true } },
+        },
       });
       if (!courseRun) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi yoki mashqqa mos emas' });
@@ -1525,7 +1560,7 @@ export const amaliyRouter = router({
       if (dayStart < runStart || dayStart >= runEndExclusive) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: "Sana mashq davriga kirmaydi" });
       }
-      if (!isEligibleExerciseDate(definition.type, dayStart)) {
+      if (!isEligibleExerciseDate(definition.type, dayStart, courseRun.course.category, courseRun.startDate)) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: "Tanlangan sana ushbu mashq turi uchun mos emas",
@@ -1677,7 +1712,13 @@ export const amaliyRouter = router({
         withCourseRunVisibilityFallback((withHiddenColumn) =>
           prisma.courseRun.findFirst({
             where: { id: input.courseRunId, tenantId, ...visibleCourseRunWhere(withHiddenColumn) },
-            select: { id: true, courseId: true, startDate: true, endDate: true },
+            select: {
+              id: true,
+              courseId: true,
+              startDate: true,
+              endDate: true,
+              course: { select: { category: true } },
+            },
           }),
         ).catch((error) => {
           if (isMissingCourseRunsTableError(error)) {
@@ -1713,6 +1754,8 @@ export const amaliyRouter = router({
         endDate: courseRun.endDate,
         type: definition.type,
         targetCount: definition.targetCount,
+        category: courseRun.course.category,
+        runStartDate: courseRun.startDate,
       });
       const allowedDateKeys = new Set(slotInfo.slotDates.map((date) => toDateKeyLocal(date)));
 
@@ -2017,6 +2060,7 @@ export const amaliyRouter = router({
             endDate: true,
             baseLessons: true,
             premiumExtraLessons: true,
+            course: { select: { category: true } },
           },
         }),
       )
@@ -2073,6 +2117,8 @@ export const amaliyRouter = router({
           targetCount: input.lessonType === 'base'
             ? courseRun.baseLessons
             : courseRun.premiumExtraLessons,
+          category: courseRun.course.category,
+          runStartDate: courseRun.startDate,
         }).slotDates.map(toDateKeyLocal),
       );
       if (
