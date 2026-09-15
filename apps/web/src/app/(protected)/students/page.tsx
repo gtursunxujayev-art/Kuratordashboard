@@ -7,6 +7,8 @@ import { StudentDetailModal } from './student-detail-modal';
 type SecondaryFilter = 'tariff' | 'region';
 type CourseType = '' | 'offline' | 'online' | 'intensiv';
 
+const WITHOUT_OQIM_VALUE = '__WITHOUT_OQIM__';
+
 function normalizeCourseCategory(raw?: string | null): Exclude<CourseType, ''> {
   const value = (raw ?? '').toLowerCase();
   if (value.includes('intens')) return 'intensiv';
@@ -73,15 +75,18 @@ export default function StudentsPage() {
   }, [allowedCourseIds, selectedCourseId]);
 
   useEffect(() => {
-    if (!selectedCourseRunId) return;
+    if (!selectedCourseRunId || selectedCourseRunId === WITHOUT_OQIM_VALUE) return;
     if (filteredCourseRuns.some((run) => run.id === selectedCourseRunId)) return;
     setSelectedCourseRunId('');
     setPage(1);
   }, [filteredCourseRuns, selectedCourseRunId]);
 
+  const isWithoutOqim = selectedCourseRunId === WITHOUT_OQIM_VALUE;
+
   const { data, isLoading, error } = trpc.students.list.useQuery(
     {
-      courseRunId: selectedCourseRunId || undefined,
+      courseRunId: !isWithoutOqim && selectedCourseRunId ? selectedCourseRunId : undefined,
+      withoutOqim: isWithoutOqim || undefined,
       courseId: selectedCourseId || undefined,
       tariffId: secondaryFilter === 'tariff' && selectedTariffId ? selectedTariffId : undefined,
       region: secondaryFilter === 'region' && selectedRegion ? selectedRegion : undefined,
@@ -124,23 +129,22 @@ export default function StudentsPage() {
           <option value="intensiv">Intensiv</option>
         </select>
 
-        {filteredCourseRuns.length > 0 && (
-          <select
-            value={selectedCourseRunId}
-            onChange={(e) => {
-              setSelectedCourseRunId(e.target.value);
-              setPage(1);
-            }}
-            className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
-          >
-            <option value="">Barcha oqimlar</option>
-            {filteredCourseRuns.map((run) => (
-              <option key={run.id} value={run.id}>
-                {run.name}
-              </option>
-            ))}
-          </select>
-        )}
+        <select
+          value={selectedCourseRunId}
+          onChange={(e) => {
+            setSelectedCourseRunId(e.target.value);
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
+        >
+          <option value="">Barcha oqimlar</option>
+          <option value={WITHOUT_OQIM_VALUE}>Oqimsiz</option>
+          {filteredCourseRuns.map((run) => (
+            <option key={run.id} value={run.id}>
+              {run.name}
+            </option>
+          ))}
+        </select>
 
         <select
           value={selectedCourseId}
@@ -274,7 +278,7 @@ export default function StudentsPage() {
                     ))}
 
                     <td className="px-4 py-3 text-center">
-                      {selectedCourseRunId ? (
+                      {selectedCourseRunId && !isWithoutOqim ? (
                         <div>
                           <span
                             className={
