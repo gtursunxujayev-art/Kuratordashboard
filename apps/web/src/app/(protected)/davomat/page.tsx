@@ -41,23 +41,30 @@ function slotKey(customerId: string, lessonType: 'base' | 'premium_extra', date:
   return `${customerId}:${lessonType}:${date}`;
 }
 
+type SourceBadge = 'faceid' | 'qr' | null;
+
 function AttendanceSlotCard({
   date,
   status,
-  isFaceId,
+  sourceBadge,
   onChange,
 }: {
   date: string;
   status: AttendanceStatus;
-  isFaceId: boolean;
+  sourceBadge: SourceBadge;
   onChange: (status: AttendanceStatus) => void;
 }) {
   return (
     <div className="rounded-lg border border-gray-200 p-2">
       <p className="text-[11px] kd-subtle mb-1">{formatShortDate(date)}</p>
-      {isFaceId && (
+      {sourceBadge === 'faceid' && (
         <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
           Face ID
+        </span>
+      )}
+      {sourceBadge === 'qr' && (
+        <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
+          QR
         </span>
       )}
       <AttendanceStatusSelect value={status} onChange={onChange} />
@@ -65,12 +72,18 @@ function AttendanceSlotCard({
   );
 }
 
+function resolveSourceBadge(hasManualOverride: boolean, status: AttendanceStatus, source: string | null): SourceBadge {
+  if (hasManualOverride || status !== 'keldi') return null;
+  if (source === 'system') return 'faceid';
+  if (source === 'qr') return 'qr';
+  return null;
+}
+
 export default function DavomatPage() {
   const { isManager } = useAuth();
   const toast = useToast();
 
   const [selectedCourseId, setSelectedCourseId] = useState('');
-  const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [dateMode, setDateMode] = useState<DateMode>('today');
 
   const [selectedDayBase, setSelectedDayBase] = useState<Record<string, AttendanceStatus>>({});
@@ -90,6 +103,22 @@ export default function DavomatPage() {
     () => (allRuns ?? []).filter((run) => !selectedCourseId || run.courseId === selectedCourseId),
     [allRuns, selectedCourseId],
   );
+
+  // Auto-resolve the relevant oqim for the selected course instead of making staff
+  // pick one: prefer whichever run's date range covers today, else the most
+  // recently started run (courseRuns is already sorted startDate desc).
+  const activeCourseRun = useMemo(() => {
+    if (courseRuns.length === 0) return null;
+    const todayKey = getModeDate('today');
+    const today = new Date(`${todayKey}T00:00:00`);
+    const current = courseRuns.find((run) => {
+      const start = new Date(run.startDate);
+      const end = new Date(run.endDate);
+      return start.getTime() <= today.getTime() && today.getTime() <= end.getTime();
+    });
+    return current ?? courseRuns[0];
+  }, [courseRuns]);
+  const selectedCourseRunId = activeCourseRun?.id ?? '';
 
   const attendanceQuery = trpc.amaliy.listAttendanceStudents.useQuery(
     {
@@ -324,13 +353,13 @@ export default function DavomatPage() {
                             {student.baseSlots.map((slot) => {
                               const key = slotKey(student.id, 'base', slot.date);
                               const selectedStatus = selectedAllBase[key] ?? slot.status;
-                              const isFaceId = !selectedAllBase[key] && slot.status === 'keldi' && slot.source === 'system';
+                              const sourceBadge = resolveSourceBadge(Boolean(selectedAllBase[key]), slot.status, slot.source);
                               return (
                                 <AttendanceSlotCard
                                   key={slot.date}
                                   date={slot.date}
                                   status={selectedStatus}
-                                  isFaceId={isFaceId}
+                                  sourceBadge={sourceBadge}
                                   onChange={(nextStatus) =>
                                     setSelectedAllBase((prev) => ({ ...prev, [key]: nextStatus }))
                                   }
@@ -349,13 +378,13 @@ export default function DavomatPage() {
                               {student.premiumExtraSlots.map((slot) => {
                                 const key = slotKey(student.id, 'premium_extra', slot.date);
                                 const selectedStatus = selectedAllPremium[key] ?? slot.status;
-                                const isFaceId = !selectedAllPremium[key] && slot.status === 'keldi' && slot.source === 'system';
+                                const sourceBadge = resolveSourceBadge(Boolean(selectedAllPremium[key]), slot.status, slot.source);
                                 return (
                                   <AttendanceSlotCard
                                     key={slot.date}
                                     date={slot.date}
                                     status={selectedStatus}
-                                    isFaceId={isFaceId}
+                                    sourceBadge={sourceBadge}
                                     onChange={(nextStatus) =>
                                       setSelectedAllPremium((prev) => ({ ...prev, [key]: nextStatus }))
                                     }
@@ -429,6 +458,13 @@ export default function DavomatPage() {
                             Face ID
                           </span>
                         )}
+                      {!selectedDayBase[student.id] &&
+                        student.dayStatuses.base === 'keldi' &&
+                        student.daySource?.base === 'qr' && (
+                          <span className="px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
+                            QR
+                          </span>
+                        )}
                       {student.isPremiumEligible && (
                         <>
                           <span>•</span>
@@ -438,6 +474,13 @@ export default function DavomatPage() {
                             student.daySource?.premiumExtra === 'system' && (
                               <span className="px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
                                 Face ID
+                              </span>
+                            )}
+                          {!selectedDayPremium[student.id] &&
+                            student.dayStatuses.premiumExtra === 'keldi' &&
+                            student.daySource?.premiumExtra === 'qr' && (
+                              <span className="px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
+                                QR
                               </span>
                             )}
                         </>
