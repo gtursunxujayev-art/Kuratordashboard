@@ -599,6 +599,8 @@ export const studentsRouter = router({
         ...(support.address ? { address: true } : {}),
         ...(support.instagramUsername ? { instagramUsername: true } : {}),
         ...(support.socialMediaConsent ? { socialMediaConsent: true } : {}),
+        telegramChatId: true,
+        telegramLinkedAt: true,
         createdAt: true,
         updatedAt: true,
         incomes: {
@@ -621,6 +623,8 @@ export const studentsRouter = router({
         address?: string | null;
         instagramUsername?: string | null;
         socialMediaConsent?: boolean | null;
+        telegramChatId: string | null;
+        telegramLinkedAt: Date | null;
         createdAt: Date;
         updatedAt: Date;
         incomes: Array<{
