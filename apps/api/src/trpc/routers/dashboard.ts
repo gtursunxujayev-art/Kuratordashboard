@@ -18,6 +18,7 @@ import {
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
+import { isClassDayForRun } from '../../utils/course-schedule';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -305,13 +306,13 @@ function toDayKey(date: Date): string {
   return toDateLabel(startOfDayLocal(date));
 }
 
-function isAmaliyPracticeEligibleOnDate(type: string, date: Date): boolean {
-  const day = startOfDayLocal(date).getDay();
+function isAmaliyPracticeEligibleOnDate(type: string, date: Date, category?: string, runStartDate?: Date): boolean {
+  const day = startOfDayLocal(date);
   if (type === 'class') {
-    return day === 0 || day === 6;
+    return isClassDayForRun(day, category ?? 'offline', runStartDate ?? day);
   }
   if (type === 'homework' || type === 'extra') {
-    return day >= 1 && day <= 5;
+    return day.getDay() >= 1 && day.getDay() <= 5;
   }
   return true;
 }
@@ -328,10 +329,11 @@ function isAmaliyPracticeActiveAndEligibleOnDate(
   date: Date,
   fallbackStartDate: Date,
   practiceStartDate?: Date | null,
+  category?: string,
 ): boolean {
   const day = startOfDayLocal(date);
   if (day < resolveAmaliyPracticeStartDate(fallbackStartDate, practiceStartDate)) return false;
-  return isAmaliyPracticeEligibleOnDate(type, day);
+  return isAmaliyPracticeEligibleOnDate(type, day, category, fallbackStartDate);
 }
 
 function enumerateDateRange(range: { from: Date; to: Date }): Array<{ date: string; label: string }> {
@@ -655,14 +657,14 @@ async function getAmaliyReportMatrixData(params: {
 
       let course = await prisma.course.findFirst({
         where: { id: input.courseId, tenantId, isActive: true },
-        select: { id: true, name: true, startDate: true, endDate: true },
+        select: { id: true, name: true, startDate: true, endDate: true, category: true },
       }).catch(async (error) => {
         if (!isMissingCourseEndDateColumnError(error)) {
           throw error;
         }
         const fallback = await prisma.course.findFirst({
           where: { id: input.courseId, tenantId, isActive: true },
-          select: { id: true, name: true, startDate: true },
+          select: { id: true, name: true, startDate: true, category: true },
         });
         return fallback ? { ...fallback, endDate: null as Date | null } : null;
       });
@@ -953,6 +955,7 @@ async function getAmaliyReportMatrixData(params: {
             completedDay,
             anchorRunStart,
             practiceStartById.get(log.exerciseDefinitionId),
+            course.category,
           )
         ) {
           continue;
@@ -1060,6 +1063,7 @@ async function getAmaliyReportMatrixData(params: {
               new Date(`${day.date}T00:00:00`),
               anchorRunStart,
               practiceStart,
+              course.category,
             ),
           );
         }
@@ -1074,6 +1078,7 @@ async function getAmaliyReportMatrixData(params: {
               new Date(`${day.date}T00:00:00`),
               anchorRunStart,
               practiceStart,
+              course.category,
             ),
           );
         }
