@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import { prisma } from '@kuratordashboard/db';
 import { addDaysLocal, startOfDayLocal } from '../../utils/date-local';
+import { isClassDayForRun } from '../../utils/course-schedule';
+import { matchCustomerByPhone } from './customer-matching';
 
 /**
  * Face ID -> student class attendance ingestion.
@@ -229,11 +231,6 @@ export function parseFaceIdPayload(body: unknown): ParsedFaceIdEvent | null {
 // Date helpers
 // ---------------------------------------------------------------------------
 
-function isClassDay(date: Date): boolean {
-  const day = date.getDay();
-  return day === 0 || day === 6; // Sunday or Saturday
-}
-
 function parseLocalDateKey(dateKey: string): Date | null {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey.trim());
   if (!match) return null;
@@ -248,7 +245,10 @@ function toDateKeyLocal(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-function buildSlotDateKeys(startDate: Date, endDate: Date, targetCount: number): string[] {
+// Exported for reuse by the client bot's QR check-in (checkInByTicketToken), which
+// already knows the exact courseRunId from the ticket and just needs to confirm
+// today is one of that run's base-lesson slot dates.
+export function buildSlotDateKeys(startDate: Date, endDate: Date, targetCount: number, category: string): string[] {
   const start = startOfDayLocal(startDate);
   const end = startOfDayLocal(endDate);
   const classDays: string[] = [];
@@ -257,7 +257,7 @@ function buildSlotDateKeys(startDate: Date, endDate: Date, targetCount: number):
     cursor.getTime() <= end.getTime();
     cursor = addDaysLocal(cursor, 1)
   ) {
-    if (isClassDay(cursor)) {
+    if (isClassDayForRun(cursor, category, startDate)) {
       classDays.push(toDateKeyLocal(cursor));
     }
   }
@@ -296,22 +296,9 @@ async function matchStudent(
   }
 
   // 2) Phone match. Dashboarduz stores the phone in customers.customerNumber.
-  // Compare on the last 9 digits then confirm a full normalized match.
   if (parsed.phone && parsed.phone.length >= 7) {
-    const last9 = parsed.phone.slice(-9);
-    const candidates = await prisma.customer.findMany({
-      where: { ...tenantWhere, customerNumber: { contains: last9 } },
-      select: { id: true, tenantId: true, customerNumber: true, faceIdExternalId: true },
-      take: 25,
-    });
-
-    const exact = candidates.filter((c) => {
-      const normalized = normalizePhone(c.customerNumber);
-      return normalized.length >= 7 && normalized.slice(-9) === last9;
-    });
-
-    if (exact.length === 1) {
-      const found = exact[0];
+    const found = await matchCustomerByPhone(parsed.phone, tenantScopeId);
+    if (found) {
       // Learn the device id for fast, robust future matches.
       if (parsed.externalUserId && !found.faceIdExternalId) {
         await prisma.customer
@@ -322,18 +309,6 @@ async function matchStudent(
           .catch(() => undefined);
       }
       return { id: found.id, tenantId: found.tenantId, faceIdExternalId: found.faceIdExternalId };
-    }
-
-    if (exact.length > 1) {
-      console.log(
-        JSON.stringify({
-          level: 'warn',
-          event: 'faceid_student_ambiguous',
-          reason: 'multiple_phone_matches',
-          phoneMasked: `***${parsed.phone.slice(-4)}`,
-          matchCount: exact.length,
-        }),
-      );
     }
   }
 
@@ -368,7 +343,13 @@ async function resolveLesson(
     },
     select: {
       courseRun: {
-        select: { id: true, startDate: true, endDate: true, baseLessons: true },
+        select: {
+          id: true,
+          startDate: true,
+          endDate: true,
+          baseLessons: true,
+          course: { select: { category: true } },
+        },
       },
     },
   });
@@ -377,7 +358,7 @@ async function resolveLesson(
   for (const membership of memberships) {
     const run = membership.courseRun;
     if (!run) continue;
-    const baseSlots = buildSlotDateKeys(run.startDate, run.endDate, run.baseLessons);
+    const baseSlots = buildSlotDateKeys(run.startDate, run.endDate, run.baseLessons, run.course.category);
     if (baseSlots.includes(dateKey)) {
       qualifying.push({ id: run.id, startDate: run.startDate });
     }
@@ -756,21 +737,11 @@ export async function handleFaceIdWebhook(body: unknown): Promise<FaceIdWebhookR
     return result;
   }
 
-  if (!isClassDay(eventDate)) {
-    const result: FaceIdWebhookResult = { ok: true, status: 'not_class_day', customerId: student.id };
-    console.log(
-      JSON.stringify({
-        level: 'info',
-        event: 'faceid_webhook',
-        status: 'not_class_day',
-        localDate: parsed.localDate,
-        weekday: eventDate.getDay(),
-        customerId: student.id,
-      }),
-    );
-    await finalizeEvent(result, tenantId);
-    return result;
-  }
+  // Note: no early global "is today a class day" pre-check here — with the Fri/Sat
+  // cutover, class days are per-course-run (based on each run's own startDate), not
+  // a single global rule. resolveLesson() below checks per-run schedules directly and
+  // naturally falls through to 'no_lesson' for any date that isn't a class day for any
+  // of the customer's active runs, which subsumes what this check used to do.
 
   // 6. Resolve lesson
   const lesson = await resolveLesson(tenantId, student.id, eventDate);
