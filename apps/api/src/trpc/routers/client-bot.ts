@@ -7,6 +7,7 @@ import {
   createClientTelegramLinkToken,
   issueAttendanceTicket,
   issueTicketsForActiveEnrollments,
+  generateTicketQrImage,
   checkInByTicketToken,
 } from '../../services/client-bot';
 
@@ -69,6 +70,20 @@ export const clientBotRouter = router({
         customerId: input.customerId,
       });
       return issueTicketsForActiveEnrollments(ctx.tenantId, input.customerId);
+    }),
+
+  // Returns the QR as a PNG data URL for display/printing in the dashboard.
+  generateTicketQr: protectedProcedure
+    .input(z.object({ customerId: z.string(), courseRunId: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      await assertCustomerAccessible({
+        tenantId: ctx.tenantId,
+        userId: ctx.user.userId,
+        roles: ctx.user.roles,
+        customerId: input.customerId,
+        courseRunId: input.courseRunId,
+      });
+      return generateTicketQrImage(ctx.tenantId, input.customerId, input.courseRunId);
     }),
 
   checkInByTicket: protectedProcedure
