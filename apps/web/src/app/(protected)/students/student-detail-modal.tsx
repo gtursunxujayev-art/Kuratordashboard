@@ -14,7 +14,7 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
   const { isAdmin, isManager } = useAuth();
   const utils = trpc.useContext();
 
-  const { data: student, isLoading } = trpc.students.detail.useQuery({ customerId });
+  const { data: student, isLoading, error: studentError } = trpc.students.detail.useQuery({ customerId });
 
   const [clientBotLink, setClientBotLink] = useState<string | null>(null);
   const [clientBotMessage, setClientBotMessage] = useState('');
@@ -124,6 +124,8 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
 
         {isLoading ? (
           <div className="p-8 text-center text-gray-500 text-sm">Yuklanmoqda...</div>
+        ) : studentError ? (
+          <div className="p-8 text-center text-red-600 text-sm">{studentError.message}</div>
         ) : student ? (
           <div className="p-5 space-y-4">
             {editing ? (
