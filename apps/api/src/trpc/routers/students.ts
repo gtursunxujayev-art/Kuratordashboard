@@ -165,7 +165,14 @@ async function getCustomerColumnSupport(forceRefresh = false): Promise<CustomerC
   if (!customerColumnSupportPromise || forceRefresh) {
     customerColumnSupportPromise = detectCustomerColumnSupport();
   }
-  return customerColumnSupportPromise;
+  const support = await customerColumnSupportPromise;
+  // Never cache a negative result permanently: a column can appear later when a
+  // migration is deployed while this process keeps running. Re-detect on the next
+  // call until every column exists, so the API picks it up without a restart.
+  if (Object.values(support).some((enabled) => !enabled)) {
+    customerColumnSupportPromise = null;
+  }
+  return support;
 }
 
 function normalizeOptionalText(value: string): string | null {
