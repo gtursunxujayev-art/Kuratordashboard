@@ -19,6 +19,7 @@ const managerNavItems = [
   { href: '/hisobot', label: 'Hisobot', icon: 'chart' },
   { href: '/davomat', label: 'Davomat', icon: 'calendar' },
   { href: '/faceid', label: 'Face ID', icon: 'scan' },
+  { href: '/messages', label: 'Xabar', icon: 'send' },
   { href: '/settings', label: 'Sozlamalar', icon: 'settings' },
 ] as const;
 
