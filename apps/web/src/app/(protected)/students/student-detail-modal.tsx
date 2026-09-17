@@ -19,6 +19,20 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
   const [clientBotLink, setClientBotLink] = useState<string | null>(null);
   const [clientBotMessage, setClientBotMessage] = useState('');
   const [clientBotError, setClientBotError] = useState('');
+  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+
+  const generateQrMutation = trpc.clientBot.generateTicketQr.useMutation({
+    onSuccess: (result) => {
+      setClientBotError('');
+      setClientBotMessage('');
+      setQrDataUrl(result.dataUrl);
+    },
+    onError: (err) => {
+      setQrDataUrl(null);
+      setClientBotMessage('');
+      setClientBotError(err.message);
+    },
+  });
 
   const createLinkTokenMutation = trpc.clientBot.createLinkToken.useMutation({
     onSuccess: (result) => {
@@ -312,6 +326,14 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
                       >
                         {createLinkTokenMutation.isLoading ? 'Yaratilmoqda...' : "Ulash havolasi olish"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => generateQrMutation.mutate({ customerId })}
+                        disabled={generateQrMutation.isLoading}
+                        className="px-3 py-1.5 border border-gray-200 text-gray-700 text-xs rounded-lg hover:bg-gray-50 disabled:opacity-50"
+                      >
+                        {generateQrMutation.isLoading ? 'Yaratilmoqda...' : 'QR kodni ko‘rish'}
+                      </button>
                       {student.telegramChatId && (
                         <button
                           type="button"
@@ -322,6 +344,19 @@ export function StudentDetailModal({ customerId, onClose, regions }: Props) {
                           {resendTicketsMutation.isLoading ? 'Yuborilmoqda...' : 'QR chipta yuborish'}
                         </button>
                       )}
+                    </div>
+                  )}
+                  {qrDataUrl && (
+                    <div className="mt-3 flex flex-col items-center gap-2">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={qrDataUrl} alt="QR chipta" className="w-48 h-48 border border-gray-200 rounded-lg" />
+                      <a
+                        href={qrDataUrl}
+                        download={`qr-${student.customerNumber ?? customerId}.png`}
+                        className="text-xs text-blue-600 underline"
+                      >
+                        Yuklab olish
+                      </a>
                     </div>
                   )}
                   {clientBotLink && (
