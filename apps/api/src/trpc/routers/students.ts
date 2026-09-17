@@ -30,6 +30,8 @@ type CustomerColumnSupport = {
   address: boolean;
   instagramUsername: boolean;
   socialMediaConsent: boolean;
+  telegramChatId: boolean;
+  telegramLinkedAt: boolean;
 };
 
 function removeMissingCustomerColumns(
@@ -45,6 +47,8 @@ function removeMissingCustomerColumns(
     address: isMissingCustomerColumnError(error, 'address'),
     instagramUsername: isMissingCustomerColumnError(error, 'instagramusername'),
     socialMediaConsent: isMissingCustomerColumnError(error, 'socialmediaconsent'),
+    telegramChatId: isMissingCustomerColumnError(error, 'telegramchatid'),
+    telegramLinkedAt: isMissingCustomerColumnError(error, 'telegramlinkedat'),
   };
   if (!Object.values(missing).some(Boolean)) return null;
   return {
@@ -56,6 +60,8 @@ function removeMissingCustomerColumns(
     address: missing.address ? false : current.address,
     instagramUsername: missing.instagramUsername ? false : current.instagramUsername,
     socialMediaConsent: missing.socialMediaConsent ? false : current.socialMediaConsent,
+    telegramChatId: missing.telegramChatId ? false : current.telegramChatId,
+    telegramLinkedAt: missing.telegramLinkedAt ? false : current.telegramLinkedAt,
   };
 }
 
@@ -76,7 +82,9 @@ function isMissingCustomerColumnError(
     | 'specialty'
     | 'address'
     | 'instagramusername'
-    | 'socialmediaconsent',
+    | 'socialmediaconsent'
+    | 'telegramchatid'
+    | 'telegramlinkedat',
 ): boolean {
   const code = String((error as any)?.code || '');
   const message = String((error as any)?.message || '').toLowerCase();
@@ -101,7 +109,9 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
           'specialty',
           'address',
           'instagramusername',
-          'socialmediaconsent'
+          'socialmediaconsent',
+          'telegramchatid',
+          'telegramlinkedat'
         )
     `;
     // Optimistic fallback: if metadata is filtered (permissions/drift), keep fields enabled
@@ -116,6 +126,8 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
         address: true,
         instagramUsername: true,
         socialMediaConsent: true,
+        telegramChatId: true,
+        telegramLinkedAt: true,
       };
     }
 
@@ -129,6 +141,8 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
       address: existing.has('address'),
       instagramUsername: existing.has('instagramusername'),
       socialMediaConsent: existing.has('socialmediaconsent'),
+      telegramChatId: existing.has('telegramchatid'),
+      telegramLinkedAt: existing.has('telegramlinkedat'),
     };
   } catch {
     // If metadata query is blocked, keep legacy behavior and let runtime queries decide.
@@ -141,6 +155,8 @@ async function detectCustomerColumnSupport(): Promise<CustomerColumnSupport> {
       address: true,
       instagramUsername: true,
       socialMediaConsent: true,
+      telegramChatId: true,
+      telegramLinkedAt: true,
     };
   }
 }
@@ -454,6 +470,8 @@ export const studentsRouter = router({
           address: columnSupport.address,
           instagramUsername: columnSupport.instagramUsername,
           socialMediaConsent: columnSupport.socialMediaConsent,
+          telegramChatId: columnSupport.telegramChatId,
+          telegramLinkedAt: columnSupport.telegramLinkedAt,
         };
         customerColumnSupportPromise = Promise.resolve(columnSupport);
         [customers, total, courseRun] = await runQuery(columnSupport);
@@ -685,8 +703,8 @@ export const studentsRouter = router({
         ...(support.address ? { address: true } : {}),
         ...(support.instagramUsername ? { instagramUsername: true } : {}),
         ...(support.socialMediaConsent ? { socialMediaConsent: true } : {}),
-        telegramChatId: true,
-        telegramLinkedAt: true,
+        ...(support.telegramChatId ? { telegramChatId: true } : {}),
+        ...(support.telegramLinkedAt ? { telegramLinkedAt: true } : {}),
         createdAt: true,
         updatedAt: true,
         incomes: {
@@ -709,8 +727,8 @@ export const studentsRouter = router({
         address?: string | null;
         instagramUsername?: string | null;
         socialMediaConsent?: boolean | null;
-        telegramChatId: string | null;
-        telegramLinkedAt: Date | null;
+        telegramChatId?: string | null;
+        telegramLinkedAt?: Date | null;
         createdAt: Date;
         updatedAt: Date;
         incomes: Array<{
@@ -751,6 +769,8 @@ export const studentsRouter = router({
         address: columnSupport.address ? (customer.address ?? null) : null,
         instagramUsername: columnSupport.instagramUsername ? (customer.instagramUsername ?? null) : null,
         socialMediaConsent: columnSupport.socialMediaConsent ? (customer.socialMediaConsent ?? null) : null,
+        telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
+        telegramLinkedAt: columnSupport.telegramLinkedAt ? (customer.telegramLinkedAt ?? null) : null,
       };
     }),
 
