@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { trpc } from '@/lib/trpc';
 import { useToast } from '@/components/ui/toast';
+import { QrScanResultPopup, type QrScanResult } from './qr-scan-result-popup';
 
 // A hardware keyboard-wedge QR scanner "types" the scanned code as a fast burst of
 // keystrokes followed by Enter. This listens globally (any page of the dashboard)
@@ -21,30 +22,11 @@ export function QrScannerListener() {
   const bufferRef = useRef('');
   const lastKeyTimeRef = useRef(0);
   const gapOkRef = useRef(true);
+  const [scanResult, setScanResult] = useState<QrScanResult | null>(null);
 
   const checkInMutation = trpc.clientBot.checkInByTicket.useMutation({
     onSuccess: (result) => {
-      const name = result.customerName ?? "O'quvchi";
-      switch (result.status) {
-        case 'marked':
-          toast.show(`${name} — keldi`, 'success');
-          break;
-        case 'already_marked':
-          toast.show(`${name} — allaqachon belgilangan`, 'info');
-          break;
-        case 'manual_mark_kept':
-          toast.show(`${name} — qo'lda belgilangan holat saqlanadi`, 'info');
-          break;
-        case 'invalid_ticket':
-          toast.show('QR chipta yaroqsiz', 'error');
-          break;
-        case 'not_class_day':
-        case 'no_lesson':
-          toast.show(`${name} — bugun bu oqim uchun dars kuni emas`, 'error');
-          break;
-        default:
-          break;
-      }
+      setScanResult(result as QrScanResult);
     },
     onError: (error) => {
       toast.show(error.message || 'QR skanerlashda xatolik', 'error');
@@ -87,5 +69,6 @@ export function QrScannerListener() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  return null;
+  if (!scanResult) return null;
+  return <QrScanResultPopup result={scanResult} onClose={() => setScanResult(null)} />;
 }
