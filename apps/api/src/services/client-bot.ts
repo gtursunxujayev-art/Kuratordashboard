@@ -17,6 +17,11 @@ import { buildSlotDateKeys } from './attendance/faceid';
 
 const LINK_TOKEN_TTL_MINUTES = 30;
 
+const ACTIVE_ENROLLMENT_FILTER = {
+  type: 'new_sale' as const,
+  lifecycleStatus: 'active' as const,
+};
+
 // ---------------------------------------------------------------------------
 // Config & low-level bot plumbing (mirrors telegram-reports.ts's raw-fetch style)
 // ---------------------------------------------------------------------------
@@ -422,6 +427,70 @@ export async function issueAttendanceTicket(
   return { delivered: true };
 }
 
+// Issues (or re-issues) a ticket and returns the QR as a PNG data URL so staff can
+// display/print it from the dashboard. Unlike issueAttendanceTicket this does NOT
+// require the student to be linked to Telegram — useful for students who don't use
+// the bot. Note: the raw token is never stored, so generating a QR mints a new token
+// and supersedes any QR previously shown or sent for the same enrollment.
+export async function generateTicketQrImage(
+  tenantId: string,
+  customerId: string,
+  courseRunId?: string,
+): Promise<{ dataUrl: string; courseRunName: string; customerName: string }> {
+  const customer = await prisma.customer.findFirst({
+    where: { id: customerId, tenantId },
+    select: { id: true, name: true },
+  });
+  if (!customer) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
+  }
+
+  const today = startOfDayLocal(new Date());
+  const membership = await prisma.courseRunMember.findFirst({
+    where: {
+      tenantId,
+      customerId,
+      ...(courseRunId ? { courseRunId } : { courseRun: { endDate: { gte: today } } }),
+    },
+    select: {
+      courseRun: {
+        select: { id: true, name: true, startDate: true, course: { select: { category: true } } },
+      },
+    },
+    orderBy: { courseRun: { startDate: 'desc' } },
+  });
+
+  if (!membership) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: "O'quvchi faol oqimga biriktirilmagan. Avval uni oqim ro'yxatiga qo'shing.",
+    });
+  }
+  if (!isOfflineLikeCategory(membership.courseRun.course.category)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'QR chipta faqat oflayn/intensiv kurslar uchun beriladi',
+    });
+  }
+
+  const rawToken = crypto.randomBytes(24).toString('hex');
+  await prisma.attendanceTicket.upsert({
+    where: {
+      tenantId_customerId_courseRunId: { tenantId, customerId, courseRunId: membership.courseRun.id },
+    },
+    create: {
+      tenantId,
+      customerId,
+      courseRunId: membership.courseRun.id,
+      tokenHash: hashToken(rawToken),
+    },
+    update: { tokenHash: hashToken(rawToken), revokedAt: null },
+  });
+
+  const dataUrl = await QRCode.toDataURL(rawToken, { width: 512, margin: 2 });
+  return { dataUrl, courseRunName: membership.courseRun.name, customerName: customer.name };
+}
+
 // ---------------------------------------------------------------------------
 // QR check-in (attendance mark by ticket token) — mirrors faceid.ts's
 // resolveLesson/markAttendance, keyed by ticket token instead of phone/external-id.
@@ -439,8 +508,39 @@ export type QrCheckInResult = {
   ok: boolean;
   status: QrCheckInStatus;
   customerName?: string;
+  customerNumber?: string;
+  tariffName?: string | null;
+  courseName?: string | null;
+  agreementAmount?: number;
+  remainingDebt?: number;
   lessonDate?: string;
 };
+
+// Agreement ("shartnoma") and debt ("qarz") follow the same convention used by the
+// intensiv sales flow: the agreement is coursePriceAmount (falling back to
+// debtAmount for legacy rows) and the debt is the sale's running remainingDebtAmount.
+async function loadEnrollmentSummary(
+  tenantId: string,
+  customerId: string,
+  courseId: string,
+): Promise<{ tariffName: string | null; agreementAmount: number; remainingDebt: number }> {
+  const sale = await prisma.income.findFirst({
+    where: { tenantId, customerId, courseId, ...ACTIVE_ENROLLMENT_FILTER },
+    select: {
+      coursePriceAmount: true,
+      debtAmount: true,
+      remainingDebtAmount: true,
+      tariff: { select: { name: true } },
+    },
+    orderBy: { entryDate: 'desc' },
+  });
+
+  return {
+    tariffName: sale?.tariff?.name ?? null,
+    agreementAmount: sale?.coursePriceAmount ?? sale?.debtAmount ?? 0,
+    remainingDebt: sale?.remainingDebtAmount ?? 0,
+  };
+}
 
 async function markQrAttendance(params: {
   tenantId: string;
@@ -501,13 +601,14 @@ export async function checkInByTicketToken(
     select: {
       customerId: true,
       courseRunId: true,
-      customer: { select: { name: true } },
+      customer: { select: { name: true, customerNumber: true } },
       courseRun: {
         select: {
           startDate: true,
           endDate: true,
           baseLessons: true,
-          course: { select: { category: true } },
+          courseId: true,
+          course: { select: { category: true, name: true } },
         },
       },
     },
@@ -516,20 +617,31 @@ export async function checkInByTicketToken(
     return { ok: false, status: 'invalid_ticket' };
   }
 
-  const customerName = ticket.customer.name;
+  const { startDate, endDate, baseLessons, course, courseId } = ticket.courseRun;
+  const enrollment = await loadEnrollmentSummary(tenantId, ticket.customerId, courseId);
+  // Every outcome below shows the same student card on the scanner screen, so the
+  // operator can see who scanned even when the check-in itself is rejected.
+  const studentInfo = {
+    customerName: ticket.customer.name,
+    customerNumber: ticket.customer.customerNumber,
+    courseName: course.name,
+    tariffName: enrollment.tariffName,
+    agreementAmount: enrollment.agreementAmount,
+    remainingDebt: enrollment.remainingDebt,
+  };
+
   const today = startOfDayLocal(new Date());
-  const { startDate, endDate, baseLessons, course } = ticket.courseRun;
 
   if (today.getTime() < startOfDayLocal(startDate).getTime() || today.getTime() > startOfDayLocal(endDate).getTime()) {
-    return { ok: true, status: 'no_lesson', customerName };
+    return { ok: true, status: 'no_lesson', ...studentInfo };
   }
   if (!isClassDayForRun(today, course.category, startDate)) {
-    return { ok: true, status: 'not_class_day', customerName };
+    return { ok: true, status: 'not_class_day', ...studentInfo };
   }
   const slotKeys = buildSlotDateKeys(startDate, endDate, baseLessons, course.category);
   const todayKey = toDateKeyLocal(today);
   if (!slotKeys.includes(todayKey)) {
-    return { ok: true, status: 'no_lesson', customerName };
+    return { ok: true, status: 'no_lesson', ...studentInfo };
   }
 
   const markStatus = await markQrAttendance({
@@ -557,7 +669,7 @@ export async function checkInByTicketToken(
     })
     .catch(() => undefined);
 
-  return { ok: true, status: markStatus, customerName, lessonDate: todayKey };
+  return { ok: true, status: markStatus, ...studentInfo, lessonDate: todayKey };
 }
 
 // ---------------------------------------------------------------------------
