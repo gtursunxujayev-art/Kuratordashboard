@@ -317,6 +317,7 @@ export const studentsRouter = router({
         ...(support.telegramUsername ? { telegramUsername: true } : {}),
         ...(support.gender ? { gender: true } : {}),
         ...(support.region ? { region: true } : {}),
+        ...(support.telegramChatId ? { telegramChatId: true } : {}),
         incomes: {
           where: ACTIVE_ENROLLMENT_FILTER,
           select: {
@@ -396,6 +397,7 @@ export const studentsRouter = router({
           telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
           gender: columnSupport.gender ? (customer.gender ?? null) : null,
           region: columnSupport.region ? (customer.region ?? null) : null,
+          telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
           tariffName: customer.incomes[0]?.tariff?.name ?? null,
           exerciseStats: [] as Array<{ name: string; done: number; total: number }>,
           attendance: {
@@ -450,6 +452,7 @@ export const studentsRouter = router({
         telegramUsername?: string | null;
         gender?: string | null;
         region?: string | null;
+        telegramChatId?: string | null;
         incomes: Array<{
           tariffId: string | null;
           tariff: { name: string } | null;
@@ -464,7 +467,8 @@ export const studentsRouter = router({
         const missingTelegram = isMissingCustomerColumnError(error, 'telegramusername');
         const missingRegion = isMissingCustomerColumnError(error, 'region');
         const missingGender = isMissingCustomerColumnError(error, 'gender');
-        if (!missingTelegram && !missingRegion && !missingGender) {
+        const missingChatId = isMissingCustomerColumnError(error, 'telegramchatid');
+        if (!missingTelegram && !missingRegion && !missingGender && !missingChatId) {
           throw error;
         }
 
@@ -477,7 +481,7 @@ export const studentsRouter = router({
           address: columnSupport.address,
           instagramUsername: columnSupport.instagramUsername,
           socialMediaConsent: columnSupport.socialMediaConsent,
-          telegramChatId: columnSupport.telegramChatId,
+          telegramChatId: missingChatId ? false : columnSupport.telegramChatId,
           telegramLinkedAt: columnSupport.telegramLinkedAt,
         };
         customerColumnSupportPromise = Promise.resolve(columnSupport);
@@ -658,6 +662,7 @@ export const studentsRouter = router({
         telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
+        telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
         tariffName: customer.incomes[0]?.tariff?.name ?? null,
         exerciseStats: exerciseStatsByCustomer.get(customer.id) ?? [],
         attendance:
