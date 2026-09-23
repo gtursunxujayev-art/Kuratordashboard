@@ -5,13 +5,26 @@ import { prisma } from '@kuratordashboard/db';
 import { studentsRouter } from './students';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import JSZip from 'jszip';
 import {
   createClientTelegramLinkToken,
   issueAttendanceTicket,
   issueTicketsForActiveEnrollments,
   generateTicketQrImage,
+  buildTicketQr,
   checkInByTicketToken,
 } from '../../services/client-bot';
+
+// Windows/macOS-unsafe characters plus control chars; keeps the name readable.
+function sanitizeFileName(value: string): string {
+  return value
+    .replace(/[\\/:*?"<>|]/g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+}
 
 async function assertCustomerAccessible(params: {
   tenantId: string;
@@ -135,6 +148,73 @@ export const clientBotRouter = router({
         notLinked: customerIds.length - linkedIds.length,
         noOqim,
         truncated: customerIds.length >= MAX_RECIPIENTS,
+      };
+    }),
+
+  // Builds a ZIP of QR PNGs (one per filtered student, named after the student) and
+  // returns it base64-encoded — superjson can't round-trip a Buffer, only strings.
+  downloadTicketsForFiltered: managerProcedure
+    .input(
+      z.object({
+        courseRunId: z.string().optional(),
+        courseId: z.string().optional(),
+        tariffId: z.string().optional(),
+        region: z.string().optional(),
+        search: z.string().optional(),
+        withoutOqim: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const MAX_RECIPIENTS = 2000;
+      const PAGE_SIZE = 500;
+      const studentsCaller = studentsRouter.createCaller(ctx);
+
+      const students: Array<{ id: string; name: string; customerNumber: string }> = [];
+      for (let page = 1; students.length < MAX_RECIPIENTS; page += 1) {
+        const result = await studentsCaller.list({ ...input, page, limit: PAGE_SIZE });
+        students.push(
+          ...result.data.map((row) => ({
+            id: row.id,
+            name: row.name,
+            customerNumber: row.customerNumber,
+          })),
+        );
+        if (page * PAGE_SIZE >= result.pagination.total) break;
+      }
+
+      const zip = new JSZip();
+      const usedNames = new Set<string>();
+      let included = 0;
+      let skipped = 0;
+
+      for (const student of students) {
+        let pngBuffer: Buffer;
+        try {
+          ({ pngBuffer } = await buildTicketQr(ctx.tenantId, student.id));
+        } catch {
+          // Students with no active oqim (or a non-offline course) simply can't have a
+          // ticket — skip them rather than failing the whole archive.
+          skipped += 1;
+          continue;
+        }
+
+        const base = sanitizeFileName(`${student.name} ${student.customerNumber}`) || student.id;
+        let fileName = `${base}.png`;
+        for (let suffix = 2; usedNames.has(fileName); suffix += 1) {
+          fileName = `${base} (${suffix}).png`;
+        }
+        usedNames.add(fileName);
+        zip.file(fileName, pngBuffer);
+        included += 1;
+      }
+
+      const zipBase64 = await zip.generateAsync({ type: 'base64' });
+      return {
+        zipBase64,
+        fileName: `qr-kodlar-${new Date().toISOString().slice(0, 10)}.zip`,
+        included,
+        skipped,
+        truncated: students.length >= MAX_RECIPIENTS,
       };
     }),
 
