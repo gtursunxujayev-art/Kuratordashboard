@@ -126,6 +126,25 @@ function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+// Ticket tokens are derived, not random, so the same student+oqim always yields the
+// same QR. That lets a printed QR and the one sent over Telegram be the same code —
+// regenerating never invalidates a ticket already in someone's hands. Revocation
+// still works: check-in filters on revokedAt.
+export function deriveTicketToken(tenantId: string, customerId: string, courseRunId: string): string {
+  const secret = process.env.CLIENT_BOT_WEBHOOK_SECRET?.trim() || process.env.JWT_SECRET?.trim();
+  if (!secret) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'CLIENT_BOT_WEBHOOK_SECRET yoki JWT_SECRET sozlanmagan',
+    });
+  }
+  return crypto
+    .createHmac('sha256', secret)
+    .update(`ticket:${tenantId}:${customerId}:${courseRunId}`)
+    .digest('hex')
+    .slice(0, 48);
+}
+
 function toDateKeyLocal(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -389,30 +408,13 @@ export async function issueAttendanceTicket(
     });
   }
 
-  let existing = await prisma.attendanceTicket.findUnique({
+  // Derived, so re-issuing produces the same QR the student may already be holding.
+  const rawToken = deriveTicketToken(tenantId, customerId, courseRunId);
+  await prisma.attendanceTicket.upsert({
     where: { tenantId_customerId_courseRunId: { tenantId, customerId, courseRunId } },
-    select: { id: true, tokenHash: true, revokedAt: true },
+    create: { tenantId, customerId, courseRunId, tokenHash: hashToken(rawToken) },
+    update: { tokenHash: hashToken(rawToken), revokedAt: null, deliveredAt: null },
   });
-
-  let rawToken: string;
-  if (existing && !existing.revokedAt) {
-    // Reuse the existing ticket — one static QR per enrollment. The raw token isn't
-    // stored, so we can't re-derive it; instead we mint a fresh one and update the
-    // hash in place, which keeps the "one ticket per enrollment" invariant while
-    // still letting staff re-send a lost QR on request.
-    rawToken = crypto.randomBytes(24).toString('hex');
-    await prisma.attendanceTicket.update({
-      where: { id: existing.id },
-      data: { tokenHash: hashToken(rawToken), deliveredAt: null },
-    });
-  } else {
-    rawToken = crypto.randomBytes(24).toString('hex');
-    await prisma.attendanceTicket.upsert({
-      where: { tenantId_customerId_courseRunId: { tenantId, customerId, courseRunId } },
-      create: { tenantId, customerId, courseRunId, tokenHash: hashToken(rawToken) },
-      update: { tokenHash: hashToken(rawToken), revokedAt: null, deliveredAt: null },
-    });
-  }
 
   const qrBuffer = await QRCode.toBuffer(rawToken, { type: 'png', width: 512, margin: 2 });
   await sendClientPhoto(
@@ -429,16 +431,15 @@ export async function issueAttendanceTicket(
   return { delivered: true };
 }
 
-// Issues (or re-issues) a ticket and returns the QR as a PNG data URL so staff can
-// display/print it from the dashboard. Unlike issueAttendanceTicket this does NOT
-// require the student to be linked to Telegram — useful for students who don't use
-// the bot. Note: the raw token is never stored, so generating a QR mints a new token
-// and supersedes any QR previously shown or sent for the same enrollment.
-export async function generateTicketQrImage(
+// Issues (or re-issues) a ticket and returns the QR as a PNG buffer. Unlike
+// issueAttendanceTicket this does NOT require the student to be linked to Telegram —
+// useful for students who don't use the bot, and for bulk printing. The token is
+// derived, so re-issuing yields the identical QR rather than invalidating the old one.
+export async function buildTicketQr(
   tenantId: string,
   customerId: string,
   courseRunId?: string,
-): Promise<{ dataUrl: string; courseRunName: string; customerName: string }> {
+): Promise<{ pngBuffer: Buffer; courseRunName: string; customerName: string }> {
   const customer = await prisma.customer.findFirst({
     where: { id: customerId, tenantId },
     select: { id: true, name: true },
@@ -475,7 +476,7 @@ export async function generateTicketQrImage(
     });
   }
 
-  const rawToken = crypto.randomBytes(24).toString('hex');
+  const rawToken = deriveTicketToken(tenantId, customerId, membership.courseRun.id);
   await prisma.attendanceTicket.upsert({
     where: {
       tenantId_customerId_courseRunId: { tenantId, customerId, courseRunId: membership.courseRun.id },
@@ -489,8 +490,22 @@ export async function generateTicketQrImage(
     update: { tokenHash: hashToken(rawToken), revokedAt: null },
   });
 
-  const dataUrl = await QRCode.toDataURL(rawToken, { width: 512, margin: 2 });
-  return { dataUrl, courseRunName: membership.courseRun.name, customerName: customer.name };
+  const pngBuffer = await QRCode.toBuffer(rawToken, { type: 'png', width: 512, margin: 2 });
+  return { pngBuffer, courseRunName: membership.courseRun.name, customerName: customer.name };
+}
+
+// Data-URL wrapper for the single-student popup in the dashboard.
+export async function generateTicketQrImage(
+  tenantId: string,
+  customerId: string,
+  courseRunId?: string,
+): Promise<{ dataUrl: string; courseRunName: string; customerName: string }> {
+  const { pngBuffer, courseRunName, customerName } = await buildTicketQr(tenantId, customerId, courseRunId);
+  return {
+    dataUrl: `data:image/png;base64,${pngBuffer.toString('base64')}`,
+    courseRunName,
+    customerName,
+  };
 }
 
 // ---------------------------------------------------------------------------
