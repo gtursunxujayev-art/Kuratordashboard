@@ -55,9 +55,6 @@ export function BotActionPopup({ mode, studentName, qrDataUrl, link, fileNameHin
               >
                 Yuklab olish
               </a>
-              <p className="text-[11px] text-gray-500 text-center">
-                Yangi QR yaratildi — bu o&apos;quvchining oldingi QR kodi endi ishlamaydi.
-              </p>
             </div>
           )}
 
