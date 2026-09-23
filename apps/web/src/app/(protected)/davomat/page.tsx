@@ -84,6 +84,8 @@ export default function DavomatPage() {
   const toast = useToast();
 
   const [selectedCourseId, setSelectedCourseId] = useState('');
+  // '' means "Barcha oqimlar" — every oqim of the course, plus students on none.
+  const [selectedCourseRunId, setSelectedCourseRunId] = useState('');
   const [dateMode, setDateMode] = useState<DateMode>('today');
 
   const [selectedDayBase, setSelectedDayBase] = useState<Record<string, AttendanceStatus>>({});
@@ -104,29 +106,13 @@ export default function DavomatPage() {
     [allRuns, selectedCourseId],
   );
 
-  // Auto-resolve the relevant oqim for the selected course instead of making staff
-  // pick one: prefer whichever run's date range covers today, else the most
-  // recently started run (courseRuns is already sorted startDate desc).
-  const activeCourseRun = useMemo(() => {
-    if (courseRuns.length === 0) return null;
-    const todayKey = getModeDate('today');
-    const today = new Date(`${todayKey}T00:00:00`);
-    const current = courseRuns.find((run) => {
-      const start = new Date(run.startDate);
-      const end = new Date(run.endDate);
-      return start.getTime() <= today.getTime() && today.getTime() <= end.getTime();
-    });
-    return current ?? courseRuns[0];
-  }, [courseRuns]);
-  const selectedCourseRunId = activeCourseRun?.id ?? '';
-
   const attendanceQuery = trpc.amaliy.listAttendanceStudents.useQuery(
     {
-      courseRunId: selectedCourseRunId,
+      ...(selectedCourseRunId ? { courseRunId: selectedCourseRunId } : { courseId: selectedCourseId }),
       date: selectedDate,
       mode: dateMode === 'all' ? 'all' : 'day',
     },
-    { enabled: isManager && Boolean(selectedCourseRunId) },
+    { enabled: isManager && Boolean(selectedCourseId) },
   );
 
   const saveMutation = trpc.amaliy.saveAttendanceSlots.useMutation({
@@ -153,7 +139,7 @@ export default function DavomatPage() {
   }, [dateMode, students]);
 
   const saveDayStudent = async (student: (typeof students)[number]) => {
-    if (!selectedCourseRunId || !attendanceQuery.data) return;
+    if (!student.courseRunId || !attendanceQuery.data) return;
     const key = `day:${student.id}`;
     setBusySaveKey(key);
     try {
@@ -165,7 +151,7 @@ export default function DavomatPage() {
 
       await saveMutation.mutateAsync({
         customerId: student.id,
-        courseRunId: selectedCourseRunId,
+        courseRunId: student.courseRunId,
         baseSlots: [{ date: dayDate, status: baseStatus }],
         premiumExtraSlots: student.isPremiumEligible
           ? [{ date: dayDate, status: premiumStatus }]
@@ -179,7 +165,7 @@ export default function DavomatPage() {
   };
 
   const saveAllStudent = async (student: (typeof students)[number]) => {
-    if (!selectedCourseRunId) return;
+    if (!student.courseRunId) return;
     const key = `all:${student.id}`;
     setBusySaveKey(key);
     try {
@@ -202,7 +188,7 @@ export default function DavomatPage() {
 
       await saveMutation.mutateAsync({
         customerId: student.id,
-        courseRunId: selectedCourseRunId,
+        courseRunId: student.courseRunId,
         baseSlots,
         premiumExtraSlots,
       });
@@ -228,12 +214,15 @@ export default function DavomatPage() {
       </section>
 
       <div className="nn-filter-card space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs kd-subtle mb-1">Kurs</label>
             <select
               value={selectedCourseId}
-              onChange={(event) => setSelectedCourseId(event.target.value)}
+              onChange={(event) => {
+                setSelectedCourseId(event.target.value);
+                setSelectedCourseRunId('');
+              }}
               className="w-full px-3 py-2 border rounded-lg text-sm"
             >
               <option value="">Kursni tanlang...</option>
@@ -243,11 +232,22 @@ export default function DavomatPage() {
                 </option>
               ))}
             </select>
-            {selectedCourseId && (
-              <p className="text-xs kd-subtle mt-1">
-                {activeCourseRun ? `Oqim: ${activeCourseRun.name}` : "Bu kurs uchun oqim topilmadi"}
-              </p>
-            )}
+          </div>
+          <div>
+            <label className="block text-xs kd-subtle mb-1">Oqim</label>
+            <select
+              value={selectedCourseRunId}
+              onChange={(event) => setSelectedCourseRunId(event.target.value)}
+              disabled={!selectedCourseId}
+              className="w-full px-3 py-2 border rounded-lg text-sm disabled:opacity-50"
+            >
+              <option value="">Barcha oqimlar</option>
+              {courseRuns.map((run) => (
+                <option key={run.id} value={run.id}>
+                  {run.name}
+                </option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="block text-xs kd-subtle mb-1">Sana</label>
@@ -296,8 +296,6 @@ export default function DavomatPage() {
 
       {!selectedCourseId ? (
         <div className="kd-card p-6 text-center kd-subtle text-sm">Avval kursni tanlang</div>
-      ) : !selectedCourseRunId ? (
-        <div className="kd-card p-6 text-center kd-subtle text-sm">Bu kurs uchun oqim topilmadi</div>
       ) : attendanceQuery.isLoading ? (
         <div className="kd-card p-6 text-center kd-subtle text-sm">Yuklanmoqda...</div>
       ) : attendanceQuery.error ? (
@@ -329,7 +327,11 @@ export default function DavomatPage() {
                     </p>
                   </div>
 
-                  {dateMode === 'all' ? (
+                  {!student.courseRunId ? (
+                    <p className="text-xs text-amber-700">
+                      Oqimga biriktirilmagan — davomat belgilash uchun avval oqim ro&apos;yxatiga qo&apos;shing.
+                    </p>
+                  ) : dateMode === 'all' ? (
                     <div className="space-y-3">
                       <div>
                         <p className="text-xs font-semibold kd-subtle mb-2">Asosiy darslar</p>
