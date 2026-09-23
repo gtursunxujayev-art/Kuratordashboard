@@ -6,6 +6,7 @@ import {
   handleClientBotWebhook,
   issueAttendanceTicket,
   checkInByTicketToken,
+  deriveTicketToken,
 } from './client-bot';
 
 const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
@@ -13,6 +14,33 @@ const describeDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 function hashToken(token: string): string {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
+
+describe('deriveTicketToken', () => {
+  const originalSecret = process.env.CLIENT_BOT_WEBHOOK_SECRET;
+
+  beforeAll(() => {
+    process.env.CLIENT_BOT_WEBHOOK_SECRET = 'test-secret-for-token-derivation';
+  });
+
+  afterAll(() => {
+    if (originalSecret === undefined) delete process.env.CLIENT_BOT_WEBHOOK_SECRET;
+    else process.env.CLIENT_BOT_WEBHOOK_SECRET = originalSecret;
+  });
+
+  it('is stable for the same tenant/customer/oqim', () => {
+    const first = deriveTicketToken('tenant-1', 'customer-1', 'run-1');
+    const second = deriveTicketToken('tenant-1', 'customer-1', 'run-1');
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[0-9a-f]{48}$/);
+  });
+
+  it('differs per customer and per oqim', () => {
+    const base = deriveTicketToken('tenant-1', 'customer-1', 'run-1');
+    expect(deriveTicketToken('tenant-1', 'customer-2', 'run-1')).not.toBe(base);
+    expect(deriveTicketToken('tenant-1', 'customer-1', 'run-2')).not.toBe(base);
+    expect(deriveTicketToken('tenant-2', 'customer-1', 'run-1')).not.toBe(base);
+  });
+});
 
 describeDatabase('client bot: linking, QR issuance, and check-in', () => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
