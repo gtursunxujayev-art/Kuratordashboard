@@ -12,6 +12,18 @@ type CourseType = '' | 'offline' | 'online' | 'intensiv';
 
 const WITHOUT_OQIM_VALUE = '__WITHOUT_OQIM__';
 
+function downloadBase64File(base64: string, fileName: string, mimeType: string) {
+  const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function normalizeCourseCategory(raw?: string | null): Exclude<CourseType, ''> {
   const value = (raw ?? '').toLowerCase();
   if (value.includes('intens')) return 'intensiv';
@@ -145,6 +157,25 @@ export default function StudentsPage() {
     onError: (err) => setBulkQrMessage(err.message),
   });
 
+  const downloadAllQrMutation = trpc.clientBot.downloadTicketsForFiltered.useMutation({
+    onSuccess: (result) => {
+      downloadBase64File(result.zipBase64, result.fileName, 'application/zip');
+      setBulkQrMessage(
+        `${result.included} ta QR yuklab olindi.`
+          + (result.skipped > 0 ? ` ${result.skipped} ta o‘tkazib yuborildi (oqimsiz).` : '')
+          + (result.truncated ? ' (Faqat birinchi 2000 ta o‘quvchi.)' : ''),
+      );
+    },
+    onError: (err) => setBulkQrMessage(err.message),
+  });
+
+  const handleDownloadAllQr = () => {
+    const total = data?.pagination.total ?? 0;
+    if (total === 0) return;
+    setBulkQrMessage('');
+    downloadAllQrMutation.mutate(listFilters);
+  };
+
   const handleSendAllQr = () => {
     const total = data?.pagination.total ?? 0;
     if (total === 0) return;
@@ -186,23 +217,6 @@ export default function StudentsPage() {
         </select>
 
         <select
-          value={selectedCourseRunId}
-          onChange={(e) => {
-            setSelectedCourseRunId(e.target.value);
-            setPage(1);
-          }}
-          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
-        >
-          <option value="">Barcha oqimlar</option>
-          <option value={WITHOUT_OQIM_VALUE}>Oqimsiz</option>
-          {filteredCourseRuns.map((run) => (
-            <option key={run.id} value={run.id}>
-              {run.name}
-            </option>
-          ))}
-        </select>
-
-        <select
           value={selectedCourseId}
           onChange={(e) => {
             setSelectedCourseId(e.target.value);
@@ -215,6 +229,23 @@ export default function StudentsPage() {
           {filteredCourses.map((course) => (
             <option key={course.id} value={course.id}>
               {course.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={selectedCourseRunId}
+          onChange={(e) => {
+            setSelectedCourseRunId(e.target.value);
+            setPage(1);
+          }}
+          className="px-3 py-2 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
+        >
+          <option value="">Barcha oqimlar</option>
+          <option value={WITHOUT_OQIM_VALUE}>Oqimsiz</option>
+          {filteredCourseRuns.map((run) => (
+            <option key={run.id} value={run.id}>
+              {run.name}
             </option>
           ))}
         </select>
@@ -292,6 +323,18 @@ export default function StudentsPage() {
               className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
             >
               {sendAllQrMutation.isLoading ? 'Yuborilmoqda...' : `Barchasiga QR yuborish (${data.pagination.total})`}
+            </button>
+          )}
+          {isManager && data.pagination.total > 0 && (
+            <button
+              type="button"
+              onClick={handleDownloadAllQr}
+              disabled={downloadAllQrMutation.isLoading}
+              className="px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+            >
+              {downloadAllQrMutation.isLoading
+                ? 'Tayyorlanmoqda...'
+                : `QR arxivini yuklab olish (${data.pagination.total})`}
             </button>
           )}
           {bulkQrMessage && <p className="text-sm text-gray-700">{bulkQrMessage}</p>}
