@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
+import { useAuth } from '@/contexts/auth-context';
+import { useToast } from '@/components/ui/toast';
+import { BotActionPopup } from '@/components/students/bot-action-popup';
 import { StudentDetailModal } from './student-detail-modal';
 
 type SecondaryFilter = 'tariff' | 'region';
@@ -82,20 +85,73 @@ export default function StudentsPage() {
   }, [filteredCourseRuns, selectedCourseRunId]);
 
   const isWithoutOqim = selectedCourseRunId === WITHOUT_OQIM_VALUE;
+  const { isManager } = useAuth();
+  const [bulkQrMessage, setBulkQrMessage] = useState('');
+
+  const listFilters = {
+    courseRunId: !isWithoutOqim && selectedCourseRunId ? selectedCourseRunId : undefined,
+    withoutOqim: isWithoutOqim || undefined,
+    courseId: selectedCourseId || undefined,
+    tariffId: secondaryFilter === 'tariff' && selectedTariffId ? selectedTariffId : undefined,
+    region: secondaryFilter === 'region' && selectedRegion ? selectedRegion : undefined,
+    search: search || undefined,
+  };
 
   const { data, isLoading, error } = trpc.students.list.useQuery(
-    {
-      courseRunId: !isWithoutOqim && selectedCourseRunId ? selectedCourseRunId : undefined,
-      withoutOqim: isWithoutOqim || undefined,
-      courseId: selectedCourseId || undefined,
-      tariffId: secondaryFilter === 'tariff' && selectedTariffId ? selectedTariffId : undefined,
-      region: secondaryFilter === 'region' && selectedRegion ? selectedRegion : undefined,
-      search: search || undefined,
-      page,
-      limit: 50,
-    },
+    { ...listFilters, page, limit: 50 },
     { keepPreviousData: true },
   );
+
+  const toast = useToast();
+  const [busyRow, setBusyRow] = useState<{ id: string; action: 'qr' | 'link' } | null>(null);
+  const [botPopup, setBotPopup] = useState<
+    { mode: 'qr' | 'link'; studentName: string; fileNameHint?: string; qrDataUrl?: string; link?: string | null } | null
+  >(null);
+
+  const rowQrMutation = trpc.clientBot.generateTicketQr.useMutation({
+    onSuccess: (result, variables) => {
+      const student = data?.data.find((row) => row.id === variables.customerId);
+      setBotPopup({
+        mode: 'qr',
+        studentName: result.customerName,
+        fileNameHint: student?.customerNumber ?? undefined,
+        qrDataUrl: result.dataUrl,
+      });
+    },
+    onError: (err) => toast.show(err.message, 'error'),
+    onSettled: () => setBusyRow(null),
+  });
+
+  const rowLinkMutation = trpc.clientBot.createLinkToken.useMutation({
+    onSuccess: (result, variables) => {
+      const student = data?.data.find((row) => row.id === variables.customerId);
+      setBotPopup({
+        mode: 'link',
+        studentName: student?.name ?? "O'quvchi",
+        link: result.deepLink,
+      });
+    },
+    onError: (err) => toast.show(err.message, 'error'),
+    onSettled: () => setBusyRow(null),
+  });
+
+  const sendAllQrMutation = trpc.clientBot.sendTicketsToFiltered.useMutation({
+    onSuccess: (result) => {
+      setBulkQrMessage(
+        `QR yuborildi: ${result.sent} ta. Botga ulanmagan: ${result.notLinked}. Oqimsiz: ${result.noOqim}.`
+          + (result.truncated ? ' (Faqat birinchi 2000 ta o‘quvchi.)' : ''),
+      );
+    },
+    onError: (err) => setBulkQrMessage(err.message),
+  });
+
+  const handleSendAllQr = () => {
+    const total = data?.pagination.total ?? 0;
+    if (total === 0) return;
+    if (!window.confirm(`Filtrlangan ${total} ta o'quvchiga QR chipta yuborilsinmi?`)) return;
+    setBulkQrMessage('');
+    sendAllQrMutation.mutate(listFilters);
+  };
 
   const totalPages = data ? Math.ceil(data.pagination.total / data.pagination.limit) : 0;
 
@@ -224,9 +280,22 @@ export default function StudentsPage() {
       </div>
 
       {data && (
-        <p className="text-sm text-gray-500">
-          Jami: <span className="font-medium text-gray-700">{data.pagination.total}</span> ta o'quvchi
-        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-gray-500">
+            Jami: <span className="font-medium text-gray-700">{data.pagination.total}</span> ta o'quvchi
+          </p>
+          {isManager && data.pagination.total > 0 && (
+            <button
+              type="button"
+              onClick={handleSendAllQr}
+              disabled={sendAllQrMutation.isLoading}
+              className="px-3 py-1.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              {sendAllQrMutation.isLoading ? 'Yuborilmoqda...' : `Barchasiga QR yuborish (${data.pagination.total})`}
+            </button>
+          )}
+          {bulkQrMessage && <p className="text-sm text-gray-700">{bulkQrMessage}</p>}
+        </div>
       )}
 
       <div className="nn-table-card">
@@ -250,6 +319,7 @@ export default function StudentsPage() {
                     </th>
                   ))}
                   <th className="text-center px-4 py-3 font-medium text-gray-600">Davomat</th>
+                  <th className="text-center px-4 py-3 font-medium text-gray-600">Bot / QR</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -300,6 +370,41 @@ export default function StudentsPage() {
                         <span className="text-gray-400">-</span>
                       )}
                     </td>
+
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <span
+                          title={student.telegramChatId ? "Botga ulangan" : "Botga ulanmagan"}
+                          className={student.telegramChatId ? 'text-green-600' : 'text-gray-300'}
+                        >
+                          ●
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBusyRow({ id: student.id, action: 'link' });
+                            rowLinkMutation.mutate({ customerId: student.id });
+                          }}
+                          disabled={busyRow?.id === student.id}
+                          className="px-2 py-1 border border-gray-200 rounded text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                          {busyRow?.id === student.id && busyRow.action === 'link' ? '...' : 'Havola'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBusyRow({ id: student.id, action: 'qr' });
+                            rowQrMutation.mutate({ customerId: student.id });
+                          }}
+                          disabled={busyRow?.id === student.id}
+                          className="px-2 py-1 border border-gray-200 rounded text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                          {busyRow?.id === student.id && busyRow.action === 'qr' ? '...' : 'QR'}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -328,6 +433,17 @@ export default function StudentsPage() {
             Keyingi
           </button>
         </div>
+      )}
+
+      {botPopup && (
+        <BotActionPopup
+          mode={botPopup.mode}
+          studentName={botPopup.studentName}
+          qrDataUrl={botPopup.qrDataUrl}
+          link={botPopup.link}
+          fileNameHint={botPopup.fileNameHint}
+          onClose={() => setBotPopup(null)}
+        />
       )}
 
       {selectedStudentId && (
