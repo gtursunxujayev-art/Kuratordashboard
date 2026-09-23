@@ -1,6 +1,8 @@
-import { router, protectedProcedure } from '../trpc';
+import { router, protectedProcedure, managerProcedure } from '../trpc';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
+import { prisma } from '@kuratordashboard/db';
+import { studentsRouter } from './students';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { kuratorCanAccessCustomer } from '../utils/kuratorScope';
 import {
@@ -84,6 +86,56 @@ export const clientBotRouter = router({
         courseRunId: input.courseRunId,
       });
       return generateTicketQrImage(ctx.tenantId, input.customerId, input.courseRunId);
+    }),
+
+  // Sends QR tickets via the bot to every student matching the Students-page filters.
+  // Resolves matches through students.list itself so the set is identical to what the
+  // user sees (including kurator scoping and the "Oqimsiz" filter), across all pages.
+  sendTicketsToFiltered: managerProcedure
+    .input(
+      z.object({
+        courseRunId: z.string().optional(),
+        courseId: z.string().optional(),
+        tariffId: z.string().optional(),
+        region: z.string().optional(),
+        search: z.string().optional(),
+        withoutOqim: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const MAX_RECIPIENTS = 2000;
+      const PAGE_SIZE = 500;
+      const studentsCaller = studentsRouter.createCaller(ctx);
+
+      const customerIds: string[] = [];
+      for (let page = 1; customerIds.length < MAX_RECIPIENTS; page += 1) {
+        const result = await studentsCaller.list({ ...input, page, limit: PAGE_SIZE });
+        customerIds.push(...result.data.map((row) => row.id));
+        if (page * PAGE_SIZE >= result.pagination.total) break;
+      }
+
+      const customers = await prisma.customer.findMany({
+        where: { tenantId: ctx.tenantId, id: { in: customerIds } },
+        select: { id: true, telegramChatId: true },
+      });
+      const linkedIds = customers.filter((c) => c.telegramChatId).map((c) => c.id);
+
+      let sent = 0;
+      let noOqim = 0;
+      for (const customerId of linkedIds) {
+        const { issuedCount } = await issueTicketsForActiveEnrollments(ctx.tenantId, customerId);
+        if (issuedCount > 0) sent += 1;
+        else noOqim += 1;
+        await new Promise((resolve) => setTimeout(resolve, 35));
+      }
+
+      return {
+        total: customerIds.length,
+        sent,
+        notLinked: customerIds.length - linkedIds.length,
+        noOqim,
+        truncated: customerIds.length >= MAX_RECIPIENTS,
+      };
     }),
 
   checkInByTicket: protectedProcedure
