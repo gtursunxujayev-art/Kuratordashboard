@@ -3,7 +3,12 @@ import { z } from 'zod';
 import { prisma, type Prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
 import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
-import { resolveCourseRunMemberCustomerIds, resolveCourseRunMemberSets } from '../utils/runMembership';
+import {
+  resolveCourseRunMemberCustomerIds,
+  resolveCourseRunMemberSets,
+  pickPreferredCourseRun,
+  resolvePreferredRunByCustomer,
+} from '../utils/runMembership';
 import {
   visibleCourseRunWhere,
   visibleExerciseDefinitionWhere,
@@ -668,7 +673,10 @@ export const amaliyRouter = router({
   listAttendanceStudents: protectedProcedure
     .input(
       z.object({
-        courseRunId: z.string(),
+        // Either a specific oqim, or courseId alone for "Barcha oqimlar" (all oqims
+        // of the course, plus enrolled students who are on no oqim roster).
+        courseRunId: z.string().optional(),
+        courseId: z.string().optional(),
         date: z.string(),
         mode: z.enum(['day', 'all']).default('day'),
         search: z.string().optional(),
@@ -680,46 +688,128 @@ export const amaliyRouter = router({
       if (!isManagerOrAdmin) {
         throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
       }
-
-      const courseRun = await prisma.courseRun
-        .findFirst({
-          where: { tenantId, id: input.courseRunId },
-          select: {
-            id: true,
-            name: true,
-            courseId: true,
-            startDate: true,
-            endDate: true,
-            baseLessons: true,
-            premiumExtraLessons: true,
-            course: { select: { category: true } },
-          },
-        })
-        .catch((error) => {
-          if (isMissingCourseRunsTableError(error)) {
-            return null;
-          }
-          throw error;
-        });
-
-      if (!courseRun) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+      if (!input.courseRunId && !input.courseId) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'Kurs yoki oqim tanlanishi kerak' });
       }
+
+      const runSelect = {
+        id: true,
+        name: true,
+        courseId: true,
+        startDate: true,
+        endDate: true,
+        baseLessons: true,
+        premiumExtraLessons: true,
+        course: { select: { category: true } },
+      } as const;
+      type ScheduleRun = {
+        id: string;
+        name: string;
+        courseId: string;
+        startDate: Date;
+        endDate: Date;
+        baseLessons: number;
+        premiumExtraLessons: number;
+        course: { category: string };
+      };
 
       const selectedDate = startOfDayLocal(parseDateInput(input.date));
       const selectedDateEnd = addDaysLocal(selectedDate, 1);
-      const isLessonDay = isClassDayForRun(selectedDate, courseRun.course.category, courseRun.startDate);
 
-      const runCustomerIds = await resolveCourseRunMemberCustomerIds({
-        tenantId,
-        courseRunId: courseRun.id,
-        courseId: courseRun.courseId,
-      });
+      // scheduleRun drives the lesson-slot grid and the class-day check. In
+      // "Barcha oqimlar" mode it's the course's current/most recent oqim, since
+      // one shared set of date columns has to come from somewhere.
+      let scheduleRun: ScheduleRun | null = null;
+      let scopeCourseId: string;
+      let scopeCategory: string;
+      let runCustomerIds: string[];
+      let attendanceRunWhere: Prisma.ClassAttendanceWhereInput;
+      const runIdByCustomer = new Map<string, string | null>();
+
+      if (input.courseRunId) {
+        const courseRun = await prisma.courseRun
+          .findFirst({ where: { tenantId, id: input.courseRunId }, select: runSelect })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return null;
+            }
+            throw error;
+          });
+
+        if (!courseRun) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Oqim topilmadi' });
+        }
+
+        scheduleRun = courseRun;
+        scopeCourseId = courseRun.courseId;
+        scopeCategory = courseRun.course.category;
+        attendanceRunWhere = { courseRunId: courseRun.id };
+        runCustomerIds = await resolveCourseRunMemberCustomerIds({
+          tenantId,
+          courseRunId: courseRun.id,
+          courseId: courseRun.courseId,
+        });
+        for (const customerId of runCustomerIds) runIdByCustomer.set(customerId, courseRun.id);
+      } else {
+        const courseId = input.courseId as string;
+        const course = await prisma.course.findFirst({
+          where: { id: courseId, tenantId },
+          select: { id: true, category: true },
+        });
+        if (!course) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Kurs topilmadi' });
+        }
+        scopeCourseId = courseId;
+        scopeCategory = course.category;
+        attendanceRunWhere = { courseRun: { courseId } };
+
+        const runs = await prisma.courseRun
+          .findMany({ where: { tenantId, courseId }, select: runSelect })
+          .catch((error) => {
+            if (isMissingCourseRunsTableError(error)) {
+              return [] as ScheduleRun[];
+            }
+            throw error;
+          });
+        scheduleRun = runs.length > 0 ? (pickPreferredCourseRun(runs) ?? runs[0]) : null;
+
+        const memberSets = runs.length > 0
+          ? await resolveCourseRunMemberSets({ tenantId, runIds: runs.map((run) => run.id) })
+          : new Map<string, Set<string>>();
+        const customerIdSet = new Set<string>();
+        for (const set of memberSets.values()) {
+          for (const customerId of set) customerIdSet.add(customerId);
+        }
+
+        // Enrolled but on no oqim roster — visible here so nobody is invisible,
+        // though they can't be marked (attendance rows need a courseRunId).
+        const enrolledRows = await prisma.income.findMany({
+          where: { tenantId, courseId, ...ACTIVE_ENROLLMENT_FILTER },
+          select: { customerId: true },
+          distinct: ['customerId'],
+        });
+        for (const row of enrolledRows) customerIdSet.add(row.customerId);
+        runCustomerIds = Array.from(customerIdSet);
+
+        const preferredByCustomer = runCustomerIds.length > 0
+          ? await resolvePreferredRunByCustomer({ tenantId, courseId, customerIds: runCustomerIds })
+          : new Map();
+        for (const customerId of runCustomerIds) {
+          runIdByCustomer.set(customerId, preferredByCustomer.get(customerId)?.id ?? null);
+        }
+      }
+
+      const isLessonDay = isClassDayForRun(
+        selectedDate,
+        scopeCategory,
+        scheduleRun?.startDate ?? selectedDate,
+      );
       if (runCustomerIds.length === 0) {
         return {
           mode: input.mode,
           isLessonDay,
-          courseRunId: courseRun.id,
+          courseRunId: scheduleRun?.id ?? null,
+          courseRunName: scheduleRun?.name ?? null,
           dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
           slotDates: {
             base: [] as string[],
@@ -733,6 +823,7 @@ export const amaliyRouter = router({
             customerNumber: string;
             telegramUsername: string | null;
             tariffName: string | null;
+            courseRunId: string | null;
             isPremiumEligible: boolean;
             dayStatuses: { base: AttendanceStatus; premiumExtra: AttendanceStatus | null };
             daySource: { base: string | null; premiumExtra: string | null };
@@ -745,7 +836,7 @@ export const amaliyRouter = router({
       const latestIncomes = await prisma.income.findMany({
         where: {
           tenantId,
-          courseId: courseRun.courseId,
+          courseId: scopeCourseId,
           customerId: { in: runCustomerIds },
           ...ACTIVE_ENROLLMENT_FILTER,
         },
@@ -838,7 +929,7 @@ export const amaliyRouter = router({
           ? prisma.classAttendance.findMany({
               where: {
                 tenantId,
-                courseRunId: courseRun.id,
+                ...attendanceRunWhere,
                 customerId: { in: customerIds },
                 lessonDate: { gte: selectedDate, lt: selectedDateEnd },
               },
@@ -852,15 +943,15 @@ export const amaliyRouter = router({
               orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
             })
           : Promise.resolve([]),
-        input.mode === 'all' && customerIds.length > 0
+        input.mode === 'all' && customerIds.length > 0 && scheduleRun
           ? prisma.classAttendance.findMany({
               where: {
                 tenantId,
-                courseRunId: courseRun.id,
+                ...attendanceRunWhere,
                 customerId: { in: customerIds },
                 lessonDate: {
-                  gte: startOfDayLocal(courseRun.startDate),
-                  lt: addDaysLocal(startOfDayLocal(courseRun.endDate), 1),
+                  gte: startOfDayLocal(scheduleRun.startDate),
+                  lt: addDaysLocal(startOfDayLocal(scheduleRun.endDate), 1),
                 },
               },
               select: {
@@ -885,20 +976,26 @@ export const amaliyRouter = router({
         daySourceByKey.set(key, row.source ?? null);
       }
 
-      const baseSlotsInfo = buildAttendanceSlotDates({
-        startDate: courseRun.startDate,
-        endDate: courseRun.endDate,
-        targetCount: courseRun.baseLessons,
-        category: courseRun.course.category,
-        runStartDate: courseRun.startDate,
-      });
-      const premiumSlotsInfo = buildAttendanceSlotDates({
-        startDate: courseRun.startDate,
-        endDate: courseRun.endDate,
-        targetCount: courseRun.premiumExtraLessons,
-        category: courseRun.course.category,
-        runStartDate: courseRun.startDate,
-      });
+      // With no oqim at all there is no lesson schedule to lay out, so the grid is empty.
+      const emptySlots = { slotDates: [] as Date[], hasInsufficientDates: false };
+      const baseSlotsInfo = scheduleRun
+        ? buildAttendanceSlotDates({
+            startDate: scheduleRun.startDate,
+            endDate: scheduleRun.endDate,
+            targetCount: scheduleRun.baseLessons,
+            category: scheduleRun.course.category,
+            runStartDate: scheduleRun.startDate,
+          })
+        : emptySlots;
+      const premiumSlotsInfo = scheduleRun
+        ? buildAttendanceSlotDates({
+            startDate: scheduleRun.startDate,
+            endDate: scheduleRun.endDate,
+            targetCount: scheduleRun.premiumExtraLessons,
+            category: scheduleRun.course.category,
+            runStartDate: scheduleRun.startDate,
+          })
+        : emptySlots;
       const baseSlotDates = baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
       const premiumSlotDates = premiumSlotsInfo.slotDates.map((date) => toDateKeyLocal(date));
       const baseSlotDateSet = new Set(baseSlotDates);
@@ -924,8 +1021,8 @@ export const amaliyRouter = router({
       return {
         mode: input.mode,
         isLessonDay,
-        courseRunId: courseRun.id,
-        courseRunName: courseRun.name,
+        courseRunId: scheduleRun?.id ?? null,
+        courseRunName: scheduleRun?.name ?? null,
         dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
         slotDates: {
           base: baseSlotDates,
@@ -966,6 +1063,9 @@ export const amaliyRouter = router({
             customerNumber: student.customerNumber,
             telegramUsername: student.telegramUsername ?? null,
             tariffName: tariffNameByCustomer.get(student.id) ?? null,
+            // The oqim this student actually belongs to — attendance writes target
+            // this, not the page-level filter. null = on no oqim, so not markable.
+            courseRunId: runIdByCustomer.get(student.id) ?? null,
             isPremiumEligible,
             dayStatuses: { base: dayBase, premiumExtra: dayPremium },
             daySource: { base: dayBaseSource, premiumExtra: dayPremiumSource },
