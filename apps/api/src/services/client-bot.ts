@@ -15,7 +15,9 @@ import { buildSlotDateKeys } from './attendance/faceid';
  * TelegramReportReceiver).
  */
 
-const LINK_TOKEN_TTL_MINUTES = 30;
+// 7 days: links are generated in bulk for a whole group and handed out over days,
+// so a short TTL would expire most of them before students ever tap them.
+const LINK_TOKEN_TTL_MINUTES = 60 * 24 * 7;
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
