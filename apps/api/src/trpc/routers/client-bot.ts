@@ -135,9 +135,15 @@ export const clientBotRouter = router({
 
       let sent = 0;
       let noOqim = 0;
+      let failed = 0;
+      const scope = {
+        courseId: input.courseId,
+        courseRunId: input.withoutOqim ? undefined : input.courseRunId,
+      };
       for (const customerId of linkedIds) {
-        const { issuedCount } = await issueTicketsForActiveEnrollments(ctx.tenantId, customerId);
+        const { issuedCount, failedCount } = await issueTicketsForActiveEnrollments(ctx.tenantId, customerId, scope);
         if (issuedCount > 0) sent += 1;
+        else if (failedCount > 0) failed += 1;
         else noOqim += 1;
         await new Promise((resolve) => setTimeout(resolve, 35));
       }
@@ -147,6 +153,7 @@ export const clientBotRouter = router({
         sent,
         notLinked: customerIds.length - linkedIds.length,
         noOqim,
+        failed,
         truncated: customerIds.length >= MAX_RECIPIENTS,
       };
     }),
@@ -190,7 +197,11 @@ export const clientBotRouter = router({
       for (const student of students) {
         let pngBuffer: Buffer;
         try {
-          ({ pngBuffer } = await buildTicketQr(ctx.tenantId, student.id));
+          ({ pngBuffer } = await buildTicketQr(
+            ctx.tenantId,
+            student.id,
+            input.withoutOqim ? undefined : input.courseRunId,
+          ));
         } catch {
           // Students with no active oqim (or a non-offline course) simply can't have a
           // ticket — skip them rather than failing the whole archive.
