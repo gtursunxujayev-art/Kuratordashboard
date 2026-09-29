@@ -955,7 +955,7 @@ model ClassAttendance {
   tenantId       String
   customerId     String
   courseRunId    String
-  lessonDate     DateTime // the specific class date (Saturday or Sunday)
+  lessonDate     DateTime // the specific class date (Fri/Sat for oqims starting on/after 2026-09-01, Sat/Sun before)
   lessonType     String   @default("base") // 'base' | 'premium_extra'
   attended       Boolean  @default(false)
   status         String   @default("kelmadi") // 'keldi' | 'kelmadi' | 'yolda'
