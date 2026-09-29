@@ -151,6 +151,7 @@ export default function StudentsPage() {
     onSuccess: (result) => {
       setBulkQrMessage(
         `QR yuborildi: ${result.sent} ta. Botga ulanmagan: ${result.notLinked}. Oqimsiz: ${result.noOqim}.`
+          + (result.failed > 0 ? ` Telegramga yuborilmadi: ${result.failed}.` : '')
           + (result.truncated ? ' (Faqat birinchi 2000 ta o‘quvchi.)' : ''),
       );
     },
@@ -439,7 +440,7 @@ export default function StudentsPage() {
                           onClick={(e) => {
                             e.stopPropagation();
                             setBusyRow({ id: student.id, action: 'qr' });
-                            rowQrMutation.mutate({ customerId: student.id });
+                            rowQrMutation.mutate({ customerId: student.id, courseRunId: listFilters.courseRunId });
                           }}
                           disabled={busyRow?.id === student.id}
                           className="px-2 py-1 border border-gray-200 rounded text-xs text-gray-700 hover:bg-gray-100 disabled:opacity-50"
