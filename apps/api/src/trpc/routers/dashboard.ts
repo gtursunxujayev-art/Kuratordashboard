@@ -515,6 +515,7 @@ async function buildStudentPerformanceMap(params: {
     customerId: { in: customerIds },
     ...(courseRunId ? { courseRunId } : {}),
     ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+    lessonType: 'base',
   };
 
   let attendanceTotals: Array<{ customerId: string; _count: { id: number } }> = [];
@@ -1688,6 +1689,7 @@ export const dashboardRouter = router({
         customerId: input.customerId,
         ...(input.courseRunId ? { courseRunId: input.courseRunId } : {}),
         ...(dateRange ? { lessonDate: { gte: dateRange.from, lt: dateRange.to } } : {}),
+        lessonType: 'base',
       };
       const attendanceWhereWithCourse =
         input.courseId && !input.courseRunId
