@@ -18,7 +18,7 @@ import {
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
-import { isClassDayForRun } from '../../utils/course-schedule';
+import { isExerciseEligibleOnDate } from '../../utils/course-schedule';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -308,13 +308,7 @@ function toDayKey(date: Date): string {
 
 function isAmaliyPracticeEligibleOnDate(type: string, date: Date, category?: string, runStartDate?: Date): boolean {
   const day = startOfDayLocal(date);
-  if (type === 'class') {
-    return isClassDayForRun(day, category ?? 'offline', runStartDate ?? day);
-  }
-  if (type === 'homework' || type === 'extra') {
-    return day.getDay() >= 1 && day.getDay() <= 5;
-  }
-  return true;
+  return isExerciseEligibleOnDate(type, day, category ?? 'offline', runStartDate ?? day);
 }
 
 function resolveAmaliyPracticeStartDate(fallbackStartDate: Date, practiceStartDate?: Date | null): Date {
@@ -330,10 +324,13 @@ function isAmaliyPracticeActiveAndEligibleOnDate(
   fallbackStartDate: Date,
   practiceStartDate?: Date | null,
   category?: string,
+  // Start date of the oqim whose class days apply. Differs from fallbackStartDate in
+  // "all oqims" mode, where the anchor is the course start rather than a real run.
+  scheduleRunStart?: Date,
 ): boolean {
   const day = startOfDayLocal(date);
   if (day < resolveAmaliyPracticeStartDate(fallbackStartDate, practiceStartDate)) return false;
-  return isAmaliyPracticeEligibleOnDate(type, day, category, fallbackStartDate);
+  return isAmaliyPracticeEligibleOnDate(type, day, category, scheduleRunStart ?? fallbackStartDate);
 }
 
 function enumerateDateRange(range: { from: Date; to: Date }): Array<{ date: string; label: string }> {
@@ -751,6 +748,9 @@ async function getAmaliyReportMatrixData(params: {
       const anchorRunStart = selectedRunAnchorStart
         ?? courseStart
         ?? latestRunAnchorStart;
+      // Class/daily days depend on a real oqim's start (Fri/Sat vs Sat/Sun cutover),
+      // not the course start, so "all oqims" mode uses the latest oqim's schedule.
+      const scheduleRunStart = selectedRunAnchorStart ?? latestRunAnchorStart;
       const anchorRunEndExclusive = selectedRunAnchorEndExclusive
         ?? (
           courseStart
@@ -956,6 +956,7 @@ async function getAmaliyReportMatrixData(params: {
             anchorRunStart,
             practiceStartById.get(log.exerciseDefinitionId),
             course.category,
+            scheduleRunStart,
           )
         ) {
           continue;
@@ -1064,6 +1065,7 @@ async function getAmaliyReportMatrixData(params: {
               anchorRunStart,
               practiceStart,
               course.category,
+              scheduleRunStart,
             ),
           );
         }
@@ -1079,6 +1081,7 @@ async function getAmaliyReportMatrixData(params: {
               anchorRunStart,
               practiceStart,
               course.category,
+              scheduleRunStart,
             ),
           );
         }
@@ -1242,8 +1245,28 @@ async function getAmaliyReportMatrixData(params: {
           dateToExclusive: toDateLabel(dateRange.to),
           dateToInclusive:
             dateRange.to.getTime() > dateRange.from.getTime() ? toDateLabel(addDays(dateRange.to, -1)) : null,
+          // Days of the active week on which at least one mashq can be logged — the
+          // week view shows exactly these columns (Fri/Sat-aware), not a Sat/Sun guess.
+          applicableDayKeys: activeWeekDays
+            .map((day) => day.date)
+            .filter((dateKey) =>
+              Array.from(dayApplicabilityByPracticeId.values()).some((byDay) => byDay.get(dateKey)),
+            ),
         },
-        practices,
+        // isApplicableToday: whether each mashq can be logged on dateFrom, using the
+        // same rule as the save path. The "today" view relies on it instead of
+        // guessing weekdays client-side.
+        practices: practices.map((practice) => ({
+          ...practice,
+          isApplicableToday: isAmaliyPracticeActiveAndEligibleOnDate(
+            practice.type,
+            dateRange.from,
+            anchorRunStart,
+            practice.startDate,
+            course.category,
+            scheduleRunStart,
+          ),
+        })),
         students: rows,
       };
 }
