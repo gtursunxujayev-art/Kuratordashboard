@@ -439,17 +439,6 @@ function ScheduleTemplatesTab() {
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
             />
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Premium/VIP qo'shimcha</label>
-            <input
-              type="number"
-              min={0}
-              max={50}
-              value={form.premiumExtraLessons}
-              onChange={(e) => setForm({ ...form, premiumExtraLessons: Number(e.target.value) })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-            />
-          </div>
         </div>
 
         {error && <p className="text-sm text-red-600">{error}</p>}
@@ -485,7 +474,6 @@ function ScheduleTemplatesTab() {
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Kurs turi</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchilar</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -496,7 +484,6 @@ function ScheduleTemplatesTab() {
                   <td className="px-4 py-3 text-gray-900">{item.courseCategory}</td>
                   <td className="px-4 py-3 text-gray-700">{item.durationWeeks}</td>
                   <td className="px-4 py-3 text-gray-700">{item.baseLessons}</td>
-                  <td className="px-4 py-3 text-gray-700">{item.premiumExtraLessons}</td>
                   <td className="px-4 py-3">
                     <button
                       type="button"
@@ -937,17 +924,6 @@ function CourseRunsTab({
                 className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Premium/VIP qo'shimcha</label>
-              <input
-                type="number"
-                min={0}
-                max={50}
-                value={form.premiumExtraLessons}
-                onChange={(e) => setForm({ ...form, premiumExtraLessons: Number(e.target.value) })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm"
-              />
-            </div>
           </div>
           <p className="text-xs text-gray-500">
             Boshlanish va tugash sanalari kursdan avtomatik olinadi, lekin bu yerda qo'lda o'zgartirishingiz mumkin.
@@ -1113,7 +1089,6 @@ function CourseRunsTab({
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Tugash</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Hafta</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Asosiy</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Premium/VIP</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">O'quvchi</th>
                 <th className="text-left px-4 py-3 font-medium text-gray-600">Holat</th>
                 <th className="px-4 py-3" />
@@ -1132,7 +1107,6 @@ function CourseRunsTab({
                   <td className="px-4 py-3 text-gray-600">{new Date(run.endDate).toLocaleDateString('uz-UZ')}</td>
                   <td className="px-4 py-3 text-gray-600">{run.durationWeeks}</td>
                   <td className="px-4 py-3 text-gray-600">{run.baseLessons}</td>
-                  <td className="px-4 py-3 text-gray-600">{run.premiumExtraLessons}</td>
                   <td className="px-4 py-3 text-gray-600">{run.studentCount ?? 0}</td>
                   <td className="px-4 py-3">
                     <span
