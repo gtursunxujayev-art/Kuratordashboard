@@ -24,7 +24,6 @@ export const DATE_PRESET_LABELS: Record<DatePreset, string> = {
 export const WEEK_KEYS: WeekKey[] = ['week1', 'week2', 'week3', 'week4', 'week5', 'week6'];
 
 type DayColumn = { key: string; label: string };
-type RunDayMode = 'weekday' | 'weekend' | 'mixed';
 
 const DATE_PRESET_VALUES = Object.keys(DATE_PRESET_LABELS) as DatePreset[];
 
@@ -50,37 +49,12 @@ function buildDayColumns(dateFrom?: string, dateToInclusive?: string | null): Da
   return columns;
 }
 
-function dayTypeForDateKey(dateKey: string): 'weekday' | 'weekend' | 'unknown' {
-  const date = new Date(`${dateKey}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return 'unknown';
-
-  const day = date.getDay();
-  return day === 0 || day === 6 ? 'weekend' : 'weekday';
-}
-
-function resolveRunDayMode(practiceTypes: string[]): RunDayMode {
-  const uniqueTypes = Array.from(new Set(practiceTypes));
-  if (uniqueTypes.length === 0) return 'mixed';
-
-  const allWeekday = uniqueTypes.every((type) => type === 'homework' || type === 'extra');
-  if (allWeekday) return 'weekday';
-
-  const allWeekend = uniqueTypes.every((type) => type === 'class');
-  if (allWeekend) return 'weekend';
-
-  return 'mixed';
-}
-
-function filterDayColumnsByRunMode(dayColumns: DayColumn[], runDayMode: RunDayMode): DayColumn[] {
-  if (runDayMode === 'weekday') {
-    return dayColumns.filter((column) => dayTypeForDateKey(column.key) === 'weekday');
-  }
-
-  if (runDayMode === 'weekend') {
-    return dayColumns.filter((column) => dayTypeForDateKey(column.key) === 'weekend');
-  }
-
-  return dayColumns;
+// Which days are class vs daily depends on the oqim (Fri/Sat after the 2026-09-01
+// cutover, Sat/Sun before), so the server decides and sends the applicable days.
+function filterDayColumnsByApplicability(dayColumns: DayColumn[], applicableDayKeys?: string[]): DayColumn[] {
+  if (!applicableDayKeys) return dayColumns;
+  const allowed = new Set(applicableDayKeys);
+  return dayColumns.filter((column) => allowed.has(column.key));
 }
 
 export function parseDatePreset(value?: string | null): DatePreset {
@@ -99,15 +73,15 @@ export function getReportTableLayout(params: {
   datePreset: DatePreset;
   dateFrom?: string;
   dateToInclusive?: string | null;
-  practiceTypes: string[];
+  applicableDayKeys?: string[];
   practiceCount: number;
 }) {
-  const { datePreset, dateFrom, dateToInclusive, practiceTypes, practiceCount } = params;
+  const { datePreset, dateFrom, dateToInclusive, applicableDayKeys, practiceCount } = params;
   const isTodayPreset = datePreset === 'today';
   const isWeekPreset = isWeekDatePreset(datePreset);
-  const dayColumns = filterDayColumnsByRunMode(
+  const dayColumns = filterDayColumnsByApplicability(
     buildDayColumns(dateFrom, dateToInclusive),
-    resolveRunDayMode(practiceTypes),
+    applicableDayKeys,
   );
   const subColumns = isTodayPreset
     ? [] as DayColumn[]
