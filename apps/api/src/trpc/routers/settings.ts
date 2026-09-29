@@ -388,6 +388,13 @@ async function resolveRunMemberCounts(params: {
 
 type SettingsTransaction = Prisma.TransactionClient;
 
+// Prisma's default interactive-transaction timeout is 5s. Roster/kurator writes take
+// a blocking advisory lock (another save on the same course makes this one wait) and
+// run ~10 round-trips against remote Neon, so 5s is regularly exceeded and Prisma
+// closes the transaction mid-flight ("Transaction not found"). Same limits intensiv.ts
+// already uses for its sales transaction.
+const ROSTER_TX_OPTIONS = { isolationLevel: 'Serializable', maxWait: 10_000, timeout: 30_000 } as const;
+
 async function lockCourseRoster(
   tx: SettingsTransaction,
   tenantId: string,
@@ -1013,7 +1020,7 @@ export const settingsRouter = router({
             customerIds: rosterIds,
           });
           return created;
-        }, { isolationLevel: 'Serializable' });
+        }, ROSTER_TX_OPTIONS);
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -1150,7 +1157,7 @@ export const settingsRouter = router({
             }
           }
           return updated;
-        }, { isolationLevel: 'Serializable' });
+        }, ROSTER_TX_OPTIONS);
       } catch (error) {
         if (isMissingCourseRunsTableError(error)) {
           throwMissingCourseRunsMigrationError();
@@ -1879,7 +1886,7 @@ export const settingsRouter = router({
           },
           update: { isActive: true },
         });
-      }, { isolationLevel: 'Serializable' });
+      }, ROSTER_TX_OPTIONS);
 
       return assignment;
     }),
@@ -1919,7 +1926,7 @@ export const settingsRouter = router({
           },
           data: { isActive: false },
         });
-      }, { isolationLevel: 'Serializable' });
+      }, ROSTER_TX_OPTIONS);
       return { success: true };
     }),
 
@@ -1995,7 +2002,7 @@ export const settingsRouter = router({
           });
         }
         return members.length;
-      }, { isolationLevel: 'Serializable' });
+      }, ROSTER_TX_OPTIONS);
 
       return {
         runId: input.courseRunId,
@@ -2147,7 +2154,7 @@ export const settingsRouter = router({
           },
           data: { isActive: false },
         });
-      }, { isolationLevel: 'Serializable' });
+      }, ROSTER_TX_OPTIONS);
 
       return { success: true };
     }),
@@ -2358,7 +2365,7 @@ export const settingsRouter = router({
             update: { isActive: true },
           });
         }
-      }, { isolationLevel: 'Serializable' });
+      }, ROSTER_TX_OPTIONS);
 
       return { assignedCount: uniqueCustomerIds.length };
     }),
