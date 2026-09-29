@@ -31,52 +31,93 @@ function statusLabel(status: AttendanceStatus): string {
   return 'Tanlanmagan';
 }
 
-function statusTextColor(status: AttendanceStatus): string {
-  if (status === 'keldi') return '#15803d';
-  if (status === 'kelmadi') return '#b91c1c';
-  return '#111827';
+// Saved/selected status colours: keldi = green, kelmadi = red, unset = neutral.
+function statusStyle(status: AttendanceStatus): { background: string; color: string; border: string } {
+  if (status === 'keldi') return { background: '#16a34a', color: '#ffffff', border: '#15803d' };
+  if (status === 'kelmadi') return { background: '#dc2626', color: '#ffffff', border: '#b91c1c' };
+  return { background: '#ffffff', color: '#111827', border: '#d1d5db' };
 }
 
-function slotKey(customerId: string, lessonType: 'base' | 'premium_extra', date: string): string {
-  return `${customerId}:${lessonType}:${date}`;
+function cardTint(status: AttendanceStatus): { background?: string; borderColor?: string } {
+  if (status === 'keldi') return { background: '#f0fdf4', borderColor: '#86efac' };
+  if (status === 'kelmadi') return { background: '#fef2f2', borderColor: '#fca5a5' };
+  return {};
 }
 
-type SourceBadge = 'faceid' | 'qr' | null;
+function sourceLabel(source: string | null): { text: string; className: string } {
+  if (source === 'qr') return { text: 'QR', className: 'bg-amber-50 text-amber-700 border-amber-200' };
+  if (source === 'system') return { text: 'Face ID', className: 'bg-indigo-50 text-indigo-600 border-indigo-200' };
+  return { text: "Qo'lda", className: 'bg-gray-50 text-gray-600 border-gray-200' };
+}
+
+// "09:14" when marked on the lesson day itself, otherwise "20.09 10:02".
+function formatMarkedAt(markedAt: string, lessonDate: string): string {
+  const d = new Date(markedAt);
+  if (Number.isNaN(d.getTime())) return '';
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (formatDateLocal(d) === lessonDate) return `${hh}:${mm}`;
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${day}.${month} ${hh}:${mm}`;
+}
+
+// How a saved mark was made (QR / Face ID / Qo'lda) and when. Not shown for an
+// unsaved local change, since that mark doesn't exist yet.
+function MarkSource({
+  status,
+  source,
+  markedAt,
+  lessonDate,
+}: {
+  status: AttendanceStatus;
+  source: string | null;
+  markedAt: string | null;
+  lessonDate: string;
+}) {
+  if (status === 'tanlanmagan') return null;
+  const label = sourceLabel(source);
+  const time = markedAt ? formatMarkedAt(markedAt, lessonDate) : '';
+  return (
+    <span className={`inline-flex items-center gap-1 px-1 py-0.5 rounded text-[10px] font-medium border ${label.className}`}>
+      {label.text}
+      {time && <span className="font-normal">{time}</span>}
+    </span>
+  );
+}
+
+function slotKey(customerId: string, date: string): string {
+  return `${customerId}:base:${date}`;
+}
 
 function AttendanceSlotCard({
   date,
   status,
-  sourceBadge,
+  savedStatus,
+  isEdited,
+  source,
+  markedAt,
   onChange,
 }: {
   date: string;
   status: AttendanceStatus;
-  sourceBadge: SourceBadge;
+  savedStatus: AttendanceStatus;
+  isEdited: boolean;
+  source: string | null;
+  markedAt: string | null;
   onChange: (status: AttendanceStatus) => void;
 }) {
   return (
-    <div className="rounded-lg border border-gray-200 p-2">
-      <p className="text-[11px] kd-subtle mb-1">{formatShortDate(date)}</p>
-      {sourceBadge === 'faceid' && (
-        <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
-          Face ID
-        </span>
-      )}
-      {sourceBadge === 'qr' && (
-        <span className="inline-block mb-1 px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
-          QR
-        </span>
-      )}
+    <div className="rounded-lg border border-gray-200 p-2" style={cardTint(status)}>
+      <div className="flex flex-wrap items-center gap-1 mb-1 min-h-[20px]">
+        <span className="text-[11px] kd-subtle">{formatShortDate(date)}</span>
+        {!isEdited && (
+          <MarkSource status={savedStatus} source={source} markedAt={markedAt} lessonDate={date} />
+        )}
+      </div>
       <AttendanceStatusSelect value={status} onChange={onChange} />
     </div>
   );
-}
-
-function resolveSourceBadge(hasManualOverride: boolean, status: AttendanceStatus, source: string | null): SourceBadge {
-  if (hasManualOverride || status !== 'keldi') return null;
-  if (source === 'system') return 'faceid';
-  if (source === 'qr') return 'qr';
-  return null;
 }
 
 export default function DavomatPage() {
@@ -89,9 +130,7 @@ export default function DavomatPage() {
   const [dateMode, setDateMode] = useState<DateMode>('today');
 
   const [selectedDayBase, setSelectedDayBase] = useState<Record<string, AttendanceStatus>>({});
-  const [selectedDayPremium, setSelectedDayPremium] = useState<Record<string, AttendanceStatus>>({});
   const [selectedAllBase, setSelectedAllBase] = useState<Record<string, AttendanceStatus>>({});
-  const [selectedAllPremium, setSelectedAllPremium] = useState<Record<string, AttendanceStatus>>({});
   const [busySaveKey, setBusySaveKey] = useState<string | null>(null);
 
   const selectedDate = useMemo(
@@ -128,9 +167,7 @@ export default function DavomatPage() {
   // date/course/oqim switch would pre-fill — and then save — them on the wrong day.
   useEffect(() => {
     setSelectedDayBase({});
-    setSelectedDayPremium({});
     setSelectedAllBase({});
-    setSelectedAllPremium({});
   }, [selectedCourseId, selectedCourseRunId, dateMode]);
 
   const attendanceSummary = useMemo(() => {
@@ -159,17 +196,11 @@ export default function DavomatPage() {
     try {
       const dayDate = attendanceQuery.data.dateInfo.date;
       const baseStatus = selectedDayBase[student.id] ?? student.dayStatuses.base;
-      const premiumStatus = student.isPremiumEligible
-        ? (selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan')
-        : 'tanlanmagan';
 
       await saveMutation.mutateAsync({
         customerId: student.id,
         courseRunId: student.courseRunId,
         baseSlots: [{ date: dayDate, status: baseStatus }],
-        premiumExtraSlots: student.isPremiumEligible && student.isPremiumLessonDay
-          ? [{ date: dayDate, status: premiumStatus }]
-          : [],
       });
       toast.show('Davomat saqlandi', 'success');
       await attendanceQuery.refetch();
@@ -184,27 +215,17 @@ export default function DavomatPage() {
     setBusySaveKey(key);
     try {
       const baseSlots = (student.baseSlots ?? []).map((slot) => {
-        const keyForSlot = slotKey(student.id, 'base', slot.date);
+        const keyForSlot = slotKey(student.id, slot.date);
         return {
           date: slot.date,
           status: selectedAllBase[keyForSlot] ?? slot.status,
         };
       });
-      const premiumExtraSlots = student.isPremiumEligible
-        ? (student.premiumExtraSlots ?? []).map((slot) => {
-            const keyForSlot = slotKey(student.id, 'premium_extra', slot.date);
-            return {
-              date: slot.date,
-              status: selectedAllPremium[keyForSlot] ?? slot.status,
-            };
-          })
-        : [];
 
       await saveMutation.mutateAsync({
         customerId: student.id,
         courseRunId: student.courseRunId,
         baseSlots,
-        premiumExtraSlots,
       });
       toast.show('Davomat saqlandi', 'success');
       await attendanceQuery.refetch();
@@ -320,7 +341,7 @@ export default function DavomatPage() {
             <div className="kd-card p-4 text-sm kd-subtle">Bu sana dars kuni emas</div>
           )}
 
-          {dateMode === 'all' && (attendanceQuery.data?.slotDates.hasInsufficientBase || attendanceQuery.data?.slotDates.hasInsufficientPremium) && (
+          {dateMode === 'all' && attendanceQuery.data?.slotDates.hasInsufficientBase && (
             <div className="kd-card p-4 text-xs text-amber-700">
               Oqim davrida dars kunlari yetarli emas, shuning uchun mavjud bo&apos;lgan kunlar ko&apos;rsatildi.
             </div>
@@ -352,15 +373,17 @@ export default function DavomatPage() {
                         <div className="overflow-x-auto">
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
                             {student.baseSlots.map((slot) => {
-                              const key = slotKey(student.id, 'base', slot.date);
+                              const key = slotKey(student.id, slot.date);
                               const selectedStatus = selectedAllBase[key] ?? slot.status;
-                              const sourceBadge = resolveSourceBadge(Boolean(selectedAllBase[key]), slot.status, slot.source);
                               return (
                                 <AttendanceSlotCard
                                   key={slot.date}
                                   date={slot.date}
                                   status={selectedStatus}
-                                  sourceBadge={sourceBadge}
+                                  savedStatus={slot.status}
+                                  isEdited={selectedAllBase[key] !== undefined && selectedAllBase[key] !== slot.status}
+                                  source={slot.source}
+                                  markedAt={slot.markedAt}
                                   onChange={(nextStatus) =>
                                     setSelectedAllBase((prev) => ({ ...prev, [key]: nextStatus }))
                                   }
@@ -370,32 +393,6 @@ export default function DavomatPage() {
                           </div>
                         </div>
                       </div>
-
-                      {student.isPremiumEligible && (
-                        <div>
-                          <p className="text-xs font-semibold kd-subtle mb-2">Premium qo&apos;shimcha</p>
-                          <div className="overflow-x-auto">
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-10 gap-2 xl:min-w-[1800px]">
-                              {student.premiumExtraSlots.map((slot) => {
-                                const key = slotKey(student.id, 'premium_extra', slot.date);
-                                const selectedStatus = selectedAllPremium[key] ?? slot.status;
-                                const sourceBadge = resolveSourceBadge(Boolean(selectedAllPremium[key]), slot.status, slot.source);
-                                return (
-                                  <AttendanceSlotCard
-                                    key={slot.date}
-                                    date={slot.date}
-                                    status={selectedStatus}
-                                    sourceBadge={sourceBadge}
-                                    onChange={(nextStatus) =>
-                                      setSelectedAllPremium((prev) => ({ ...prev, [key]: nextStatus }))
-                                    }
-                                  />
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                      )}
 
                       <div className="flex justify-end">
                         <button
@@ -408,7 +405,7 @@ export default function DavomatPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-[1fr,1fr,180px] gap-2">
+                    <div className="grid grid-cols-1 md:grid-cols-[1fr,180px] gap-2">
                       <AttendanceStatusSelect
                         value={selectedDayBase[student.id] ?? student.dayStatuses.base}
                         disabled={!student.isLessonDay || busySaveKey === busyKey}
@@ -420,24 +417,6 @@ export default function DavomatPage() {
                           }))
                         }
                       />
-
-                      {student.isPremiumEligible ? (
-                        <AttendanceStatusSelect
-                          value={selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan'}
-                          disabled={!student.isPremiumLessonDay || busySaveKey === busyKey}
-                          labelPrefix="Premium"
-                          onChange={(nextStatus) =>
-                            setSelectedDayPremium((prev) => ({
-                              ...prev,
-                              [student.id]: nextStatus,
-                            }))
-                          }
-                        />
-                      ) : (
-                        <div className="w-full px-3 py-2 border rounded-lg text-sm kd-subtle">
-                          Premium: mos emas
-                        </div>
-                      )}
 
                       <button
                         onClick={() => void saveDayStudent(student)}
@@ -452,39 +431,14 @@ export default function DavomatPage() {
                   {dateMode !== 'all' && (
                     <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs kd-subtle">
                       <span>Asosiy: {statusLabel(selectedDayBase[student.id] ?? student.dayStatuses.base)}</span>
-                      {!selectedDayBase[student.id] &&
-                        student.dayStatuses.base === 'keldi' &&
-                        student.daySource?.base === 'system' && (
-                          <span className="px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
-                            Face ID
-                          </span>
-                        )}
-                      {!selectedDayBase[student.id] &&
-                        student.dayStatuses.base === 'keldi' &&
-                        student.daySource?.base === 'qr' && (
-                          <span className="px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
-                            QR
-                          </span>
-                        )}
-                      {student.isPremiumEligible && (
-                        <>
-                          <span>•</span>
-                          <span>Premium: {statusLabel(selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan')}</span>
-                          {!selectedDayPremium[student.id] &&
-                            student.dayStatuses.premiumExtra === 'keldi' &&
-                            student.daySource?.premiumExtra === 'system' && (
-                              <span className="px-1 py-0.5 rounded text-[10px] bg-indigo-50 text-indigo-600 font-medium border border-indigo-200">
-                                Face ID
-                              </span>
-                            )}
-                          {!selectedDayPremium[student.id] &&
-                            student.dayStatuses.premiumExtra === 'keldi' &&
-                            student.daySource?.premiumExtra === 'qr' && (
-                              <span className="px-1 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700 font-medium border border-amber-200">
-                                QR
-                              </span>
-                            )}
-                        </>
+                      {(selectedDayBase[student.id] === undefined ||
+                        selectedDayBase[student.id] === student.dayStatuses.base) && (
+                        <MarkSource
+                          status={student.dayStatuses.base}
+                          source={student.daySource?.base ?? null}
+                          markedAt={student.dayMarkedAt?.base ?? null}
+                          lessonDate={attendanceQuery.data?.dateInfo.date ?? ''}
+                        />
                       )}
                     </div>
                   )}
@@ -516,15 +470,21 @@ function AttendanceStatusSelect({
       disabled={disabled}
       onChange={(event) => onChange(event.target.value as AttendanceStatus)}
       className="w-full px-3 py-2 border rounded-lg text-sm disabled:opacity-50"
-      style={{ color: statusTextColor(value), fontWeight: value === 'tanlanmagan' ? 500 : 600 }}
+      style={{
+        backgroundColor: statusStyle(value).background,
+        color: statusStyle(value).color,
+        borderColor: statusStyle(value).border,
+        fontWeight: value === 'tanlanmagan' ? 500 : 600,
+      }}
     >
-      <option value="tanlanmagan" style={{ color: '#111827' }}>
+      {/* Options keep a plain white list so the open dropdown stays readable. */}
+      <option value="tanlanmagan" style={{ color: '#111827', backgroundColor: '#ffffff' }}>
         {prefix}Tanlanmagan
       </option>
-      <option value="keldi" style={{ color: '#15803d' }}>
+      <option value="keldi" style={{ color: '#15803d', backgroundColor: '#ffffff' }}>
         {prefix}Keldi
       </option>
-      <option value="kelmadi" style={{ color: '#b91c1c' }}>
+      <option value="kelmadi" style={{ color: '#b91c1c', backgroundColor: '#ffffff' }}>
         {prefix}Kelmadi
       </option>
     </select>
