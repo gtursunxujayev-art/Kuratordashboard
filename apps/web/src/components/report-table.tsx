@@ -36,15 +36,6 @@ function formatPoint(value: number | null | undefined): string {
   return Number.isInteger(safe) ? String(safe) : safe.toFixed(2).replace(/\.?0+$/, '');
 }
 
-function isPracticeEligibleOnDate(practiceType: string, dayKey: string): boolean {
-  const date = new Date(`${dayKey}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return true;
-  const day = date.getDay();
-  if (practiceType === 'class') return day === 0 || day === 6;
-  if (practiceType === 'homework' || practiceType === 'extra') return day >= 1 && day <= 5;
-  return true;
-}
-
 export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topilmadi." }: ReportTableProps) {
   const headerRowRef = useRef<HTMLTableRowElement>(null);
   const [subHeaderTop, setSubHeaderTop] = useState(0);
@@ -52,7 +43,7 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
     datePreset,
     dateFrom: report.meta.dateFrom,
     dateToInclusive: report.meta.dateToInclusive,
-    practiceTypes: report.practices.map((practice) => practice.type),
+    applicableDayKeys: report.meta.applicableDayKeys,
     practiceCount: report.practices.length,
   });
 
@@ -126,7 +117,7 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
               {layout.isTodayPreset
                 ? report.practices.map((practice, practiceIndex) => {
                     const cell = student.cells[practice.id];
-                    const applicable = isPracticeEligibleOnDate(practice.type, report.meta.dateFrom);
+                    const applicable = practice.isApplicableToday;
                     const hasLog = cell?.hasLogs ?? false;
                     const colorHex = hasLog ? cell?.colorHex : null;
                     const colored = Boolean(colorHex) && applicable;
@@ -145,7 +136,7 @@ export function ReportTable({ report, datePreset, emptyMessage = "Ma'lumot topil
                       const byDate = new Map((cell?.dayStats ?? []).map((day) => [day.date, day]));
                       return layout.subColumns.map((column, columnIndex) => {
                         const stat = byDate.get(column.key);
-                        const applicable = stat?.isApplicable ?? isPracticeEligibleOnDate(practice.type, column.key);
+                        const applicable = stat?.isApplicable ?? true;
                         const hasLog = stat?.hasLog ?? false;
                         const colorHex = hasLog ? stat?.colorHex : null;
                         const colored = Boolean(colorHex) && applicable;
