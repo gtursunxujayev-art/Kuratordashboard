@@ -99,8 +99,8 @@ test('Amaliy drafts and saved slots stay isolated by student and exercise', asyn
   await page.getByTestId('amaliy-mode-students').click();
   await page.getByTestId('amaliy-student').selectOption({ label: 'E2E Student 01' });
   await studentSlots.first().selectOption({ label: 'E2E Bajarildi (1 ball)' });
-  await page.locator('[data-testid^="amaliy-student-save-"]').first().click();
-  await expect(page.getByText('Saqlandi').last()).toBeVisible();
+  await page.getByTestId('amaliy-save-all').click();
+  await expect(page.getByText('ta saqlandi').last()).toBeVisible();
 
   await page.getByTestId('amaliy-student').selectOption({ label: 'E2E Student 02' });
   await expect(studentSlots.first()).toHaveValue('');
