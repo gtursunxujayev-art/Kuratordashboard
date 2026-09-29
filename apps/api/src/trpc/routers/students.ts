@@ -330,6 +330,61 @@ export const studentsRouter = router({
       });
 
       if (input.withoutOqim) {
+        const toWithoutOqimRow = (customer: {
+          id: string;
+          customerNumber: string;
+          name: string;
+          telegramUsername?: string | null;
+          gender?: string | null;
+          region?: string | null;
+          telegramChatId?: string | null;
+          incomes: Array<{ tariff: { name: string } | null }>;
+        }) => ({
+          id: customer.id,
+          customerNumber: customer.customerNumber,
+          name: customer.name,
+          telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
+          gender: columnSupport.gender ? (customer.gender ?? null) : null,
+          region: columnSupport.region ? (customer.region ?? null) : null,
+          telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
+          tariffName: customer.incomes[0]?.tariff?.name ?? null,
+          exerciseStats: [] as Array<{ name: string; done: number; total: number }>,
+          attendance: {
+            attended: 0,
+            total: 0,
+            base: { attended: 0, total: 0 },
+            premiumExtra: { attended: 0, total: 0 },
+            isPremiumEligible: false,
+          },
+        });
+
+        // With a course picked, "no oqim" is expressible in SQL (active sale in the
+        // course AND no current roster row in it), so paginate in the database —
+        // no candidate cap, and totals stay exact however many students there are.
+        if (input.courseId) {
+          const today = startOfDayLocal(new Date());
+          const where = {
+            ...buildWhere(columnSupport),
+            courseRunMemberships: {
+              none: { courseRun: { courseId: input.courseId, endDate: { gte: today } } },
+            },
+          };
+          const [rows, total] = await Promise.all([
+            prisma.customer.findMany({
+              where,
+              select: buildCustomerSelect(columnSupport),
+              orderBy: { name: 'asc' },
+              skip: (input.page - 1) * input.limit,
+              take: input.limit,
+            }),
+            prisma.customer.count({ where }),
+          ]);
+          return {
+            data: rows.map(toWithoutOqimRow),
+            pagination: { page: input.page, limit: input.limit, total },
+          };
+        }
+
         const CANDIDATE_CAP = 5000;
         const candidates = await prisma.customer.findMany({
           where: buildWhere(columnSupport),
@@ -390,26 +445,10 @@ export const studentsRouter = router({
         const pageStart = (input.page - 1) * input.limit;
         const pageSlice = filteredCustomers.slice(pageStart, pageStart + input.limit);
 
-        const enriched = pageSlice.map((customer) => ({
-          id: customer.id,
-          customerNumber: customer.customerNumber,
-          name: customer.name,
-          telegramUsername: columnSupport.telegramUsername ? (customer.telegramUsername ?? null) : null,
-          gender: columnSupport.gender ? (customer.gender ?? null) : null,
-          region: columnSupport.region ? (customer.region ?? null) : null,
-          telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
-          tariffName: customer.incomes[0]?.tariff?.name ?? null,
-          exerciseStats: [] as Array<{ name: string; done: number; total: number }>,
-          attendance: {
-            attended: 0,
-            total: 0,
-            base: { attended: 0, total: 0 },
-            premiumExtra: { attended: 0, total: 0 },
-            isPremiumEligible: false,
-          },
-        }));
-
-        return { data: enriched, pagination: { page: input.page, limit: input.limit, total } };
+        return {
+          data: pageSlice.map(toWithoutOqimRow),
+          pagination: { page: input.page, limit: input.limit, total },
+        };
       }
 
       const runQuery = async (support: CustomerColumnSupport) => {
