@@ -1557,7 +1557,7 @@ export const settingsRouter = router({
             startDate: supportsVisibilityColumns ? (definition.startDate ?? null) : null,
             isHidden: supportsVisibilityColumns ? Boolean(definition.isHidden) : false,
           };
-        });
+        }, { maxWait: 10_000, timeout: 30_000 });
       } catch (error) {
         if (isIncorrectBinaryBindParameterError(error)) {
           throwFractionalPointsMigrationError();
