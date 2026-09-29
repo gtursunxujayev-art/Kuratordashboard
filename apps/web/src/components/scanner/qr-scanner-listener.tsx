@@ -14,14 +14,13 @@ const MAX_INTER_KEY_GAP_MS = 50;
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
 export function QrScannerListener() {
   const toast = useToast();
   const bufferRef = useRef('');
   const lastKeyTimeRef = useRef(0);
-  const gapOkRef = useRef(true);
   const [scanResult, setScanResult] = useState<QrScanResult | null>(null);
 
   const checkInMutation = trpc.clientBot.checkInByTicket.useMutation({
@@ -49,18 +48,18 @@ export function QrScannerListener() {
       if (event.key === 'Enter') {
         const token = bufferRef.current;
         bufferRef.current = '';
-        const wasFastBurst = gapOkRef.current;
-        gapOkRef.current = true;
-        if (token.length >= MIN_TOKEN_LENGTH && wasFastBurst) {
+        if (token.length >= MIN_TOKEN_LENGTH) {
+          // Stop the scanner's Enter from also clicking whatever button has focus.
+          event.preventDefault();
           mutateRef.current({ token });
         }
         return;
       }
 
       if (event.key.length === 1) {
-        if (bufferRef.current.length > 0 && gap > MAX_INTER_KEY_GAP_MS) {
-          gapOkRef.current = false;
-        }
+        // A slow key means a human typed it, so it can't be part of a scan burst —
+        // start the buffer fresh from here instead of poisoning the next real scan.
+        if (gap > MAX_INTER_KEY_GAP_MS) bufferRef.current = '';
         bufferRef.current += event.key;
       }
     }
