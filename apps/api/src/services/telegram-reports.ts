@@ -397,6 +397,7 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
           tenantId,
           customerId: { in: uniqueStudentIds },
           lessonDate: { gte: period.from, lt: period.to },
+          lessonType: 'base',
           courseRun: { course: { category: { in: courseTypeAliases } } },
         } as any,
         _count: { id: true },
@@ -407,6 +408,7 @@ async function buildKuratorSummaryByType(tenantId: string, period: PeriodRange):
           tenantId,
           customerId: { in: uniqueStudentIds },
           lessonDate: { gte: period.from, lt: period.to },
+          lessonType: 'base',
           attended: true,
           courseRun: { course: { category: { in: courseTypeAliases } } },
         } as any,
@@ -874,6 +876,7 @@ async function sendTenantCuratorSummaries(
             tenantId,
             customerId: { in: allAssignedCustomerIds },
             lessonDate: { gte: dayStart, lt: dayEnd },
+            lessonType: 'base',
           },
           select: { customerId: true, attended: true },
         })
