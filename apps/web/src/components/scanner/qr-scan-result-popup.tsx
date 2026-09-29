@@ -3,7 +3,14 @@
 import { useEffect } from 'react';
 
 export type QrScanResult = {
-  status: 'marked' | 'already_marked' | 'manual_mark_kept' | 'invalid_ticket' | 'not_class_day' | 'no_lesson';
+  status:
+    | 'marked'
+    | 'already_marked'
+    | 'manual_mark_kept'
+    | 'invalid_ticket'
+    | 'not_enrolled'
+    | 'not_class_day'
+    | 'no_lesson';
   customerName?: string;
   customerNumber?: string;
   tariffName?: string | null;
@@ -21,9 +28,11 @@ function statusLabel(status: QrScanResult['status']): { text: string; tone: 'suc
     case 'already_marked':
       return { text: 'Allaqachon belgilangan', tone: 'info' };
     case 'manual_mark_kept':
-      return { text: "Qo'lda belgilangan holat saqlandi", tone: 'info' };
+      return { text: "Qo'lda «keldi» deb belgilangan", tone: 'info' };
     case 'invalid_ticket':
       return { text: 'QR chipta yaroqsiz', tone: 'error' };
+    case 'not_enrolled':
+      return { text: "O'quvchi bu oqimda emas yoki savdosi faol emas", tone: 'error' };
     case 'not_class_day':
       return { text: 'Bugun dars kuni emas', tone: 'error' };
     case 'no_lesson':
