@@ -45,6 +45,30 @@ export function isClassDayForRun(date: Date, category: string, runStartDate: Dat
   return day === pair[0] || day === pair[1];
 }
 
+// The single rule for which days a mashq (exercise) can be logged. Every list and
+// save path must use this, so a mashq shown to a curator is always saveable.
+// - offline/intensiv: class mashq on the oqim's class days; daily mashq
+//   (homework/extra) on every other day — Sun–Thu for Fri/Sat oqims, Mon–Fri for
+//   older Sat/Sun oqims.
+// - online / additional service: no class days; daily mashq Mon–Fri.
+export function isExerciseEligibleOnDate(
+  type: string,
+  date: Date,
+  category: string,
+  runStartDate: Date,
+): boolean {
+  if (isOfflineLikeCategory(category)) {
+    const classDay = isClassDayForRun(date, category, runStartDate);
+    if (type === 'class') return classDay;
+    if (type === 'homework' || type === 'extra') return !classDay;
+    return true;
+  }
+  const day = date.getDay();
+  if (type === 'class') return false;
+  if (type === 'homework' || type === 'extra') return day >= 1 && day <= 5;
+  return true;
+}
+
 // Required start weekday (1=Mon, 5=Fri, 6=Sat) for a *candidate* startDate being
 // validated when creating/editing a course run. Online is always Monday. Offline/
 // intensiv is Friday if the candidate date is on/after the cutover, else Saturday
