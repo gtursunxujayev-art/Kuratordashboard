@@ -403,12 +403,6 @@ export default function StudentsPage() {
                           >
                             {student.attendance.attended}/{student.attendance.total}
                           </span>
-                          <p className="text-[11px] text-gray-400 mt-0.5">
-                            Asosiy: {student.attendance.base.attended}/{student.attendance.base.total}
-                            {student.attendance.isPremiumEligible
-                              ? ` | Premium: ${student.attendance.premiumExtra.attended}/${student.attendance.premiumExtra.total}`
-                              : ''}
-                          </p>
                         </div>
                       ) : (
                         <span className="text-gray-400">-</span>
