@@ -3,10 +3,50 @@ import {
   classWeekdaysForRun,
   computeEndDate,
   isClassDayForRun,
+  isExerciseEligibleOnDate,
   normalizeCourseCategory,
   requiredStartDayForCategory,
   requiredStartDayLabel,
 } from './course-schedule';
+
+describe('isExerciseEligibleOnDate — mashq days', () => {
+  const postCutoverRun = new Date(2026, 8, 4); // Fri 2026-09-04 → Fri/Sat classes
+  const preCutoverRun = new Date(2026, 7, 22); // Sat 2026-08-22 → Sat/Sun classes
+  const friday = new Date(2026, 8, 11);
+  const saturday = new Date(2026, 8, 5);
+  const sunday = new Date(2026, 8, 6);
+  const monday = new Date(2026, 8, 7);
+
+  it('Fri/Sat oqim: daily mashq Sun–Thu, class mashq Fri/Sat', () => {
+    expect(isExerciseEligibleOnDate('homework', sunday, 'offline', postCutoverRun)).toBe(true);
+    expect(isExerciseEligibleOnDate('extra', monday, 'offline', postCutoverRun)).toBe(true);
+    expect(isExerciseEligibleOnDate('homework', friday, 'offline', postCutoverRun)).toBe(false);
+    expect(isExerciseEligibleOnDate('class', friday, 'offline', postCutoverRun)).toBe(true);
+    expect(isExerciseEligibleOnDate('class', sunday, 'offline', postCutoverRun)).toBe(false);
+  });
+
+  it('older Sat/Sun oqim keeps Mon–Fri daily mashq after the cutover date', () => {
+    expect(isExerciseEligibleOnDate('homework', sunday, 'offline', preCutoverRun)).toBe(false);
+    expect(isExerciseEligibleOnDate('class', sunday, 'offline', preCutoverRun)).toBe(true);
+    expect(isExerciseEligibleOnDate('homework', friday, 'offline', preCutoverRun)).toBe(true);
+  });
+
+  it('never offers a class and a daily mashq on the same day for offline', () => {
+    for (let offset = 0; offset < 14; offset += 1) {
+      const date = new Date(2026, 8, 4 + offset);
+      const classOk = isExerciseEligibleOnDate('class', date, 'offline', postCutoverRun);
+      const dailyOk = isExerciseEligibleOnDate('homework', date, 'offline', postCutoverRun);
+      expect(classOk).toBe(!dailyOk);
+    }
+  });
+
+  it('online: daily mashq Mon–Fri, no class days', () => {
+    expect(isExerciseEligibleOnDate('homework', monday, 'online', postCutoverRun)).toBe(true);
+    expect(isExerciseEligibleOnDate('homework', saturday, 'online', postCutoverRun)).toBe(false);
+    expect(isExerciseEligibleOnDate('homework', sunday, 'online', postCutoverRun)).toBe(false);
+    expect(isExerciseEligibleOnDate('class', monday, 'online', postCutoverRun)).toBe(false);
+  });
+});
 
 describe('normalizeCourseCategory', () => {
   it('classifies known categories', () => {
