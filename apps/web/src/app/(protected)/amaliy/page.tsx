@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { trpc } from '@/lib/trpc';
-import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 import { formatDateLocal } from '@/lib/date';
 
@@ -73,10 +72,8 @@ function normalizeCourseCategory(raw?: string | null): CourseType | null {
 }
 
 export default function AmaliyPage() {
-  const { isManager } = useAuth();
   const toast = useToast();
   const trpcUtils = trpc.useContext();
-  const canUseHammasi = isManager;
 
   const [mode, setMode] = useState<AmaliyMode>('students');
   const [selectedCourseType, setSelectedCourseType] = useState<CourseType>('offline');
@@ -95,10 +92,8 @@ export default function AmaliyPage() {
   const [selectedColorByExerciseSlot, setSelectedColorByExerciseSlot] = useState<Record<string, string>>({});
   const [selectedColorByPracticeStudentSlot, setSelectedColorByPracticeStudentSlot] = useState<Record<string, string>>({});
 
-  const [busyStudentExerciseKey, setBusyStudentExerciseKey] = useState<string | null>(null);
-  const [busyPracticeStudentKey, setBusyPracticeStudentKey] = useState<string | null>(null);
-  const [busyAttendance, setBusyAttendance] = useState<'base' | 'premium_extra' | null>(null);
-  const [busySlotSaveKey, setBusySlotSaveKey] = useState<string | null>(null);
+  const [isSavingAll, setIsSavingAll] = useState(false);
+  const [busyAttendance, setBusyAttendance] = useState<'base' | null>(null);
 
   const [hiddenStudentExerciseKeys, setHiddenStudentExerciseKeys] = useState<Set<string>>(new Set());
   const [vanishingStudentExerciseKeys, setVanishingStudentExerciseKeys] = useState<Set<string>>(new Set());
@@ -114,10 +109,7 @@ export default function AmaliyPage() {
     setVanishingStudentExerciseKeys(new Set());
     setHiddenPracticeStudentKeys(new Set());
     setVanishingPracticeStudentKeys(new Set());
-    setBusyStudentExerciseKey(null);
-    setBusyPracticeStudentKey(null);
     setBusyAttendance(null);
-    setBusySlotSaveKey(null);
   }, []);
 
   const selectedDate = useMemo(() => {
@@ -289,19 +281,9 @@ export default function AmaliyPage() {
     { enabled: Boolean(selectedPracticeId) && (dateMode !== 'all' || Boolean(selectedCourseRunId)) },
   );
 
-  const logMutation = trpc.amaliy.logExercise.useMutation({
-    onError: (error) => {
-      toast.show(error.message || 'Xatolik yuz berdi', 'error');
-      setBusyStudentExerciseKey(null);
-      setBusyPracticeStudentKey(null);
-    },
-  });
-  const saveSlotsMutation = trpc.amaliy.saveExerciseSlots.useMutation({
-    onError: (error) => {
-      toast.show(error.message || 'Xatolik yuz berdi', 'error');
-      setBusySlotSaveKey(null);
-    },
-  });
+  // Errors are collected by saveAll and reported in a single toast.
+  const logMutation = trpc.amaliy.logExercise.useMutation();
+  const saveSlotsMutation = trpc.amaliy.saveExerciseSlots.useMutation();
 
   const attendanceMutation = trpc.amaliy.markAttendance.useMutation({
     onSuccess: () => {
@@ -322,7 +304,8 @@ export default function AmaliyPage() {
     logMutation.isLoading ||
     saveSlotsMutation.isLoading ||
     attendanceMutation.isLoading ||
-    Boolean(busyStudentExerciseKey || busyPracticeStudentKey || busySlotSaveKey || busyAttendance);
+    isSavingAll ||
+    Boolean(busyAttendance);
 
   const selectedStudent = useMemo(
     () => (students ?? []).find((student) => student.id === selectedStudentId),
@@ -367,81 +350,51 @@ export default function AmaliyPage() {
     return `${DAY_NAMES[d.getDay()]}, ${selectedDate}`;
   }, [selectedDate]);
 
+  // Each worker saves one card and throws on failure; saveAll runs them in sequence
+  // behind the page's single "Saqlash" button.
   const completeStudentExercise = async (exerciseId: string) => {
     if (!selectedStudentId || !selectedCourseRunId) return;
     const customerId = selectedStudentId;
     const courseRunId = selectedCourseRunId;
     const completionDate = selectedDate;
-    const exercise = (exerciseData?.exercises ?? []).find((item) => item.id === exerciseId);
-    const exerciseOptions: ColorPointOption[] = (exercise?.colorPoints ?? []).map((row) => ({
-      id: row.colorOptionId,
-      label: row.label,
-      colorHex: row.colorHex,
-      points: row.points,
-    }));
-
-    if (exerciseOptions.length === 0) {
-      toast.show('Avval admin rang va ball sozlamalarini kiritsin', 'error');
-      return;
-    }
-
     const selectedColorId = selectedColorByExercise[exerciseId] ?? '';
-    if (!selectedColorId) {
-      toast.show('Rang tanlang', 'error');
-      return;
-    }
+    if (!selectedColorId) return;
 
     const actionKey = keyForStudentExercise(courseRunId, customerId, completionDate, exerciseId);
-    setBusyStudentExerciseKey(actionKey);
+    await logMutation.mutateAsync({
+      customerId,
+      courseRunId,
+      exerciseDefinitionId: exerciseId,
+      colorOptionId: selectedColorId,
+      completedAt: completionDate,
+    });
 
-    try {
-      await logMutation.mutateAsync({
-        customerId,
-        courseRunId,
-        exerciseDefinitionId: exerciseId,
-        colorOptionId: selectedColorId,
-        completedAt: completionDate,
+    setSelectedColorByExercise((prev) => {
+      const next = { ...prev };
+      delete next[exerciseId];
+      return next;
+    });
+    setVanishingStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
+
+    setTimeout(() => {
+      setVanishingStudentExerciseKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(actionKey);
+        return next;
       });
-
-      toast.show('Saqlandi', 'success');
-      if (dateMode === 'all') {
-        void trpcUtils.amaliy.getStudentExercises.invalidate({
-          customerId,
-          date: completionDate,
-          mode: 'all',
-          courseRunId,
-        });
-      } else {
-        setSelectedColorByExercise((prev) => {
-          const next = { ...prev };
-          delete next[exerciseId];
-          return next;
-        });
-        setVanishingStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
-
-        setTimeout(() => {
-          setVanishingStudentExerciseKeys((prev) => {
-            const next = new Set(prev);
-            next.delete(actionKey);
-            return next;
-          });
-          setHiddenStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
-          void trpcUtils.amaliy.getStudentExercises.invalidate({
-            customerId,
-            date: completionDate,
-            mode: 'day',
-            courseRunId,
-          });
-          void trpcUtils.amaliy.listRecentLogs.invalidate({
-            customerId,
-            date: completionDate,
-            courseRunId,
-          });
-        }, 480);
-      }
-    } finally {
-      setBusyStudentExerciseKey(null);
-    }
+      setHiddenStudentExerciseKeys((prev) => new Set(prev).add(actionKey));
+      void trpcUtils.amaliy.getStudentExercises.invalidate({
+        customerId,
+        date: completionDate,
+        mode: 'day',
+        courseRunId,
+      });
+      void trpcUtils.amaliy.listRecentLogs.invalidate({
+        customerId,
+        date: completionDate,
+        courseRunId,
+      });
+    }, 480);
   };
 
   const completePracticeStudent = async (studentId: string) => {
@@ -449,155 +402,194 @@ export default function AmaliyPage() {
     const exerciseDefinitionId = selectedPracticeId;
     const courseRunId = selectedCourseRunId;
     const completionDate = selectedDate;
-    const practiceOptions: ColorPointOption[] = (currentPractice?.colorPoints ?? []).map((row: ExerciseColorPointRow) => ({
-      id: row.colorOptionId,
-      label: row.colorOption.label,
-      colorHex: row.colorOption.colorHex,
-      points: row.points,
-    }));
-
-    if (practiceOptions.length === 0) {
-      toast.show('Avval admin rang va ball sozlamalarini kiritsin', 'error');
-      return;
-    }
-
     const selectedColorId = selectedColorByPracticeStudent[studentId] ?? '';
-    if (!selectedColorId) {
-      toast.show('Rang tanlang', 'error');
-      return;
-    }
+    if (!selectedColorId) return;
 
     const actionKey = keyForPracticeStudent(courseRunId, exerciseDefinitionId, completionDate, studentId);
-    setBusyPracticeStudentKey(actionKey);
+    await logMutation.mutateAsync({
+      customerId: studentId,
+      courseRunId,
+      exerciseDefinitionId,
+      colorOptionId: selectedColorId,
+      completedAt: completionDate,
+    });
 
-    try {
-      await logMutation.mutateAsync({
-        customerId: studentId,
-        courseRunId,
-        exerciseDefinitionId,
-        colorOptionId: selectedColorId,
-        completedAt: completionDate,
+    setSelectedColorByPracticeStudent((prev) => {
+      const next = { ...prev };
+      delete next[studentId];
+      return next;
+    });
+    setVanishingPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
+
+    setTimeout(() => {
+      setVanishingPracticeStudentKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(actionKey);
+        return next;
       });
-
-      toast.show('Saqlandi', 'success');
-      if (dateMode === 'all') {
-        void trpcUtils.amaliy.listPracticeStudents.invalidate({
-          exerciseDefinitionId,
-          date: completionDate,
-          courseRunId,
-          includeCompleted: true,
-        });
-      } else {
-        setSelectedColorByPracticeStudent((prev) => {
-          const next = { ...prev };
-          delete next[studentId];
-          return next;
-        });
-        setVanishingPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
-
-        setTimeout(() => {
-          setVanishingPracticeStudentKeys((prev) => {
-            const next = new Set(prev);
-            next.delete(actionKey);
-            return next;
-          });
-          setHiddenPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
-          void trpcUtils.amaliy.listPracticeStudents.invalidate({
-            exerciseDefinitionId,
-            date: completionDate,
-            courseRunId,
-            includeCompleted: false,
-          });
-        }, 480);
-      }
-    } finally {
-      setBusyPracticeStudentKey(null);
-    }
+      setHiddenPracticeStudentKeys((prev) => new Set(prev).add(actionKey));
+      void trpcUtils.amaliy.listPracticeStudents.invalidate({
+        exerciseDefinitionId,
+        date: completionDate,
+        courseRunId,
+        includeCompleted: false,
+      });
+    }, 480);
   };
+
+  // A slot counts as edited only when the picked value differs from what's saved.
+  const editedSlotKeys = (
+    slots: SlotItem[],
+    edits: Record<string, string>,
+    keyOf: (date: string) => string,
+  ): string[] =>
+    slots
+      .map((slot) => ({ slot, key: keyOf(slot.date) }))
+      .filter(({ slot, key }) => edits[key] !== undefined && (edits[key] || null) !== (slot.selectedColorOptionId ?? null))
+      .map(({ key }) => key);
+
+  const dropEdits = (keys: string[], setter: typeof setSelectedColorByExerciseSlot) =>
+    setter((prev) => {
+      const next = { ...prev };
+      for (const key of keys) delete next[key];
+      return next;
+    });
 
   const saveStudentExerciseSlots = async (exercise: (NonNullable<typeof exerciseData>['exercises'])[number]) => {
     if (!selectedStudentId || !selectedCourseRunId) return;
     const customerId = selectedStudentId;
     const courseRunId = selectedCourseRunId;
     const exerciseDefinitionId = exercise.id;
-    const busyKey = `student:${courseRunId}:${customerId}:${exerciseDefinitionId}`;
-    setBusySlotSaveKey(busyKey);
-    try {
-      const payload = (exercise.slots ?? []).map((slot: SlotItem) => {
-        const key = keyForExerciseSlot(courseRunId, customerId, exerciseDefinitionId, slot.date);
-        const next = selectedColorByExerciseSlot[key];
-        const selectedColorOptionId =
-          next !== undefined
-            ? (next || null)
-            : (slot.selectedColorOptionId ?? null);
-        return {
-          date: slot.date,
-          colorOptionId: selectedColorOptionId,
-        };
-      });
+    const slots = (exercise.slots ?? []) as SlotItem[];
+    const keyOf = (date: string) => keyForExerciseSlot(courseRunId, customerId, exerciseDefinitionId, date);
+    const payload = slots.map((slot) => {
+      const next = selectedColorByExerciseSlot[keyOf(slot.date)];
+      return {
+        date: slot.date,
+        colorOptionId: next !== undefined ? (next || null) : (slot.selectedColorOptionId ?? null),
+      };
+    });
 
-      await saveSlotsMutation.mutateAsync({
-        customerId,
-        exerciseDefinitionId,
-        courseRunId,
-        slots: payload,
-      });
-      toast.show('Saqlandi', 'success');
-      void trpcUtils.amaliy.getStudentExercises.invalidate({
-        customerId,
-        date: selectedDate,
-        mode: 'all',
-        courseRunId,
-      });
-      void trpcUtils.amaliy.listRecentLogs.invalidate({
-        customerId,
-        date: selectedDate,
-        courseRunId,
-      });
-    } finally {
-      setBusySlotSaveKey(null);
-    }
+    await saveSlotsMutation.mutateAsync({
+      customerId,
+      exerciseDefinitionId,
+      courseRunId,
+      slots: payload,
+    });
+    dropEdits(slots.map((slot) => keyOf(slot.date)), setSelectedColorByExerciseSlot);
+    void trpcUtils.amaliy.getStudentExercises.invalidate({
+      customerId,
+      date: selectedDate,
+      mode: 'all',
+      courseRunId,
+    });
+    void trpcUtils.amaliy.listRecentLogs.invalidate({
+      customerId,
+      date: selectedDate,
+      courseRunId,
+    });
   };
 
   const savePracticeStudentSlots = async (studentId: string, slots: SlotItem[]) => {
     if (!selectedPracticeId || !selectedCourseRunId) return;
     const exerciseDefinitionId = selectedPracticeId;
     const courseRunId = selectedCourseRunId;
-    const busyKey = `practice:${courseRunId}:${exerciseDefinitionId}:${studentId}`;
-    setBusySlotSaveKey(busyKey);
-    try {
-      const payload = slots.map((slot) => {
-        const key = keyForPracticeStudentSlot(courseRunId, exerciseDefinitionId, studentId, slot.date);
-        const next = selectedColorByPracticeStudentSlot[key];
-        const selectedColorOptionId =
-          next !== undefined
-            ? (next || null)
-            : (slot.selectedColorOptionId ?? null);
-        return {
-          date: slot.date,
-          colorOptionId: selectedColorOptionId,
-        };
-      });
+    const keyOf = (date: string) => keyForPracticeStudentSlot(courseRunId, exerciseDefinitionId, studentId, date);
+    const payload = slots.map((slot) => {
+      const next = selectedColorByPracticeStudentSlot[keyOf(slot.date)];
+      return {
+        date: slot.date,
+        colorOptionId: next !== undefined ? (next || null) : (slot.selectedColorOptionId ?? null),
+      };
+    });
 
-      await saveSlotsMutation.mutateAsync({
-        customerId: studentId,
-        exerciseDefinitionId,
-        courseRunId,
-        slots: payload,
-      });
-      toast.show('Saqlandi', 'success');
-      void trpcUtils.amaliy.listPracticeStudents.invalidate({
-        exerciseDefinitionId,
-        date: selectedDate,
-        courseRunId,
-        includeCompleted: true,
-      });
+    await saveSlotsMutation.mutateAsync({
+      customerId: studentId,
+      exerciseDefinitionId,
+      courseRunId,
+      slots: payload,
+    });
+    dropEdits(slots.map((slot) => keyOf(slot.date)), setSelectedColorByPracticeStudentSlot);
+    void trpcUtils.amaliy.listPracticeStudents.invalidate({
+      exerciseDefinitionId,
+      date: selectedDate,
+      courseRunId,
+      includeCompleted: true,
+    });
+  };
+
+  // Cards with unsaved changes on the current tab/date mode — what the single
+  // "Saqlash" button will send.
+  const pendingSaves: Array<() => Promise<void>> = (() => {
+    if (mode === 'students') {
+      return visibleExercises
+        .filter((exercise) =>
+          dateMode === 'all'
+            ? editedSlotKeys((exercise.slots ?? []) as SlotItem[], selectedColorByExerciseSlot, (date) =>
+                keyForExerciseSlot(selectedCourseRunId, selectedStudentId, exercise.id, date),
+              ).length > 0
+            : Boolean(selectedColorByExercise[exercise.id]),
+        )
+        .map((exercise) =>
+          dateMode === 'all'
+            ? () => saveStudentExerciseSlots(exercise)
+            : () => completeStudentExercise(exercise.id),
+        );
+    }
+    return visiblePracticeStudents
+      .filter((student) =>
+        dateMode === 'all'
+          ? editedSlotKeys((student.slots ?? []) as SlotItem[], selectedColorByPracticeStudentSlot, (date) =>
+              keyForPracticeStudentSlot(selectedCourseRunId, selectedPracticeId, student.id, date),
+            ).length > 0
+          : Boolean(selectedColorByPracticeStudent[student.id]),
+      )
+      .map((student) =>
+        dateMode === 'all'
+          ? () => savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])
+          : () => completePracticeStudent(student.id),
+      );
+  })();
+
+  const saveAll = async () => {
+    if (isSavingAll || pendingSaves.length === 0) return;
+    setIsSavingAll(true);
+    let saved = 0;
+    const errors: string[] = [];
+    try {
+      for (const save of pendingSaves) {
+        try {
+          await save();
+          saved += 1;
+        } catch (error) {
+          errors.push(error instanceof Error && error.message ? error.message : 'Xatolik yuz berdi');
+        }
+      }
     } finally {
-      setBusySlotSaveKey(null);
+      setIsSavingAll(false);
+    }
+
+    if (errors.length === 0) {
+      toast.show(`${saved} ta saqlandi`, 'success');
+    } else {
+      toast.show(`${saved} ta saqlandi, ${errors.length} tasida xatolik: ${errors[0]}`, 'error');
     }
   };
 
-  const handleAttendance = (lessonType: 'base' | 'premium_extra', attended: boolean) => {
+  const saveAllButton = (
+    <div className="sticky bottom-3 z-10 flex justify-end">
+      <button
+        data-testid="amaliy-save-all"
+        onClick={() => void saveAll()}
+        disabled={isSavingAll || pendingSaves.length === 0}
+        className="px-6 py-3 rounded-lg bg-blue-600 text-white text-sm font-semibold shadow-lg hover:bg-blue-700 disabled:opacity-50"
+      >
+        {isSavingAll ? 'Saqlanmoqda...' : `Saqlash (${pendingSaves.length})`}
+      </button>
+    </div>
+  );
+
+  const handleAttendance = (lessonType: 'base', attended: boolean) => {
     if (!selectedStudentId || !exerciseData?.courseRunId || dateMode === 'all') return;
     setBusyAttendance(lessonType);
     attendanceMutation.mutate({
@@ -796,7 +788,7 @@ export default function AmaliyPage() {
                   if (dateMode !== 'all') resetDraftState();
                   setDateMode('all');
                 }}
-                disabled={!canUseHammasi || isSelectionLocked}
+                disabled={isSelectionLocked}
                 data-testid="amaliy-date-all"
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'all' ? 'bg-white shadow-sm' : 'kd-subtle'
@@ -809,7 +801,7 @@ export default function AmaliyPage() {
                   if (dateMode !== 'custom') resetDraftState();
                   setDateMode('custom');
                 }}
-                disabled={!canUseHammasi || isSelectionLocked}
+                disabled={isSelectionLocked}
                 className={`px-2 py-2 rounded text-sm ${
                   dateMode === 'custom' ? 'bg-white shadow-sm' : 'kd-subtle'
                 } disabled:opacity-40`}
@@ -817,25 +809,23 @@ export default function AmaliyPage() {
                 Sana
               </button>
             </div>
-            {canUseHammasi && (
-              <div className="mt-2">
-                <input
-                  type="date"
-                  value={dateMode === 'all' ? hammasiDate : customDate}
-                  onChange={(e) => {
-                    resetDraftState();
-                    if (dateMode === 'all') {
-                      setHammasiDate(e.target.value);
-                    } else {
-                      setCustomDate(e.target.value);
-                      setDateMode('custom');
-                    }
-                  }}
-                  disabled={isSelectionLocked}
-                  className="w-full px-3 py-2 border rounded-lg text-sm"
-                />
-              </div>
-            )}
+            <div className="mt-2">
+              <input
+                type="date"
+                value={dateMode === 'all' ? hammasiDate : customDate}
+                onChange={(e) => {
+                  resetDraftState();
+                  if (dateMode === 'all') {
+                    setHammasiDate(e.target.value);
+                  } else {
+                    setCustomDate(e.target.value);
+                    setDateMode('custom');
+                  }
+                }}
+                disabled={isSelectionLocked}
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+              />
+            </div>
           </div>
         </div>
 
@@ -880,25 +870,6 @@ export default function AmaliyPage() {
                       Asosiy kelmadi
                     </button>
                   </div>
-
-                  {exerciseData.attendanceSummary.isPremiumEligible && (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                      <button
-                        onClick={() => handleAttendance('premium_extra', true)}
-                        disabled={busyAttendance === 'premium_extra'}
-                        className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
-                      >
-                        Premium keldi
-                      </button>
-                      <button
-                        onClick={() => handleAttendance('premium_extra', false)}
-                        disabled={busyAttendance === 'premium_extra'}
-                        className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-medium hover:bg-orange-700 disabled:opacity-50"
-                      >
-                        Premium kelmadi
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -970,7 +941,7 @@ export default function AmaliyPage() {
                                         selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
                                         allowEmpty
                                         emptyLabel="Tanlanmagan"
-                                        disabled={exerciseOptions.length === 0}
+                                        disabled={exerciseOptions.length === 0 || isSavingAll}
                                         onChange={(nextId) =>
                                           setSelectedColorByExerciseSlot((prev) => ({ ...prev, [slotKey]: nextId }))
                                         }
@@ -980,40 +951,17 @@ export default function AmaliyPage() {
                                 })}
                               </div>
                             </div>
-                            <div className="flex justify-end">
-                              <button
-                                data-testid={`amaliy-student-save-${exercise.id}`}
-                                onClick={() => void saveStudentExerciseSlots(exercise)}
-                                disabled={
-                                  busySlotSaveKey === `student:${selectedCourseRunId}:${selectedStudentId}:${exercise.id}` ||
-                                  exerciseOptions.length === 0
-                                }
-                                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                              >
-                                {busySlotSaveKey === `student:${selectedCourseRunId}:${selectedStudentId}:${exercise.id}` ? '...' : 'Saqlash'}
-                              </button>
-                            </div>
                           </div>
                         ) : (
-                          <div className="mt-3 grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-stretch">
+                          <div className="mt-3">
                             <ColorPointsListSelect
                               options={exerciseOptions}
                               value={selectedColorId}
-                              disabled={exerciseOptions.length === 0}
+                              disabled={exerciseOptions.length === 0 || isSavingAll}
                               onChange={(nextId) =>
                                 setSelectedColorByExercise((prev) => ({ ...prev, [exercise.id]: nextId }))
                               }
                             />
-                            <button
-                              onClick={() => void completeStudentExercise(exercise.id)}
-                              disabled={
-                                busyStudentExerciseKey === rowKey ||
-                                exerciseOptions.length === 0
-                              }
-                              className="w-full h-full min-h-[120px] md:h-auto md:min-h-0 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
-                            >
-                              {busyStudentExerciseKey === rowKey ? '...' : 'Saqlash'}
-                            </button>
                           </div>
                         )}
                       </div>
@@ -1021,6 +969,7 @@ export default function AmaliyPage() {
                   })
                 )}
               </div>
+              {visibleExercises.length > 0 && saveAllButton}
             </>
           )}
         </div>
@@ -1120,7 +1069,7 @@ export default function AmaliyPage() {
                                           selectedColorHex={slotSelectedColor?.colorHex ?? slot.selectedColorHex ?? undefined}
                                           allowEmpty
                                           emptyLabel="Tanlanmagan"
-                                          disabled={practiceOptions.length === 0}
+                                          disabled={practiceOptions.length === 0 || isSavingAll}
                                           onChange={(nextId) =>
                                             setSelectedColorByPracticeStudentSlot((prev) => ({ ...prev, [slotKey]: nextId }))
                                           }
@@ -1130,40 +1079,18 @@ export default function AmaliyPage() {
                                   })}
                                 </div>
                               </div>
-                              <div className="flex justify-end">
-                                <button
-                                  data-testid={`amaliy-practice-save-${selectedPracticeId}-${student.id}`}
-                                  onClick={() => void savePracticeStudentSlots(student.id, (student.slots ?? []) as SlotItem[])}
-                                  disabled={
-                                    busySlotSaveKey === `practice:${selectedCourseRunId}:${selectedPracticeId}:${student.id}` ||
-                                    practiceOptions.length === 0
-                                  }
-                                  className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
-                                >
-                                  {busySlotSaveKey === `practice:${selectedCourseRunId}:${selectedPracticeId}:${student.id}` ? '...' : 'Saqlash'}
-                                </button>
-                              </div>
                             </div>
                           ) : (
-                            <>
-                              <div className="grid grid-cols-[minmax(0,1fr)_116px] md:grid-cols-[1fr,180px] gap-2 items-stretch col-span-full">
+                            <div className="col-span-full">
                               <ColorPointsListSelect
                                 options={practiceOptions}
                                 value={selectedColorId}
-                                disabled={practiceOptions.length === 0}
+                                disabled={practiceOptions.length === 0 || isSavingAll}
                                 onChange={(nextId) =>
                                   setSelectedColorByPracticeStudent((prev) => ({ ...prev, [student.id]: nextId }))
                                 }
                               />
-                              <button
-                                onClick={() => void completePracticeStudent(student.id)}
-                                disabled={busyPracticeStudentKey === rowKey || practiceOptions.length === 0}
-                                className="w-full h-full min-h-[120px] md:h-auto md:min-h-0 px-3 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center"
-                              >
-                                {busyPracticeStudentKey === rowKey ? '...' : 'Saqlash'}
-                              </button>
-                              </div>
-                            </>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -1171,6 +1098,7 @@ export default function AmaliyPage() {
                   })}
                 </div>
               )}
+              {visiblePracticeStudents.length > 0 && saveAllButton}
             </>
           )}
         </div>
