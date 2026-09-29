@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/auth-context';
 import { trpc } from '@/lib/trpc';
 import { useToast } from '@/components/ui/toast';
@@ -123,20 +123,34 @@ export default function DavomatPage() {
   });
 
   const students = useMemo(() => attendanceQuery.data?.students ?? [], [attendanceQuery.data?.students]);
-  const isLessonDay = attendanceQuery.data?.isLessonDay ?? false;
+
+  // Unsaved picks are keyed by student (and date for Hammasi); carrying them across a
+  // date/course/oqim switch would pre-fill — and then save — them on the wrong day.
+  useEffect(() => {
+    setSelectedDayBase({});
+    setSelectedDayPremium({});
+    setSelectedAllBase({});
+    setSelectedAllPremium({});
+  }, [selectedCourseId, selectedCourseRunId, dateMode]);
+
   const attendanceSummary = useMemo(() => {
-    const statuses = students.map((student) => (
-      dateMode === 'all'
-        ? student.baseSlots[0]?.status ?? 'tanlanmagan'
-        : student.dayStatuses.base
-    ));
-    const total = statuses.length;
+    // Students on no oqim can't be marked, so they're reported separately rather than
+    // dragging the attendance percentage down.
+    const markable = students.filter((student) => student.courseRunId);
+    const withoutOqim = students.length - markable.length;
+    // Day view: only students who actually have a lesson on this date.
+    // Hammasi view: every lesson slot of every student.
+    const statuses = dateMode === 'all'
+      ? markable.flatMap((student) => student.baseSlots.map((slot) => slot.status))
+      : markable.filter((student) => student.isLessonDay).map((student) => student.dayStatuses.base);
+    const total = dateMode === 'all' ? markable.length : statuses.length;
     const present = statuses.filter((status) => status === 'keldi').length;
     const absent = statuses.filter((status) => status === 'kelmadi').length;
     const unselected = statuses.filter((status) => status === 'tanlanmagan').length;
-    const percent = total ? Math.round((present / total) * 100) : 0;
-    return { total, present, absent, unselected, percent };
+    const percent = statuses.length ? Math.round((present / statuses.length) * 100) : 0;
+    return { total, present, absent, unselected, percent, withoutOqim };
   }, [dateMode, students]);
+  const anyLessonToday = students.some((student) => student.isLessonDay);
 
   const saveDayStudent = async (student: (typeof students)[number]) => {
     if (!student.courseRunId || !attendanceQuery.data) return;
@@ -153,7 +167,7 @@ export default function DavomatPage() {
         customerId: student.id,
         courseRunId: student.courseRunId,
         baseSlots: [{ date: dayDate, status: baseStatus }],
-        premiumExtraSlots: student.isPremiumEligible
+        premiumExtraSlots: student.isPremiumEligible && student.isPremiumLessonDay
           ? [{ date: dayDate, status: premiumStatus }]
           : [],
       });
@@ -290,7 +304,7 @@ export default function DavomatPage() {
         </div>
         <div className="nn-kpi-card">
           <span className="nn-kpi-icon" style={{ background: 'var(--nn-coral)' }}>{attendanceSummary.percent}%</span>
-          <span><p className="text-xs kd-subtle">Davomat</p><p className="text-2xl font-bold kd-title">{attendanceSummary.percent}%</p><p className="text-xs kd-subtle">Tanlanmagan: {attendanceSummary.unselected}</p></span>
+          <span><p className="text-xs kd-subtle">Davomat</p><p className="text-2xl font-bold kd-title">{attendanceSummary.percent}%</p><p className="text-xs kd-subtle">Tanlanmagan: {attendanceSummary.unselected}{attendanceSummary.withoutOqim > 0 ? ` • Oqimsiz: ${attendanceSummary.withoutOqim}` : ''}</p></span>
         </div>
       </div>
 
@@ -302,7 +316,7 @@ export default function DavomatPage() {
         <div className="kd-card p-6 text-center text-red-600 text-sm">{attendanceQuery.error.message}</div>
       ) : (
         <div className="space-y-3">
-          {dateMode !== 'all' && !isLessonDay && (
+          {dateMode !== 'all' && !anyLessonToday && (
             <div className="kd-card p-4 text-sm kd-subtle">Bu sana dars kuni emas</div>
           )}
 
@@ -397,7 +411,7 @@ export default function DavomatPage() {
                     <div className="grid grid-cols-1 md:grid-cols-[1fr,1fr,180px] gap-2">
                       <AttendanceStatusSelect
                         value={selectedDayBase[student.id] ?? student.dayStatuses.base}
-                        disabled={!isLessonDay || busySaveKey === busyKey}
+                        disabled={!student.isLessonDay || busySaveKey === busyKey}
                         labelPrefix="Asosiy"
                         onChange={(nextStatus) =>
                           setSelectedDayBase((prev) => ({
@@ -410,7 +424,7 @@ export default function DavomatPage() {
                       {student.isPremiumEligible ? (
                         <AttendanceStatusSelect
                           value={selectedDayPremium[student.id] ?? student.dayStatuses.premiumExtra ?? 'tanlanmagan'}
-                          disabled={!isLessonDay || busySaveKey === busyKey}
+                          disabled={!student.isPremiumLessonDay || busySaveKey === busyKey}
                           labelPrefix="Premium"
                           onChange={(nextStatus) =>
                             setSelectedDayPremium((prev) => ({
@@ -427,7 +441,7 @@ export default function DavomatPage() {
 
                       <button
                         onClick={() => void saveDayStudent(student)}
-                        disabled={!isLessonDay || busySaveKey === busyKey}
+                        disabled={!student.isLessonDay || busySaveKey === busyKey}
                         className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700 disabled:opacity-50"
                       >
                         {busySaveKey === busyKey ? '...' : 'Saqlash'}
