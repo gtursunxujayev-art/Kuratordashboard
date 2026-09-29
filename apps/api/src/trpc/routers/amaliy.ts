@@ -17,7 +17,6 @@ import {
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { addDaysLocal, startOfDayLocal } from '../../utils/date-local';
-import { isPremiumTariffName } from '../../utils/tariff';
 import { isClassDayForRun, isExerciseEligibleOnDate } from '../../utils/course-schedule';
 
 const ACTIVE_ENROLLMENT_FILTER = {
@@ -244,33 +243,6 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
   }
 }
 
-// courseId scopes the lookup to that course's sale, matching how the attendance list
-// decides premium; otherwise a VIP sale in another course could leak in (or out).
-async function getStudentPremiumEligibility(
-  tenantId: string,
-  customerId: string,
-  courseId: string,
-): Promise<boolean> {
-  const customer = await prisma.customer.findFirst({
-    where: { id: customerId, tenantId },
-    select: {
-      id: true,
-      incomes: {
-        where: { ...ACTIVE_ENROLLMENT_FILTER, courseId },
-        select: { tariff: { select: { name: true } } },
-        orderBy: { entryDate: 'desc' },
-        take: 1,
-      },
-    },
-  });
-
-  if (!customer) {
-    throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi topilmadi" });
-  }
-
-  return isPremiumTariffName(customer.incomes[0]?.tariff?.name);
-}
-
 export const amaliyRouter = router({
   studentList: protectedProcedure
     .input(z.object({ courseRunId: z.string().optional() }))
@@ -366,11 +338,8 @@ export const amaliyRouter = router({
       const kuratorOnly =
         hasKuratorRole(user.roles) &&
         !isAdminOrManager(user.roles);
-      const isManagerOrAdmin = isAdminOrManager(user.roles);
-
-      if (input.includeCompleted && !isManagerOrAdmin) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
-      }
+      // Kurators may use "Hammasi" too — the roster below is already scoped to
+      // their own students.
       if (input.includeCompleted && !input.courseRunId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Hammasi uchun oqim tanlang' });
       }
@@ -704,7 +673,6 @@ export const amaliyRouter = router({
         startDate: true,
         endDate: true,
         baseLessons: true,
-        premiumExtraLessons: true,
         course: { select: { category: true } },
       } as const;
       type ScheduleRun = {
@@ -714,7 +682,6 @@ export const amaliyRouter = router({
         startDate: Date;
         endDate: Date;
         baseLessons: number;
-        premiumExtraLessons: number;
         course: { category: string };
       };
 
@@ -822,9 +789,7 @@ export const amaliyRouter = router({
           dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
           slotDates: {
             base: [] as string[],
-            premiumExtra: [] as string[],
             hasInsufficientBase: false,
-            hasInsufficientPremium: false,
           },
           students: [] as Array<{
             id: string;
@@ -834,12 +799,10 @@ export const amaliyRouter = router({
             tariffName: string | null;
             courseRunId: string | null;
             isLessonDay: boolean;
-            isPremiumLessonDay: boolean;
-            isPremiumEligible: boolean;
-            dayStatuses: { base: AttendanceStatus; premiumExtra: AttendanceStatus | null };
-            daySource: { base: string | null; premiumExtra: string | null };
-            baseSlots: Array<{ date: string; status: AttendanceStatus; source: string | null }>;
-            premiumExtraSlots: Array<{ date: string; status: AttendanceStatus; source: string | null }>;
+            dayStatuses: { base: AttendanceStatus };
+            daySource: { base: string | null };
+            dayMarkedAt: { base: string | null };
+            baseSlots: Array<{ date: string; status: AttendanceStatus; source: string | null; markedAt: string | null }>;
           }>,
         };
       }
@@ -864,14 +827,6 @@ export const amaliyRouter = router({
         if (!tariffNameByCustomer.has(income.customerId)) {
           tariffNameByCustomer.set(income.customerId, income.tariff?.name ?? null);
         }
-      }
-
-      const premiumEligibilityByCustomer = new Map<string, boolean>();
-      for (const customerId of runCustomerIds) {
-        premiumEligibilityByCustomer.set(
-          customerId,
-          isPremiumTariffName(tariffNameByCustomer.get(customerId)),
-        );
       }
 
       const search = input.search?.trim();
@@ -945,11 +900,8 @@ export const amaliyRouter = router({
       // saveAttendanceSlots will validate against — so nothing shown is unsaveable.
       type RunSlots = {
         base: string[];
-        premium: string[];
         baseSet: Set<string>;
-        premiumSet: Set<string>;
         hasInsufficientBase: boolean;
-        hasInsufficientPremium: boolean;
       };
       const slotsByRunId = new Map<string, RunSlots>();
       const slotsForRun = (run: ScheduleRun): RunSlots => {
@@ -962,22 +914,11 @@ export const amaliyRouter = router({
           category: run.course.category,
           runStartDate: run.startDate,
         });
-        const premiumInfo = buildAttendanceSlotDates({
-          startDate: run.startDate,
-          endDate: run.endDate,
-          targetCount: run.premiumExtraLessons,
-          category: run.course.category,
-          runStartDate: run.startDate,
-        });
         const base = baseInfo.slotDates.map((date) => toDateKeyLocal(date));
-        const premium = premiumInfo.slotDates.map((date) => toDateKeyLocal(date));
         const slots = {
           base,
-          premium,
           baseSet: new Set(base),
-          premiumSet: new Set(premium),
           hasInsufficientBase: baseInfo.hasInsufficientDates,
-          hasInsufficientPremium: premiumInfo.hasInsufficientDates,
         };
         slotsByRunId.set(run.id, slots);
         return slots;
@@ -998,6 +939,7 @@ export const amaliyRouter = router({
                 tenantId,
                 ...attendanceRunWhere,
                 customerId: { in: customerIds },
+                lessonType: 'base',
                 lessonDate: { gte: selectedDate, lt: selectedDateEnd },
               },
               select: {
@@ -1017,6 +959,7 @@ export const amaliyRouter = router({
                 tenantId,
                 ...attendanceRunWhere,
                 customerId: { in: customerIds },
+                lessonType: 'base',
                 lessonDate: { gte: earliestRunStart, lt: addDaysLocal(latestRunEnd, 1) },
               },
               select: {
@@ -1035,6 +978,8 @@ export const amaliyRouter = router({
 
       const dayAttendanceByKey = new Map<string, AttendanceStatus>();
       const daySourceByKey = new Map<string, string | null>();
+      // When the mark was last written — shown next to the QR / Qo'lda label.
+      const dayMarkedAtByKey = new Map<string, string>();
       for (const row of dayAttendanceRows) {
         // Only the student's own oqim counts (they may have marks in another one).
         if (row.courseRunId !== runIdByCustomer.get(row.customerId)) continue;
@@ -1042,30 +987,28 @@ export const amaliyRouter = router({
         if (dayAttendanceByKey.has(key)) continue;
         dayAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
         daySourceByKey.set(key, row.source ?? null);
+        dayMarkedAtByKey.set(key, row.updatedAt.toISOString());
       }
 
       // Page-level slot info (warnings only) still describes the representative oqim.
       const scheduleSlots = scheduleRun ? slotsForRun(scheduleRun) : null;
       const baseSlotDates = scheduleSlots?.base ?? [];
-      const premiumSlotDates = scheduleSlots?.premium ?? [];
 
       const runAttendanceByKey = new Map<string, AttendanceStatus>();
       const runSourceByKey = new Map<string, string | null>();
+      const runMarkedAtByKey = new Map<string, string>();
       if (input.mode === 'all') {
         for (const row of runAttendanceRows) {
           const ownRun = ownRunOf(row.customerId);
           if (!ownRun || row.courseRunId !== ownRun.id) continue;
           const ownSlots = slotsForRun(ownRun);
           const dateKey = toDateKeyLocal(row.lessonDate);
-          const isAllowed =
-            row.lessonType === 'base'
-              ? ownSlots.baseSet.has(dateKey)
-              : ownSlots.premiumSet.has(dateKey);
-          if (!isAllowed) continue;
+          if (!ownSlots.baseSet.has(dateKey)) continue;
           const key = `${row.customerId}:${row.lessonType}:${dateKey}`;
           if (runAttendanceByKey.has(key)) continue;
           runAttendanceByKey.set(key, row.attended ? 'keldi' : 'kelmadi');
           runSourceByKey.set(key, row.source ?? null);
+          runMarkedAtByKey.set(key, row.updatedAt.toISOString());
         }
       }
       const selectedDateKey = toDateKeyLocal(selectedDate);
@@ -1078,38 +1021,21 @@ export const amaliyRouter = router({
         dateInfo: { date: toDateKeyLocal(selectedDate), dayOfWeek: selectedDate.getDay() },
         slotDates: {
           base: baseSlotDates,
-          premiumExtra: premiumSlotDates,
           hasInsufficientBase: scheduleSlots?.hasInsufficientBase ?? false,
-          hasInsufficientPremium: scheduleSlots?.hasInsufficientPremium ?? false,
         },
         students: students.map((student) => {
-          const isPremiumEligible = premiumEligibilityByCustomer.get(student.id) ?? false;
           const ownRun = ownRunOf(student.id);
           const ownSlots = ownRun ? slotsForRun(ownRun) : null;
           const studentBaseDates = ownSlots?.base ?? [];
-          const studentPremiumDates = ownSlots?.premium ?? [];
           const dayBase = dayAttendanceByKey.get(`${student.id}:base`) ?? 'tanlanmagan';
           const dayBaseSource = daySourceByKey.get(`${student.id}:base`) ?? null;
-          const dayPremium = isPremiumEligible
-            ? (dayAttendanceByKey.get(`${student.id}:premium_extra`) ?? 'tanlanmagan')
-            : null;
-          const dayPremiumSource = isPremiumEligible
-            ? (daySourceByKey.get(`${student.id}:premium_extra`) ?? null)
-            : null;
 
           const baseSlots = input.mode === 'all'
             ? studentBaseDates.map((dateKey) => ({
                 date: dateKey,
                 status: runAttendanceByKey.get(`${student.id}:base:${dateKey}`) ?? 'tanlanmagan',
                 source: runSourceByKey.get(`${student.id}:base:${dateKey}`) ?? null,
-              }))
-            : [];
-
-          const premiumExtraSlots = input.mode === 'all' && isPremiumEligible
-            ? studentPremiumDates.map((dateKey) => ({
-                date: dateKey,
-                status: runAttendanceByKey.get(`${student.id}:premium_extra:${dateKey}`) ?? 'tanlanmagan',
-                source: runSourceByKey.get(`${student.id}:premium_extra:${dateKey}`) ?? null,
+                markedAt: runMarkedAtByKey.get(`${student.id}:base:${dateKey}`) ?? null,
               }))
             : [];
 
@@ -1125,12 +1051,10 @@ export const amaliyRouter = router({
             // True only when the selected date is one of this student's own lesson
             // slots — i.e. exactly when a day-mode save will be accepted.
             isLessonDay: ownSlots?.baseSet.has(selectedDateKey) ?? false,
-            isPremiumLessonDay: ownSlots?.premiumSet.has(selectedDateKey) ?? false,
-            isPremiumEligible,
-            dayStatuses: { base: dayBase, premiumExtra: dayPremium },
-            daySource: { base: dayBaseSource, premiumExtra: dayPremiumSource },
+            dayStatuses: { base: dayBase },
+            daySource: { base: dayBaseSource },
+            dayMarkedAt: { base: dayMarkedAtByKey.get(`${student.id}:base`) ?? null },
             baseSlots,
-            premiumExtraSlots,
           };
         }),
       };
@@ -1147,14 +1071,9 @@ export const amaliyRouter = router({
             status: z.enum(['tanlanmagan', 'keldi', 'kelmadi']),
           }),
         ),
-        premiumExtraSlots: z
-          .array(
-            z.object({
-              date: z.string(),
-              status: z.enum(['tanlanmagan', 'keldi', 'kelmadi']),
-            }),
-          )
-          .default([]),
+        // Premium extra lessons were discontinued; still accepted (and ignored) so an
+        // older open browser tab that sends it doesn't fail validation.
+        premiumExtraSlots: z.array(z.unknown()).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1173,7 +1092,6 @@ export const amaliyRouter = router({
             startDate: true,
             endDate: true,
             baseLessons: true,
-            premiumExtraLessons: true,
             course: { select: { category: true } },
           },
         })
@@ -1204,24 +1122,8 @@ export const amaliyRouter = router({
         category: courseRun.course.category,
         runStartDate: courseRun.startDate,
       });
-      const premiumSlotsInfo = buildAttendanceSlotDates({
-        startDate: courseRun.startDate,
-        endDate: courseRun.endDate,
-        targetCount: courseRun.premiumExtraLessons,
-        category: courseRun.course.category,
-        runStartDate: courseRun.startDate,
-      });
 
       const allowedBaseDateKeys = new Set(baseSlotsInfo.slotDates.map((date) => toDateKeyLocal(date)));
-      const allowedPremiumDateKeys = new Set(premiumSlotsInfo.slotDates.map((date) => toDateKeyLocal(date)));
-
-      const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId, courseRun.courseId);
-      if (!premiumEligible && input.premiumExtraSlots.some((slot) => slot.status !== 'tanlanmagan')) {
-        throw new TRPCError({
-          code: 'BAD_REQUEST',
-          message: 'Bu o\'quvchi Premium/VIP qo\'shimcha darslarga mos emas',
-        });
-      }
 
       const normalizeSlots = (
         slots: Array<{ date: string; status: AttendanceStatus }>,
@@ -1232,8 +1134,7 @@ export const amaliyRouter = router({
         for (const slot of slots) {
           const dateKey = toDateKeyLocal(parseDateInput(slot.date));
           if (!allowedDateKeys.has(dateKey)) {
-            // An unset slot on a non-lesson date is a no-op (the day page always sends
-            // today's premium slot, even when today isn't a premium lesson).
+            // An unset slot on a non-lesson date is a no-op.
             if (slot.status === 'tanlanmagan') continue;
             throw new TRPCError({ code: 'BAD_REQUEST', message: `${label}: ruxsat etilmagan sana yuborildi` });
           }
@@ -1243,7 +1144,6 @@ export const amaliyRouter = router({
       };
 
       const normalizedBaseSlots = normalizeSlots(input.baseSlots, allowedBaseDateKeys, 'Asosiy');
-      const normalizedPremiumSlots = normalizeSlots(input.premiumExtraSlots, allowedPremiumDateKeys, 'Premium');
 
       const baseCreateRows = Array.from(normalizedBaseSlots.entries())
         .filter(([, status]) => status !== 'tanlanmagan')
@@ -1257,21 +1157,6 @@ export const amaliyRouter = router({
           status: status === 'keldi' ? 'keldi' : 'kelmadi',
           markedByUserId: user.userId,
         }));
-
-      const premiumCreateRows = premiumEligible
-        ? Array.from(normalizedPremiumSlots.entries())
-            .filter(([, status]) => status !== 'tanlanmagan')
-            .map(([dateKey, status]) => ({
-              tenantId,
-              customerId: input.customerId,
-              courseRunId: courseRun.id,
-              lessonDate: startOfDayLocal(parseDateInput(dateKey)),
-              lessonType: 'premium_extra',
-              attended: status === 'keldi',
-              status: status === 'keldi' ? 'keldi' : 'kelmadi',
-              markedByUserId: user.userId,
-            }))
-        : [];
 
       // Replace only the dates that were actually sent. The day page sends a single
       // date; deleting the whole run range here used to wipe every other day's marks.
@@ -1287,26 +1172,14 @@ export const amaliyRouter = router({
             lessonDate: { in: toLessonDates(normalizedBaseSlots.keys()) },
           },
         }),
-        prisma.classAttendance.deleteMany({
-          where: {
-            tenantId,
-            customerId: input.customerId,
-            courseRunId: courseRun.id,
-            lessonType: 'premium_extra',
-            lessonDate: { in: toLessonDates(normalizedPremiumSlots.keys()) },
-          },
-        }),
         ...(baseCreateRows.length > 0 ? [prisma.classAttendance.createMany({ data: baseCreateRows })] : []),
-        ...(premiumCreateRows.length > 0 ? [prisma.classAttendance.createMany({ data: premiumCreateRows })] : []),
       ];
 
       try {
         const txResult = await prisma.$transaction(txOperations);
-        const deletedCount =
-          (txResult[0] as { count: number })?.count +
-          (txResult[1] as { count: number })?.count;
+        const deletedCount = (txResult[0] as { count: number })?.count ?? 0;
         const savedCount = txResult
-          .slice(2)
+          .slice(1)
           .reduce((sum, row) => sum + ((row as { count: number })?.count ?? 0), 0);
         return { success: true, savedCount, deletedCount };
       } catch (error) {
@@ -1334,11 +1207,6 @@ export const amaliyRouter = router({
       const isKurator =
         hasKuratorRole(user.roles) &&
         !isAdminOrManager(user.roles);
-      const isManagerOrAdmin = isAdminOrManager(user.roles);
-
-      if (input.mode === 'all' && !isManagerOrAdmin) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
-      }
       if (input.mode === 'all' && !input.courseRunId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'Hammasi uchun oqim tanlang' });
       }
@@ -1373,8 +1241,6 @@ export const amaliyRouter = router({
           dateInfo: { date: input.date, dayOfWeek: date.getDay() },
           attendanceSummary: {
             base: { attended: 0, total: 0 },
-            premiumExtra: { attended: 0, total: 0 },
-            isPremiumEligible: false,
           },
         };
       }
@@ -1388,7 +1254,6 @@ export const amaliyRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: "O'quvchi ushbu oqimga biriktirilmagan" });
       }
 
-      const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId, courseRun.courseId);
       const dayStart = startOfDayLocal(date);
       const dayEnd = new Date(dayStart);
       dayEnd.setDate(dayEnd.getDate() + 1);
@@ -1602,14 +1467,8 @@ export const amaliyRouter = router({
             attended: attendanceAttendedByType.get('base') ?? 0,
             total: courseRun.baseLessons,
           },
-          premiumExtra: {
-            attended: attendanceAttendedByType.get('premium_extra') ?? 0,
-            total: premiumEligible ? courseRun.premiumExtraLessons : 0,
-          },
-          isPremiumEligible: premiumEligible,
           recordedRows: {
             base: attendanceTotalByType.get('base') ?? 0,
-            premiumExtra: attendanceTotalByType.get('premium_extra') ?? 0,
           },
         },
       };
@@ -1856,9 +1715,9 @@ export const amaliyRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const isManagerOrAdmin = isAdminOrManager(user.roles);
-      if (!isManagerOrAdmin) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: 'Faqat menejer yoki adminlar uchun' });
+      const isKuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
+      if (!isAdminOrManager(user.roles) && !isKuratorOnly) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
       }
 
       const [definition, courseRun] = await Promise.all([
@@ -1914,6 +1773,18 @@ export const amaliyRouter = router({
       });
       if (!runCustomerIds.includes(input.customerId)) {
         throw new TRPCError({ code: 'NOT_FOUND', message: "O'quvchi oqimda topilmadi" });
+      }
+      // Kurators can fill any past mashq date, but only for their own students.
+      if (isKuratorOnly) {
+        const allowed = await kuratorCanAccessCustomer({
+          tenantId,
+          kuratorUserId: user.userId,
+          customerId: input.customerId,
+          courseRunId: courseRun.id,
+        });
+        if (!allowed) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+        }
       }
 
       const slotInfo = buildExerciseSlotDates({
@@ -2206,6 +2077,7 @@ export const amaliyRouter = router({
         customerId: z.string(),
         courseRunId: z.string(),
         lessonDate: z.string(),
+        // Only 'base' is markable now — premium extra lessons were discontinued.
         lessonType: z.enum(['base', 'premium_extra']).default('base'),
         attended: z.boolean(),
       }),
@@ -2229,7 +2101,6 @@ export const amaliyRouter = router({
             startDate: true,
             endDate: true,
             baseLessons: true,
-            premiumExtraLessons: true,
             course: { select: { category: true } },
           },
         }),
@@ -2267,13 +2138,10 @@ export const amaliyRouter = router({
       }
 
       if (input.lessonType === 'premium_extra') {
-        const premiumEligible = await getStudentPremiumEligibility(tenantId, input.customerId, courseRun.courseId);
-        if (!premiumEligible) {
-          throw new TRPCError({
-            code: 'BAD_REQUEST',
-            message: 'Bu o\'quvchi Premium/VIP qo\'shimcha darslarga mos emas',
-          });
-        }
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: "Premium qo'shimcha darslar olib tashlangan. Sahifani yangilang",
+        });
       }
 
       const lessonDate = parseDateInput(input.lessonDate);
@@ -2284,9 +2152,7 @@ export const amaliyRouter = router({
         buildAttendanceSlotDates({
           startDate: courseRun.startDate,
           endDate: courseRun.endDate,
-          targetCount: input.lessonType === 'base'
-            ? courseRun.baseLessons
-            : courseRun.premiumExtraLessons,
+          targetCount: courseRun.baseLessons,
           category: courseRun.course.category,
           runStartDate: courseRun.startDate,
         }).slotDates.map(toDateKeyLocal),
