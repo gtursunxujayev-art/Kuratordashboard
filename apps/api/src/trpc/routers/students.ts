@@ -13,7 +13,6 @@ import {
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
-import { isPremiumTariffName } from '../../utils/tariff';
 import { startOfDayLocal } from '../../utils/date-local';
 
 const ACTIVE_ENROLLMENT_FILTER = {
@@ -353,8 +352,6 @@ export const studentsRouter = router({
             attended: 0,
             total: 0,
             base: { attended: 0, total: 0 },
-            premiumExtra: { attended: 0, total: 0 },
-            isPremiumEligible: false,
           },
         });
 
@@ -471,7 +468,7 @@ export const studentsRouter = router({
                     tenantId,
                     ...visibleCourseRunWhere(withHiddenColumn),
                   },
-                  select: { id: true, baseLessons: true, premiumExtraLessons: true },
+                  select: { id: true, baseLessons: true },
                 }),
               )
                 .catch((error) => {
@@ -498,7 +495,7 @@ export const studentsRouter = router({
         }>;
       }>;
       let total: number;
-      let courseRun: { id: string; baseLessons: number; premiumExtraLessons: number } | null;
+      let courseRun: { id: string; baseLessons: number } | null;
 
       try {
         [customers, total, courseRun] = await runQuery(columnSupport);
@@ -542,8 +539,6 @@ export const studentsRouter = router({
           attended: number;
           total: number;
           base: { attended: number; total: number };
-          premiumExtra: { attended: number; total: number };
-          isPremiumEligible: boolean;
         }
       >();
 
@@ -617,6 +612,7 @@ export const studentsRouter = router({
               tenantId,
               courseRunId: input.courseRunId,
               customerId: { in: customerIds },
+              lessonType: 'base',
             },
             _count: { id: true },
           }),
@@ -626,6 +622,7 @@ export const studentsRouter = router({
               tenantId,
               courseRunId: input.courseRunId,
               customerId: { in: customerIds },
+              lessonType: 'base',
               attended: true,
             },
             _count: { id: true },
@@ -670,26 +667,16 @@ export const studentsRouter = router({
         }
 
         for (const customer of customers) {
-          const tariffName = customer.incomes[0]?.tariff?.name ?? null;
-          const premiumEligible = isPremiumTariffName(tariffName);
           const baseTotalTarget = courseRun?.baseLessons ?? 0;
-          const premiumTotalTarget = premiumEligible ? (courseRun?.premiumExtraLessons ?? 0) : 0;
-
           const baseAttended = attendedByCustomerLessonType.get(`${customer.id}:base`) ?? 0;
-          const premiumAttended = attendedByCustomerLessonType.get(`${customer.id}:premium_extra`) ?? 0;
 
           attendanceByCustomer.set(customer.id, {
-            attended: baseAttended + premiumAttended,
-            total: baseTotalTarget + premiumTotalTarget,
+            attended: baseAttended,
+            total: baseTotalTarget,
             base: {
               attended: baseAttended,
               total: baseTotalTarget,
             },
-            premiumExtra: {
-              attended: premiumAttended,
-              total: premiumTotalTarget,
-            },
-            isPremiumEligible: premiumEligible,
           });
         }
       }
@@ -710,8 +697,6 @@ export const studentsRouter = router({
             attended: 0,
             total: 0,
             base: { attended: 0, total: 0 },
-            premiumExtra: { attended: 0, total: 0 },
-            isPremiumEligible: false,
           },
       }));
 
@@ -843,9 +828,13 @@ export const studentsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { tenantId, user } = ctx;
-      const canEdit = isAdminOrManager(user.roles);
-      if (!canEdit) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+      // Admins/managers edit anyone; kurators only students assigned to them.
+      if (!isAdminOrManager(user.roles)) {
+        const allowed = hasKuratorRole(user.roles)
+          && await kuratorCanAccessCustomer({ tenantId, kuratorUserId: user.userId, customerId: input.customerId });
+        if (!allowed) {
+          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
+        }
       }
 
       let columnSupport = await getCustomerColumnSupport();
