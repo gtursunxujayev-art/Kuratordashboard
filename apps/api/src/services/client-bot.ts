@@ -6,6 +6,7 @@ import { startOfDayLocal } from '../utils/date-local';
 import { isClassDayForRun, isOfflineLikeCategory } from '../utils/course-schedule';
 import { matchCustomerByPhone } from './attendance/customer-matching';
 import { buildSlotDateKeys } from './attendance/faceid';
+import { pickPreferredCourseRun } from '../trpc/utils/runMembership';
 
 /**
  * Client-facing Telegram bot: students/parents link their Telegram account here to
@@ -191,25 +192,37 @@ export async function createClientTelegramLinkToken(
 // ticket for each — used both right after a successful bot link (so a client who
 // links after already enrolling gets their ticket immediately) and as the target
 // of a staff "resend QR" action from the student detail page.
-export async function issueTicketsForActiveEnrollments(tenantId: string, customerId: string): Promise<{ issuedCount: number }> {
+export async function issueTicketsForActiveEnrollments(
+  tenantId: string,
+  customerId: string,
+  // Restricts sending to the filter the staff member is looking at, so a bulk send
+  // for one course doesn't also send tickets for the student's other courses.
+  scope: { courseId?: string; courseRunId?: string } = {},
+): Promise<{ issuedCount: number; failedCount: number }> {
   const today = startOfDayLocal(new Date());
   const memberships = await prisma.courseRunMember.findMany({
     where: {
       tenantId,
       customerId,
-      courseRun: { endDate: { gte: today } },
+      ...(scope.courseRunId ? { courseRunId: scope.courseRunId } : {}),
+      courseRun: {
+        endDate: { gte: today },
+        ...(scope.courseId ? { courseId: scope.courseId } : {}),
+      },
     },
     select: {
       courseRun: { select: { id: true, course: { select: { category: true } } } },
     },
   });
   let issuedCount = 0;
+  let failedCount = 0;
   for (const membership of memberships) {
     if (!isOfflineLikeCategory(membership.courseRun.course.category)) continue;
     try {
       await issueAttendanceTicket(tenantId, customerId, membership.courseRun.id);
       issuedCount += 1;
     } catch (error) {
+      failedCount += 1;
       console.error(
         JSON.stringify({
           level: 'error',
@@ -221,7 +234,7 @@ export async function issueTicketsForActiveEnrollments(tenantId: string, custome
       );
     }
   }
-  return { issuedCount };
+  return { issuedCount, failedCount };
 }
 
 async function handleStartWithToken(chatId: string, from: any, chat: any, startToken: string): Promise<void> {
@@ -328,6 +341,7 @@ export async function handleClientBotWebhook(update: any): Promise<{ handled: bo
     return { handled: false, message: 'Tenant not resolvable' };
   }
 
+  let isDuplicate = false;
   await prisma.webhookEvent
     .create({
       data: {
@@ -343,11 +357,28 @@ export async function handleClientBotWebhook(update: any): Promise<{ handled: bo
         processedAt: new Date(),
       },
     })
-    .catch(() => undefined);
+    .catch((error) => {
+      // Telegram retries a webhook it thinks failed; the idempotency key catches it.
+      if (String((error as { code?: string })?.code) === 'P2002') isDuplicate = true;
+    });
+  if (isDuplicate) {
+    return { handled: true, message: 'Duplicate update ignored' };
+  }
 
   const messageText = String(message.text ?? '').trim();
 
   if (message.contact?.phone_number) {
+    // Telegram lets a user share ANY contact card, not just their own. Only accept
+    // the sender's own number, otherwise anyone could claim a classmate's account.
+    const contactUserId = message.contact.user_id;
+    const senderUserId = message.from?.id;
+    if (!contactUserId || !senderUserId || String(contactUserId) !== String(senderUserId)) {
+      await sendClientMessage(
+        chatId,
+        "Iltimos, o'zingizning telefon raqamingizni «Raqamni yuborish» tugmasi orqali yuboring.",
+      );
+      return { handled: true, message: 'Foreign contact rejected' };
+    }
     await handleContactShare(tenantId, chatId, String(message.contact.phone_number));
     return { handled: true, message: 'Contact processed' };
   }
@@ -449,7 +480,7 @@ export async function buildTicketQr(
   }
 
   const today = startOfDayLocal(new Date());
-  const membership = await prisma.courseRunMember.findFirst({
+  const memberships = await prisma.courseRunMember.findMany({
     where: {
       tenantId,
       customerId,
@@ -457,24 +488,37 @@ export async function buildTicketQr(
     },
     select: {
       courseRun: {
-        select: { id: true, name: true, startDate: true, course: { select: { category: true } } },
+        select: {
+          id: true,
+          name: true,
+          courseId: true,
+          startDate: true,
+          endDate: true,
+          course: { select: { category: true } },
+        },
       },
     },
-    orderBy: { courseRun: { startDate: 'desc' } },
   });
 
-  if (!membership) {
+  if (memberships.length === 0) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
       message: "O'quvchi faol oqimga biriktirilmagan. Avval uni oqim ro'yxatiga qo'shing.",
     });
   }
-  if (!isOfflineLikeCategory(membership.courseRun.course.category)) {
+  // Only offline/intensiv oqims issue tickets. Pick among those — a student can also
+  // be in a newer online oqim, which must not hide their offline one.
+  const offlineRuns = memberships
+    .map((row) => row.courseRun)
+    .filter((run) => isOfflineLikeCategory(run.course.category));
+  const chosenRun = pickPreferredCourseRun(offlineRuns);
+  if (!chosenRun) {
     throw new TRPCError({
       code: 'BAD_REQUEST',
       message: 'QR chipta faqat oflayn/intensiv kurslar uchun beriladi',
     });
   }
+  const membership = { courseRun: chosenRun };
 
   const rawToken = deriveTicketToken(tenantId, customerId, membership.courseRun.id);
   await prisma.attendanceTicket.upsert({
@@ -518,6 +562,7 @@ export type QrCheckInStatus =
   | 'already_marked'
   | 'manual_mark_kept'
   | 'invalid_ticket'
+  | 'not_enrolled'
   | 'not_class_day'
   | 'no_lesson';
 
@@ -567,42 +612,52 @@ async function markQrAttendance(params: {
   scannedByUserId: string;
 }): Promise<'marked' | 'already_marked' | 'manual_mark_kept'> {
   const { tenantId, customerId, courseRunId, lessonDate, scannedByUserId } = params;
-
-  const existing = await prisma.classAttendance.findUnique({
-    where: {
-      tenantId_customerId_courseRunId_lessonDate_lessonType: {
-        tenantId,
-        customerId,
-        courseRunId,
-        lessonDate,
-        lessonType: 'base',
-      },
-    },
-    select: { id: true, attended: true, source: true },
-  });
-
-  if (existing) {
-    if (existing.source === 'manual') return 'manual_mark_kept';
-    if (existing.attended) return 'already_marked';
-    await prisma.classAttendance.update({
-      where: { id: existing.id },
-      data: { attended: true, status: 'keldi', source: 'qr', markedByUserId: scannedByUserId, updatedAt: new Date() },
-    });
-    return 'marked';
-  }
-
-  await prisma.classAttendance.create({
-    data: {
+  const uniqueKey = {
+    tenantId_customerId_courseRunId_lessonDate_lessonType: {
       tenantId,
       customerId,
       courseRunId,
       lessonDate,
       lessonType: 'base',
-      attended: true,
-      status: 'keldi',
-      source: 'qr',
-      markedByUserId: scannedByUserId,
     },
+  };
+
+  const existing = await prisma.classAttendance.findUnique({
+    where: uniqueKey,
+    select: { id: true, attended: true, source: true },
+  });
+
+  if (!existing) {
+    try {
+      await prisma.classAttendance.create({
+        data: {
+          tenantId,
+          customerId,
+          courseRunId,
+          lessonDate,
+          lessonType: 'base',
+          attended: true,
+          status: 'keldi',
+          source: 'qr',
+          markedByUserId: scannedByUserId,
+        },
+      });
+      return 'marked';
+    } catch (error) {
+      // Two scans at the same moment: the other one created the row first.
+      if (String((error as { code?: string })?.code) !== 'P2002') throw error;
+      return 'already_marked';
+    }
+  }
+
+  if (existing.attended) {
+    return existing.source === 'manual' ? 'manual_mark_kept' : 'already_marked';
+  }
+  // Not attended yet — including a manual "kelmadi". A real scan proves the student
+  // is here, so it overrides an absent mark; a manual "keldi" is never touched.
+  await prisma.classAttendance.update({
+    where: { id: existing.id },
+    data: { attended: true, status: 'keldi', source: 'qr', markedByUserId: scannedByUserId, updatedAt: new Date() },
   });
   return 'marked';
 }
@@ -648,6 +703,24 @@ export async function checkInByTicketToken(
   };
 
   const today = startOfDayLocal(new Date());
+
+  // Tickets are never revoked explicitly, so re-check that the student still belongs
+  // to this oqim and (for a running oqim) still has an active sale. Otherwise a
+  // student removed from the roster, or whose sale was cancelled, keeps checking in.
+  const [membership, activeSale] = await Promise.all([
+    prisma.courseRunMember.findFirst({
+      where: { tenantId, customerId: ticket.customerId, courseRunId: ticket.courseRunId },
+      select: { id: true },
+    }),
+    prisma.income.findFirst({
+      where: { tenantId, customerId: ticket.customerId, courseId, ...ACTIVE_ENROLLMENT_FILTER },
+      select: { id: true },
+    }),
+  ]);
+  const runHasEnded = startOfDayLocal(endDate).getTime() < today.getTime();
+  if (!membership || (!runHasEnded && !activeSale)) {
+    return { ok: false, status: 'not_enrolled', ...studentInfo };
+  }
 
   if (today.getTime() < startOfDayLocal(startDate).getTime() || today.getTime() > startOfDayLocal(endDate).getTime()) {
     return { ok: true, status: 'no_lesson', ...studentInfo };
