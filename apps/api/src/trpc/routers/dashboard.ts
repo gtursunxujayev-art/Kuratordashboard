@@ -18,7 +18,7 @@ import {
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
-import { isExerciseEligibleOnDate } from '../../utils/course-schedule';
+import { courseWeekRange, courseWeekStartDay, isExerciseEligibleOnDate } from '../../utils/course-schedule';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
 const amaliyReportDatePresetSchema = z.enum([
@@ -232,25 +232,15 @@ async function resolveDateRange(
   return getCalendarDateRange(dateFilter);
 }
 
-function getFirstMondayOnOrAfter(startDate: Date): Date {
-  const day = startDate.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
-  if (day === 1) return startDate;
-  const daysToMonday = (8 - day) % 7;
-  return addDays(startDate, daysToMonday);
-}
-
-function getNextMonday(startDate: Date): Date {
-  const day = startDate.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
-  const daysToMonday = ((8 - day) % 7) || 7;
-  return addDays(startDate, daysToMonday);
-}
-
+// weekStartDay: 0 = Sunday for Fri/Sat oqims (week 1 is just Fri+Sat), 1 = Monday
+// otherwise — see courseWeekStartDay.
 function resolveAmaliyReportDateRange(params: {
   datePreset: z.infer<typeof amaliyReportDatePresetSchema>;
   runStart: Date;
   runEndExclusive: Date;
+  weekStartDay: 0 | 1;
 }): { from: Date; to: Date } {
-  const { datePreset, runStart, runEndExclusive } = params;
+  const { datePreset, runStart, runEndExclusive, weekStartDay } = params;
 
   if (datePreset === 'today') {
     const todayStart = startOfDayLocal(new Date());
@@ -261,35 +251,24 @@ function resolveAmaliyReportDateRange(params: {
     return { from: runStart, to: runEndExclusive };
   }
 
-  const weekNumber = Number(datePreset.replace('week', ''));
-  const firstWeekEndExclusive = getNextMonday(runStart);
-
-  let from = runStart;
-  let to = firstWeekEndExclusive;
-  if (weekNumber > 1) {
-    from = addDays(firstWeekEndExclusive, (weekNumber - 2) * 7);
-    to = addDays(from, 7);
-  }
-
-  return {
-    from: maxDate(from, runStart),
-    to: minDate(to, runEndExclusive),
-  };
+  return courseWeekRange({
+    weekNumber: Number(datePreset.replace('week', '')),
+    runStart,
+    runEndExclusive,
+    weekStartDay,
+  });
 }
 
 function resolveAmaliyWeekRanges(params: {
   runStart: Date;
   runEndExclusive: Date;
+  weekStartDay: 0 | 1;
 }): Record<AmaliyWeekKey, { from: Date; to: Date }> {
-  const { runStart, runEndExclusive } = params;
-  return {
-    week1: resolveAmaliyReportDateRange({ datePreset: 'week1', runStart, runEndExclusive }),
-    week2: resolveAmaliyReportDateRange({ datePreset: 'week2', runStart, runEndExclusive }),
-    week3: resolveAmaliyReportDateRange({ datePreset: 'week3', runStart, runEndExclusive }),
-    week4: resolveAmaliyReportDateRange({ datePreset: 'week4', runStart, runEndExclusive }),
-    week5: resolveAmaliyReportDateRange({ datePreset: 'week5', runStart, runEndExclusive }),
-    week6: resolveAmaliyReportDateRange({ datePreset: 'week6', runStart, runEndExclusive }),
-  };
+  const ranges = {} as Record<AmaliyWeekKey, { from: Date; to: Date }>;
+  for (const weekKey of AMALIY_WEEK_KEYS) {
+    ranges[weekKey] = resolveAmaliyReportDateRange({ ...params, datePreset: weekKey });
+  }
+  return ranges;
 }
 
 function isDateInRange(date: Date, range: { from: Date; to: Date }): boolean {
@@ -752,6 +731,9 @@ async function getAmaliyReportMatrixData(params: {
       // Class/daily days depend on a real oqim's start (Fri/Sat vs Sat/Sun cutover),
       // not the course start, so "all oqims" mode uses the latest oqim's schedule.
       const scheduleRunStart = selectedRunAnchorStart ?? latestRunAnchorStart;
+      // Course weeks start Sunday for Fri/Sat oqims, Monday otherwise; weekly points
+      // are bucketed by these same ranges.
+      const weekStartDay = courseWeekStartDay(course.category, scheduleRunStart);
       const anchorRunEndExclusive = selectedRunAnchorEndExclusive
         ?? (
           courseStart
@@ -772,6 +754,7 @@ async function getAmaliyReportMatrixData(params: {
           datePreset: input.datePreset,
           runStart: anchorRunStart,
           runEndExclusive: anchorRunEndExclusive,
+          weekStartDay,
         });
       } else {
         dateRange =
@@ -783,6 +766,7 @@ async function getAmaliyReportMatrixData(params: {
       const weekRanges = resolveAmaliyWeekRanges({
         runStart: anchorRunStart,
         runEndExclusive: anchorRunEndExclusive,
+        weekStartDay,
       });
       const activeWeekRange: { from: Date; to: Date } | null =
         AMALIY_WEEK_KEYS.includes(input.datePreset as AmaliyWeekKey)
