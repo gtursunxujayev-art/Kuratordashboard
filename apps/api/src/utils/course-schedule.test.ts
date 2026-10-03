@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   classWeekdaysForRun,
   computeEndDate,
+  courseWeekRange,
+  courseWeekStartDay,
   isClassDayForRun,
   isExerciseEligibleOnDate,
   normalizeCourseCategory,
@@ -131,5 +133,48 @@ describe('computeEndDate', () => {
     const start = new Date(2026, 8, 7); // Monday
     const end = computeEndDate(start, 6, 'online');
     expect(end.getDay()).toBe(0); // Sunday
+  });
+});
+
+describe('course weeks — Sunday start for Fri/Sat oqims', () => {
+  const key = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  // Inclusive last day of a range whose `to` is exclusive.
+  const lastDay = (to: Date) => {
+    const d = new Date(to);
+    d.setDate(d.getDate() - 1);
+    return key(d);
+  };
+
+  it('picks Sunday only for Fri/Sat oqims', () => {
+    expect(courseWeekStartDay('offline', new Date(2026, 8, 4))).toBe(0);
+    expect(courseWeekStartDay('intensiv', new Date(2026, 8, 4))).toBe(0);
+    expect(courseWeekStartDay('offline', new Date(2026, 7, 22))).toBe(1);
+    expect(courseWeekStartDay('online', new Date(2026, 8, 7))).toBe(1);
+  });
+
+  it('Friday-start oqim: week 1 = Fri-Sat, then Sun-Sat weeks to the run end', () => {
+    const runStart = new Date(2026, 8, 4); // Friday
+    const runEnd = computeEndDate(runStart, 6, 'offline'); // Saturday
+    const runEndExclusive = new Date(runEnd);
+    runEndExclusive.setDate(runEndExclusive.getDate() + 1);
+    const week = (n: number) => courseWeekRange({ weekNumber: n, runStart, runEndExclusive, weekStartDay: 0 });
+
+    expect(key(week(1).from)).toBe('2026-09-04');
+    expect(lastDay(week(1).to)).toBe('2026-09-05');
+    expect(key(week(2).from)).toBe('2026-09-06');
+    expect(week(2).from.getDay()).toBe(0);
+    expect(lastDay(week(2).to)).toBe('2026-09-12');
+    expect(lastDay(week(6).to)).toBe(key(runEnd));
+  });
+
+  it('older Saturday-start oqim keeps Monday weeks', () => {
+    const runStart = new Date(2026, 7, 22); // Saturday, pre-cutover
+    const runEndExclusive = new Date(2026, 9, 5);
+    const week = (n: number) => courseWeekRange({ weekNumber: n, runStart, runEndExclusive, weekStartDay: 1 });
+
+    expect(lastDay(week(1).to)).toBe('2026-08-23');
+    expect(key(week(2).from)).toBe('2026-08-24');
+    expect(week(2).from.getDay()).toBe(1);
   });
 });
