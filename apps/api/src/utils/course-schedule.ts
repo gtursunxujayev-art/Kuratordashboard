@@ -69,6 +69,41 @@ export function isExerciseEligibleOnDate(
   return true;
 }
 
+// Weekday a course "week" (1-hafta, 2-hafta, …) starts on. Fri/Sat oqims start their
+// weeks on Sunday — week 1 is just Fri+Sat, then Sun–Thu daily mashq + Fri/Sat class.
+// Older Sat/Sun oqims and online courses keep Monday weeks.
+export function courseWeekStartDay(category: string, runStartDate: Date): 0 | 1 {
+  const pair = classWeekdaysForRun(category, runStartDate);
+  return pair && pair[0] === 5 ? 0 : 1;
+}
+
+// Date range of course week N (1-based), end exclusive, clamped to the run. Week 1 runs
+// from the run start up to the first weekStartDay after it; later weeks are 7-day blocks.
+export function courseWeekRange(params: {
+  weekNumber: number;
+  runStart: Date;
+  runEndExclusive: Date;
+  weekStartDay: 0 | 1;
+}): { from: Date; to: Date } {
+  const { weekNumber, runStart, runEndExclusive, weekStartDay } = params;
+  const daysToNextWeek = ((weekStartDay - runStart.getDay() + 7) % 7) || 7;
+  const firstWeekEnd = new Date(runStart);
+  firstWeekEnd.setDate(firstWeekEnd.getDate() + daysToNextWeek);
+
+  let from = runStart;
+  let to = firstWeekEnd;
+  if (weekNumber > 1) {
+    from = new Date(firstWeekEnd);
+    from.setDate(from.getDate() + (weekNumber - 2) * 7);
+    to = new Date(from);
+    to.setDate(to.getDate() + 7);
+  }
+  return {
+    from: from.getTime() > runStart.getTime() ? from : runStart,
+    to: to.getTime() < runEndExclusive.getTime() ? to : runEndExclusive,
+  };
+}
+
 // Required start weekday (1=Mon, 5=Fri, 6=Sat) for a *candidate* startDate being
 // validated when creating/editing a course run. Online is always Monday. Offline/
 // intensiv is Friday if the candidate date is on/after the cutover, else Saturday
