@@ -76,8 +76,13 @@ export function BrandShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const { user, logout, isManager } = useAuth();
-  const navItems = isManager ? [...baseNavItems, ...managerNavItems] : baseNavItems;
+  const { user, logout, isManager, isKurator } = useAuth();
+  // Curators also get Hisobot (read-only); the other manager pages stay hidden.
+  const navItems = isManager
+    ? [...baseNavItems, ...managerNavItems]
+    : isKurator
+      ? [...baseNavItems, ...managerNavItems.filter((item) => item.href === '/hisobot')]
+      : baseNavItems;
 
   return (
     <div className="min-h-screen nn-app-shell">
