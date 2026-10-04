@@ -12,7 +12,9 @@ import {
 
 export default function HisobotPage() {
   const router = useRouter();
-  const { user, isAdmin, isManager, isLoading } = useAuth();
+  const { user, isAdmin, isManager, isKurator, isLoading } = useAuth();
+  // Read-only report: managers and curators both see it in full.
+  const canView = isManager || isKurator;
 
   const [courseId, setCourseId] = useState('');
   const [courseRunId, setCourseRunId] = useState('');
@@ -36,22 +38,22 @@ export default function HisobotPage() {
   };
 
   useEffect(() => {
-    if (!isLoading && !isManager) {
+    if (!isLoading && !canView) {
       router.replace('/dashboard');
     }
-  }, [isManager, isLoading, router]);
+  }, [canView, isLoading, router]);
 
   const { data: courses, error: coursesError } = trpc.dashboard.courses.useQuery(undefined, {
-    enabled: isManager,
+    enabled: canView,
   });
   const { data: courseRuns, error: runsError } = trpc.dashboard.courseRuns.useQuery(undefined, {
-    enabled: isManager,
+    enabled: canView,
   });
   const { data: filterOptions, error: filterOptionsError } = trpc.students.filterOptions.useQuery(undefined, {
-    enabled: isManager,
+    enabled: canView,
   });
   const { data: kurators, error: kuratorsError } = trpc.kurators.list.useQuery(undefined, {
-    enabled: isManager,
+    enabled: canView,
   });
 
   const filteredRuns = useMemo(
@@ -62,7 +64,7 @@ export default function HisobotPage() {
     [courseId, courseRuns, kuratorUserId],
   );
 
-  const reportEnabled = isManager && Boolean(courseId);
+  const reportEnabled = canView && Boolean(courseId);
   const {
     data: report,
     isLoading: reportLoading,
@@ -146,7 +148,7 @@ export default function HisobotPage() {
     );
   }
 
-  if (!isManager) return null;
+  if (!canView) return null;
 
   return (
     <div className="nn-page">
