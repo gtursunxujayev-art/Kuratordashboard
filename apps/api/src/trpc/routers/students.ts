@@ -2,7 +2,7 @@ import { router, protectedProcedure } from '../trpc';
 import { z } from 'zod';
 import { prisma } from '@kuratordashboard/db';
 import { TRPCError } from '@trpc/server';
-import { getCustomersScopedToKurator, kuratorCanAccessCustomer } from '../utils/kuratorScope';
+import { kuratorCanAccessCustomer } from '../utils/kuratorScope';
 import { resolveCourseRunMemberCustomerIds } from '../utils/runMembership';
 import {
   visibleCourseRunWhere,
@@ -223,11 +223,9 @@ export const studentsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { tenantId, user } = ctx;
+      // Read-only list: curators see every student, same as managers.
+      const { tenantId } = ctx;
       let columnSupport = await getCustomerColumnSupport();
-      const isKurator =
-        hasKuratorRole(user.roles) &&
-        !isAdminOrManager(user.roles);
 
       let scopedCustomerIds: string[] | undefined;
       let courseRunCourseId: string | undefined;
@@ -260,18 +258,6 @@ export const studentsRouter = router({
           courseRunId: selectedRun.id,
           courseId: selectedRun.courseId,
         });
-      }
-
-      if (isKurator) {
-        const kuratorCustomerIds = await getCustomersScopedToKurator({
-          tenantId,
-          kuratorUserId: user.userId,
-          courseRunId: input.courseRunId,
-        });
-        const kuratorCustomerIdSet = new Set(kuratorCustomerIds);
-        scopedCustomerIds = scopedCustomerIds
-          ? scopedCustomerIds.filter((id) => kuratorCustomerIdSet.has(id))
-          : kuratorCustomerIds;
       }
 
       const incomeFilter: Record<string, unknown> = {
@@ -715,16 +701,13 @@ export const studentsRouter = router({
         hasKuratorRole(user.roles) &&
         !isAdminOrManager(user.roles);
 
-      if (isKurator) {
-        const allowed = await kuratorCanAccessCustomer({
-          tenantId,
-          kuratorUserId: user.userId,
-          customerId: input.customerId,
-        });
-        if (!allowed) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
-        }
-      }
+      // Anyone can view; editing follows the same rule as `update` — curators only
+      // for students on their own oqims.
+      const canEdit = !isKurator || await kuratorCanAccessCustomer({
+        tenantId,
+        kuratorUserId: user.userId,
+        customerId: input.customerId,
+      });
 
       const buildDetailSelect = (support: CustomerColumnSupport) => ({
         id: true,
@@ -807,6 +790,7 @@ export const studentsRouter = router({
         socialMediaConsent: columnSupport.socialMediaConsent ? (customer.socialMediaConsent ?? null) : null,
         telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
         telegramLinkedAt: columnSupport.telegramLinkedAt ? (customer.telegramLinkedAt ?? null) : null,
+        canEdit,
       };
     }),
 
