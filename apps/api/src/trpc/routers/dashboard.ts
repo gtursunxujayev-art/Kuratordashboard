@@ -17,7 +17,6 @@ import {
   withCourseRunVisibilityFallback,
   withExerciseDefinitionVisibilityFallback,
 } from '../../utils/prisma-visibility';
-import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { courseWeekRange, courseWeekStartDay, isExerciseEligibleOnDate } from '../../utils/course-schedule';
 
 const dateFilterSchema = z.enum(['today', 'this_week', 'last_week', 'this_month', 'last_month', 'all']);
@@ -331,23 +330,16 @@ function intersectCustomerIds(base?: string[], extra?: string[]): string[] | und
   return base.filter((id) => right.has(id));
 }
 
+// Dashboard reads are the same for every role — curators get full read-only visibility
+// (all students, all oqims). Only the selected oqim narrows the set. Writes stay scoped
+// elsewhere (kuratorCanAccessCustomer on each mutation).
 async function getRoleScopedCustomerIds(
   tenantId: string,
-  user: { userId: string; roles: string[] },
+  _user: { userId: string; roles: string[] },
   courseRunId?: string,
 ): Promise<string[] | undefined> {
-  const kuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
-  if (!kuratorOnly && !courseRunId) return undefined;
-
-  if (kuratorOnly) {
-    return getCustomersScopedToKurator({
-      tenantId,
-      kuratorUserId: user.userId,
-      courseRunId,
-    });
-  }
-
-  return resolveCourseRunMemberCustomerIds({ tenantId, courseRunId: courseRunId! });
+  if (!courseRunId) return undefined;
+  return resolveCourseRunMemberCustomerIds({ tenantId, courseRunId });
 }
 
 async function getCourseScopedCustomerIds(
@@ -1382,14 +1374,12 @@ export const dashboardRouter = router({
       const roleScopedIds = await getRoleScopedCustomerIds(tenantId, user, input.courseRunId);
       const courseScopedIds = await getCourseScopedCustomerIds(tenantId, input.courseId);
       const scopedStudentIds = intersectCustomerIds(roleScopedIds, courseScopedIds);
-      const adminOrManager = isAdminOrManager(user.roles);
 
       const kurators = await prisma.user.findMany({
         where: {
           tenantId,
           roles: { hasSome: ['Kurator', 'Bosh Kurator'] },
           isActive: true,
-          ...(!adminOrManager ? { id: user.userId } : {}),
         },
         select: { id: true, name: true, username: true },
       });
@@ -1401,7 +1391,6 @@ export const dashboardRouter = router({
             kuratorUserId: { not: null },
             ...(input.courseId ? { courseId: input.courseId } : {}),
             ...(input.courseRunId ? { id: input.courseRunId } : {}),
-            ...(!adminOrManager ? { kuratorUserId: user.userId } : {}),
           },
           select: { id: true, kuratorUserId: true },
         }),
@@ -1581,18 +1570,8 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { tenantId, user } = ctx;
-      const kuratorOnly = hasKuratorRole(user.roles) && !isAdminOrManager(user.roles);
-      if (kuratorOnly) {
-        const scopedIds = await getCustomersScopedToKurator({
-          tenantId,
-          kuratorUserId: user.userId,
-          courseRunId: input.courseRunId,
-        });
-        if (!scopedIds.includes(input.customerId)) {
-          throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
-        }
-      }
+      // Read-only: curators can open any student's performance page.
+      const { tenantId } = ctx;
 
       const customer = await prisma.customer.findFirst({
         where: { id: input.customerId, tenantId },
@@ -1864,11 +1843,7 @@ export const dashboardRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { tenantId, user } = ctx;
-      const adminOrManager = isAdminOrManager(user.roles);
-      if (!adminOrManager && user.userId !== input.kuratorUserId) {
-        throw new TRPCError({ code: 'FORBIDDEN', message: "Ruxsat yo'q" });
-      }
+      const { tenantId } = ctx;
 
       const kurator = await prisma.user.findFirst({
         where: {
@@ -1947,7 +1922,8 @@ export const dashboardRouter = router({
       };
     }),
 
-  amaliyReportMatrix: managerProcedure
+  // Read-only Hisobot data — open to curators as well as managers.
+  amaliyReportMatrix: protectedProcedure
     .input(
       z.object({
         courseId: z.string(),
