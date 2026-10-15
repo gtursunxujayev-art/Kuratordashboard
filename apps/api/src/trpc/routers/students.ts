@@ -14,6 +14,8 @@ import {
 } from '../../utils/prisma-visibility';
 import { hasKuratorRole, isAdminOrManager } from '../../utils/access';
 import { startOfDayLocal } from '../../utils/date-local';
+import { resolveLateJoin } from '../../utils/late-joiner';
+import { normalizeCourseCategory } from '../../utils/course-schedule';
 
 const ACTIVE_ENROLLMENT_FILTER = {
   type: 'new_sale' as const,
@@ -303,16 +305,41 @@ export const studentsRouter = router({
         ...(support.gender ? { gender: true } : {}),
         ...(support.region ? { region: true } : {}),
         ...(support.telegramChatId ? { telegramChatId: true } : {}),
+        // The enrollment shown on the row: the one in the selected course/tariff when filtered,
+        // otherwise the latest one. (Previously always the latest, so the tariff could be another course's.)
         incomes: {
-          where: ACTIVE_ENROLLMENT_FILTER,
+          where: effectiveCourseId || input.tariffId ? incomeFilter : ACTIVE_ENROLLMENT_FILTER,
           select: {
             tariffId: true,
+            entryDate: true,
             tariff: { select: { name: true } },
+            course: { select: { name: true, startDate: true } },
           },
           take: 1,
           orderBy: { entryDate: 'desc' as const },
         },
       });
+
+      type RowEnrollment = {
+        entryDate: Date;
+        tariff: { name: string } | null;
+        course: { name: string; startDate: Date | null } | null;
+      };
+      // Course start = the selected oqim's start, else the enrolled course's start date.
+      const now = new Date();
+      const toEnrollmentFields = (enrollment: RowEnrollment | undefined) => {
+        const lateJoin = resolveLateJoin({
+          joinedAt: enrollment?.entryDate,
+          startDate: selectedRunRange?.startDate ?? enrollment?.course?.startDate ?? null,
+          now,
+        });
+        return {
+          tariffName: enrollment?.tariff?.name ?? null,
+          courseName: enrollment?.course?.name ?? null,
+          joinedAt: enrollment?.entryDate ?? null,
+          ...lateJoin,
+        };
+      };
 
       if (input.withoutOqim) {
         const toWithoutOqimRow = (customer: {
@@ -323,7 +350,7 @@ export const studentsRouter = router({
           gender?: string | null;
           region?: string | null;
           telegramChatId?: string | null;
-          incomes: Array<{ tariff: { name: string } | null }>;
+          incomes: RowEnrollment[];
         }) => ({
           id: customer.id,
           customerNumber: customer.customerNumber,
@@ -332,7 +359,7 @@ export const studentsRouter = router({
           gender: columnSupport.gender ? (customer.gender ?? null) : null,
           region: columnSupport.region ? (customer.region ?? null) : null,
           telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
-          tariffName: customer.incomes[0]?.tariff?.name ?? null,
+          ...toEnrollmentFields(customer.incomes[0]),
           exerciseStats: [] as Array<{ name: string; done: number; total: number }>,
           attendance: {
             attended: 0,
@@ -475,10 +502,7 @@ export const studentsRouter = router({
         gender?: string | null;
         region?: string | null;
         telegramChatId?: string | null;
-        incomes: Array<{
-          tariffId: string | null;
-          tariff: { name: string } | null;
-        }>;
+        incomes: Array<RowEnrollment & { tariffId: string | null }>;
       }>;
       let total: number;
       let courseRun: { id: string; baseLessons: number } | null;
@@ -675,7 +699,7 @@ export const studentsRouter = router({
         gender: columnSupport.gender ? (customer.gender ?? null) : null,
         region: columnSupport.region ? (customer.region ?? null) : null,
         telegramChatId: columnSupport.telegramChatId ? (customer.telegramChatId ?? null) : null,
-        tariffName: customer.incomes[0]?.tariff?.name ?? null,
+        ...toEnrollmentFields(customer.incomes[0]),
         exerciseStats: exerciseStatsByCustomer.get(customer.id) ?? [],
         attendance:
           attendanceByCustomer.get(customer.id) ??
@@ -690,6 +714,104 @@ export const studentsRouter = router({
         data: enriched,
         pagination: { page: input.page, limit: input.limit, total },
       };
+    }),
+
+  // Whole-database student export (one row per student and course) for Excel, filtered by course type.
+  // A mutation, like the QR archive download: it is an explicit action and can be large.
+  exportList: protectedProcedure
+    .input(
+      z.object({
+        courseType: z.enum(['online', 'offline', 'intensiv', 'additional_service', 'all']),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { tenantId, user } = ctx;
+      // Whole-database export with phone numbers: managers only, same as the QR archive.
+      if (!isAdminOrManager(user.roles)) {
+        throw new TRPCError({ code: 'FORBIDDEN', message: "Ro'yxatni yuklab olish faqat menejerlar uchun." });
+      }
+      const support = await getCustomerColumnSupport();
+
+      const enrollments = await prisma.income.findMany({
+        where: { tenantId, ...ACTIVE_ENROLLMENT_FILTER, courseId: { not: null } },
+        select: {
+          customerId: true,
+          courseId: true,
+          entryDate: true,
+          tariff: { select: { name: true } },
+          course: { select: { name: true, category: true, startDate: true } },
+          customer: {
+            select: {
+              name: true,
+              customerNumber: true,
+              ...(support.telegramUsername ? { telegramUsername: true } : {}),
+              ...(support.region ? { region: true } : {}),
+            },
+          },
+        },
+        orderBy: { entryDate: 'asc' },
+      });
+
+      // One row per student and course: the first (joining) enrollment.
+      const byKey = new Map<string, (typeof enrollments)[number]>();
+      for (const enrollment of enrollments) {
+        if (!enrollment.course) continue;
+        if (input.courseType !== 'all'
+          && normalizeCourseCategory(enrollment.course.category || enrollment.course.name) !== input.courseType) {
+          continue;
+        }
+        const key = `${enrollment.customerId}:${enrollment.courseId}`;
+        if (!byKey.has(key)) byKey.set(key, enrollment);
+      }
+      const rows = [...byKey.values()];
+      const customerIds = Array.from(new Set(rows.map((row) => row.customerId)));
+
+      // Course start = the student's own oqim in that course when they have one, else the course start date.
+      const runStartByKey = new Map<string, Date>();
+      if (customerIds.length > 0) {
+        const memberships = await prisma.courseRunMember.findMany({
+          where: { tenantId, customerId: { in: customerIds } },
+          select: { customerId: true, courseRun: { select: { courseId: true, startDate: true } } },
+        }).catch((error) => {
+          if (isMissingCourseRunsTableError(error)) return [];
+          throw error;
+        });
+        for (const membership of memberships) {
+          const key = `${membership.customerId}:${membership.courseRun.courseId}`;
+          const existing = runStartByKey.get(key);
+          // Several oqims of one course: use the latest one the student is in.
+          if (!existing || membership.courseRun.startDate > existing) {
+            runStartByKey.set(key, membership.courseRun.startDate);
+          }
+        }
+      }
+
+      const now = new Date();
+      const data = rows
+        .map((row) => {
+          const customer = row.customer as {
+            name: string;
+            customerNumber: string;
+            telegramUsername?: string | null;
+            region?: string | null;
+          };
+          const startDate = runStartByKey.get(`${row.customerId}:${row.courseId}`) ?? row.course?.startDate ?? null;
+          return {
+            name: customer.name,
+            customerNumber: customer.customerNumber,
+            telegramUsername: customer.telegramUsername ?? null,
+            region: customer.region ?? null,
+            courseName: row.course?.name ?? null,
+            tariffName: row.tariff?.name ?? null,
+            joinedAt: row.entryDate,
+            joinedAfterStart: resolveLateJoin({ joinedAt: row.entryDate, startDate, now }).joinedAfterStart,
+          };
+        })
+        .sort((left, right) => (
+          (left.courseName ?? '').localeCompare(right.courseName ?? '') || left.name.localeCompare(right.name)
+        ));
+
+      return { courseType: input.courseType, rows: data };
     }),
 
   detail: protectedProcedure
