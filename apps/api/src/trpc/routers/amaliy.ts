@@ -243,6 +243,14 @@ async function getCourseRunForDate(tenantId: string, date: Date, courseRunId?: s
   }
 }
 
+// attendance_notes is created by a migration; until it's deployed, reads treat it as
+// empty so Davomat keeps working.
+function isMissingAttendanceNotesTableError(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = String((error as { message?: string } | null)?.message ?? '');
+  return code === 'P2021' || message.includes('attendance_notes');
+}
+
 export const amaliyRouter = router({
   studentList: protectedProcedure
     .input(z.object({ courseRunId: z.string().optional() }))
@@ -802,7 +810,14 @@ export const amaliyRouter = router({
             dayStatuses: { base: AttendanceStatus };
             daySource: { base: string | null };
             dayMarkedAt: { base: string | null };
-            baseSlots: Array<{ date: string; status: AttendanceStatus; source: string | null; markedAt: string | null }>;
+            dayNote: string | null;
+            baseSlots: Array<{
+              date: string;
+              status: AttendanceStatus;
+              source: string | null;
+              markedAt: string | null;
+              note: string | null;
+            }>;
           }>,
         };
       }
@@ -1013,6 +1028,32 @@ export const amaliyRouter = router({
       }
       const selectedDateKey = toDateKeyLocal(selectedDate);
 
+      // Optional per-day notes ("izoh"), same window and own-oqim rule as attendance.
+      const noteWindow = input.mode === 'all' && earliestRunStart && latestRunEnd
+        ? { gte: earliestRunStart, lt: addDaysLocal(latestRunEnd, 1) }
+        : { gte: selectedDate, lt: selectedDateEnd };
+      const noteRows = customerIds.length > 0
+        ? await prisma.attendanceNote
+            .findMany({
+              where: {
+                tenantId,
+                courseRunId: { in: Array.from(runsById.keys()) },
+                customerId: { in: customerIds },
+                lessonDate: noteWindow,
+              },
+              select: { customerId: true, courseRunId: true, lessonDate: true, note: true },
+            })
+            .catch((error) => {
+              if (isMissingAttendanceNotesTableError(error)) return [];
+              throw error;
+            })
+        : [];
+      const noteByKey = new Map<string, string>();
+      for (const row of noteRows) {
+        if (row.courseRunId !== runIdByCustomer.get(row.customerId)) continue;
+        noteByKey.set(`${row.customerId}:${toDateKeyLocal(row.lessonDate)}`, row.note);
+      }
+
       return {
         mode: input.mode,
         isLessonDay,
@@ -1036,6 +1077,7 @@ export const amaliyRouter = router({
                 status: runAttendanceByKey.get(`${student.id}:base:${dateKey}`) ?? 'tanlanmagan',
                 source: runSourceByKey.get(`${student.id}:base:${dateKey}`) ?? null,
                 markedAt: runMarkedAtByKey.get(`${student.id}:base:${dateKey}`) ?? null,
+                note: noteByKey.get(`${student.id}:${dateKey}`) ?? null,
               }))
             : [];
 
@@ -1054,6 +1096,7 @@ export const amaliyRouter = router({
             dayStatuses: { base: dayBase },
             daySource: { base: dayBaseSource },
             dayMarkedAt: { base: dayMarkedAtByKey.get(`${student.id}:base`) ?? null },
+            dayNote: noteByKey.get(`${student.id}:${selectedDateKey}`) ?? null,
             baseSlots,
           };
         }),
@@ -1069,6 +1112,8 @@ export const amaliyRouter = router({
           z.object({
             date: z.string(),
             status: z.enum(['tanlanmagan', 'keldi', 'kelmadi']),
+            // Optional izoh. Omitted = leave the saved note alone; '' = remove it.
+            note: z.string().max(500).optional(),
           }),
         ),
         // Premium extra lessons were discontinued; still accepted (and ignored) so an
@@ -1175,14 +1220,46 @@ export const amaliyRouter = router({
         ...(baseCreateRows.length > 0 ? [prisma.classAttendance.createMany({ data: baseCreateRows })] : []),
       ];
 
+      // Notes are independent of the status rows above, so they survive the
+      // delete/recreate and can exist on a still-"tanlanmagan" day.
+      const noteOperations = [];
+      for (const slot of input.baseSlots) {
+        if (slot.note === undefined) continue;
+        const dateKey = toDateKeyLocal(parseDateInput(slot.date));
+        if (!allowedBaseDateKeys.has(dateKey)) continue;
+        const lessonDate = startOfDayLocal(parseDateInput(dateKey));
+        const noteKey = {
+          tenantId_customerId_courseRunId_lessonDate: {
+            tenantId,
+            customerId: input.customerId,
+            courseRunId: courseRun.id,
+            lessonDate,
+          },
+        };
+        const text = slot.note.trim();
+        noteOperations.push(
+          text
+            ? prisma.attendanceNote.upsert({
+                where: noteKey,
+                create: { ...noteKey.tenantId_customerId_courseRunId_lessonDate, note: text, updatedByUserId: user.userId },
+                update: { note: text, updatedByUserId: user.userId },
+              })
+            : prisma.attendanceNote.deleteMany({ where: noteKey.tenantId_customerId_courseRunId_lessonDate }),
+        );
+      }
+
       try {
-        const txResult = await prisma.$transaction(txOperations);
+        const txResult = await prisma.$transaction([...txOperations, ...noteOperations]);
         const deletedCount = (txResult[0] as { count: number })?.count ?? 0;
-        const savedCount = txResult
-          .slice(1)
-          .reduce((sum, row) => sum + ((row as { count: number })?.count ?? 0), 0);
+        const savedCount = baseCreateRows.length > 0 ? ((txResult[1] as { count: number })?.count ?? 0) : 0;
         return { success: true, savedCount, deletedCount };
       } catch (error) {
+        if (noteOperations.length > 0 && isMissingAttendanceNotesTableError(error)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: "Izoh saqlash uchun bazani yangilash (migratsiya) kerak",
+          });
+        }
         if (isTransactionClosedError(error)) {
           throw new TRPCError({
             code: 'TIMEOUT',
