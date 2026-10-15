@@ -6,9 +6,18 @@ import { useAuth } from '@/contexts/auth-context';
 import { useToast } from '@/components/ui/toast';
 import { BotActionPopup } from '@/components/students/bot-action-popup';
 import { StudentDetailModal } from './student-detail-modal';
+import {
+  STUDENT_EXPORT_COLUMN_WIDTHS,
+  STUDENT_EXPORT_HEADERS,
+  STUDENT_EXPORT_TYPE_LABELS,
+  buildStudentExportRows,
+  formatTashkentDate,
+  getStudentExportFilename,
+  type StudentExportCourseType,
+} from './students-export';
 
 type SecondaryFilter = 'tariff' | 'region';
-type CourseType = '' | 'offline' | 'online' | 'intensiv';
+type CourseType = '' | 'offline' | 'online' | 'intensiv' | 'additional_service';
 
 const WITHOUT_OQIM_VALUE = '__WITHOUT_OQIM__';
 
@@ -24,8 +33,20 @@ function downloadBase64File(base64: string, fileName: string, mimeType: string) 
   URL.revokeObjectURL(url);
 }
 
+// Same mapping as the API's normalizeCourseCategory (apps/api/src/utils/course-schedule.ts), so
+// "qo'shimcha xizmat" courses no longer show up under Offline.
 function normalizeCourseCategory(raw?: string | null): Exclude<CourseType, ''> {
   const value = (raw ?? '').toLowerCase();
+  if (
+    value.includes('additional')
+    || value.includes("qo'shimcha")
+    || value.includes('qo‘shimcha')
+    || value.includes('xizmat')
+    || value.includes('servis')
+    || value.includes('service')
+  ) {
+    return 'additional_service';
+  }
   if (value.includes('intens')) return 'intensiv';
   if (value.includes('online') || value.includes('onlayn')) return 'online';
   return 'offline';
@@ -170,6 +191,20 @@ export default function StudentsPage() {
     onError: (err) => setBulkQrMessage(err.message),
   });
 
+  const [exportCourseType, setExportCourseType] = useState<StudentExportCourseType>('all');
+  const exportListMutation = trpc.students.exportList.useMutation({
+    onSuccess: async (result) => {
+      const XLSX = await import('xlsx');
+      const sheet = XLSX.utils.aoa_to_sheet([[...STUDENT_EXPORT_HEADERS], ...buildStudentExportRows(result.rows)]);
+      sheet['!cols'] = STUDENT_EXPORT_COLUMN_WIDTHS.map((wch) => ({ wch }));
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, sheet, STUDENT_EXPORT_TYPE_LABELS[result.courseType]);
+      XLSX.writeFile(workbook, getStudentExportFilename(result.courseType));
+      setBulkQrMessage(`${result.rows.length} ta qator yuklab olindi.`);
+    },
+    onError: (err) => setBulkQrMessage(err.message),
+  });
+
   const handleDownloadAllQr = () => {
     const total = data?.pagination.total ?? 0;
     if (total === 0) return;
@@ -215,6 +250,7 @@ export default function StudentsPage() {
           <option value="offline">Offline</option>
           <option value="online">Online</option>
           <option value="intensiv">Intensiv</option>
+          <option value="additional_service">Qo&apos;shimcha xizmat</option>
         </select>
 
         <select
@@ -338,6 +374,30 @@ export default function StudentsPage() {
                 : `QR arxivini yuklab olish (${data.pagination.total})`}
             </button>
           )}
+          {isManager && (
+            <div className="flex items-center gap-2">
+              <select
+                value={exportCourseType}
+                onChange={(e) => setExportCourseType(e.target.value as StudentExportCourseType)}
+                className="px-3 py-1.5 border border-gray-200 rounded-lg bg-white text-sm text-gray-700"
+              >
+                {(Object.keys(STUDENT_EXPORT_TYPE_LABELS) as StudentExportCourseType[]).map((type) => (
+                  <option key={type} value={type}>{STUDENT_EXPORT_TYPE_LABELS[type]}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkQrMessage('');
+                  exportListMutation.mutate({ courseType: exportCourseType });
+                }}
+                disabled={exportListMutation.isLoading}
+                className="px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+              >
+                {exportListMutation.isLoading ? 'Tayyorlanmoqda...' : 'Excel yuklab olish'}
+              </button>
+            </div>
+          )}
           {bulkQrMessage && <p className="text-sm text-gray-700">{bulkQrMessage}</p>}
         </div>
       )}
@@ -352,6 +412,7 @@ export default function StudentsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="text-right px-3 py-3 font-medium text-gray-600 w-12">№</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Ism</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Raqam</th>
                   <th className="text-left px-4 py-3 font-medium text-gray-600">Telegram</th>
@@ -367,13 +428,27 @@ export default function StudentsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {data.data.map((student) => (
+                {data.data.map((student, index) => (
                   <tr
                     key={student.id}
                     className="hover:bg-gray-50 cursor-pointer"
                     onClick={() => setSelectedStudentId(student.id)}
                   >
-                    <td className="px-4 py-3 font-medium text-gray-900">{student.name}</td>
+                    <td className="px-3 py-3 text-right text-gray-500 tabular-nums">
+                      {(data.pagination.page - 1) * data.pagination.limit + index + 1}
+                    </td>
+                    <td className="px-4 py-3 font-medium text-gray-900">
+                      <span className="inline-flex items-center gap-2">
+                        {student.isNewLateJoiner && (
+                          <span
+                            className="h-2 w-2 shrink-0 rounded-full bg-red-500"
+                            title={`Kurs boshlangandan keyin qo'shildi (${formatTashkentDate(student.joinedAt)})`}
+                            aria-label="Kurs boshlangandan keyin qo'shildi"
+                          />
+                        )}
+                        {student.name}
+                      </span>
+                    </td>
                     <td className="px-4 py-3 text-gray-600">{student.customerNumber ?? '-'}</td>
                     <td className="px-4 py-3 text-gray-600">
                       {student.telegramUsername ? `@${student.telegramUsername}` : '-'}
