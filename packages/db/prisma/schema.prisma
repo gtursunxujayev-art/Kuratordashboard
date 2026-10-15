@@ -64,6 +64,7 @@ model Tenant {
   reportDeliveryLogs            ReportDeliveryLog[]
   clientTelegramLinkTokens      ClientTelegramLinkToken[]
   attendanceTickets             AttendanceTicket[]
+  attendanceNotes               AttendanceNote[]
 
   @@index([subdomain])
   @@map("tenants")
@@ -452,6 +453,7 @@ model Customer {
   // Client bot relations
   clientTelegramLinkTokens ClientTelegramLinkToken[]
   attendanceTickets        AttendanceTicket[]
+  attendanceNotes          AttendanceNote[]
 
   @@unique([tenantId, customerNumber])
   @@unique([tenantId, legacyProfileImportKey])
@@ -825,6 +827,7 @@ model CourseRun {
   attendances        ClassAttendance[]
   members            CourseRunMember[]
   attendanceTickets  AttendanceTicket[]
+  attendanceNotes    AttendanceNote[]
 
   @@index([tenantId])
   @@index([courseId])
@@ -978,6 +981,29 @@ model ClassAttendance {
   @@index([tenantId, courseRunId, lessonDate, lessonType])
   @@index([tenantId, customerId, courseRunId, lessonDate])
   @@map("class_attendances")
+}
+
+// Optional free-text comment ("izoh") staff leave for a student on a lesson day in
+// Davomat. Kept separate from ClassAttendance because those rows are deleted/recreated
+// on every save and rewritten by QR/Face ID, and a note may exist with no status yet.
+model AttendanceNote {
+  id              String   @id @default(uuid())
+  tenantId        String
+  customerId      String
+  courseRunId     String
+  lessonDate      DateTime
+  note            String
+  updatedByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  courseRun CourseRun @relation(fields: [courseRunId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, customerId, courseRunId, lessonDate])
+  @@index([tenantId, courseRunId, lessonDate])
+  @@map("attendance_notes")
 }
 
 // Links a Kurator user to students for a specific course run
