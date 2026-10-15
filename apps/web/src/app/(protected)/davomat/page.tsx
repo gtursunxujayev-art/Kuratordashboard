@@ -97,7 +97,9 @@ function AttendanceSlotCard({
   isEdited,
   source,
   markedAt,
+  note,
   onChange,
+  onNoteChange,
 }: {
   date: string;
   status: AttendanceStatus;
@@ -105,7 +107,9 @@ function AttendanceSlotCard({
   isEdited: boolean;
   source: string | null;
   markedAt: string | null;
+  note: string;
   onChange: (status: AttendanceStatus) => void;
+  onNoteChange: (note: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-gray-200 p-2" style={cardTint(status)}>
@@ -116,7 +120,34 @@ function AttendanceSlotCard({
         )}
       </div>
       <AttendanceStatusSelect value={status} onChange={onChange} />
+      <NoteInput value={note} onChange={onNoteChange} compact />
     </div>
+  );
+}
+
+// Optional "izoh" for a student on a lesson day. Never required.
+function NoteInput({
+  value,
+  onChange,
+  disabled,
+  compact,
+}: {
+  value: string;
+  onChange: (note: string) => void;
+  disabled?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <input
+      type="text"
+      value={value}
+      maxLength={500}
+      disabled={disabled}
+      placeholder={compact ? 'Izoh' : 'Izoh (ixtiyoriy)'}
+      title={value || undefined}
+      onChange={(event) => onChange(event.target.value)}
+      className={`w-full border rounded-lg disabled:opacity-50 ${compact ? 'mt-1 px-2 py-1 text-xs' : 'px-3 py-2 text-sm'}`}
+    />
   );
 }
 
@@ -131,6 +162,9 @@ export default function DavomatPage() {
 
   const [selectedDayBase, setSelectedDayBase] = useState<Record<string, AttendanceStatus>>({});
   const [selectedAllBase, setSelectedAllBase] = useState<Record<string, AttendanceStatus>>({});
+  // Unsaved izoh edits: by student (day view) and by student+date (Hammasi).
+  const [selectedDayNote, setSelectedDayNote] = useState<Record<string, string>>({});
+  const [selectedAllNote, setSelectedAllNote] = useState<Record<string, string>>({});
   const [busySaveKey, setBusySaveKey] = useState<string | null>(null);
 
   const selectedDate = useMemo(
@@ -168,6 +202,8 @@ export default function DavomatPage() {
   useEffect(() => {
     setSelectedDayBase({});
     setSelectedAllBase({});
+    setSelectedDayNote({});
+    setSelectedAllNote({});
   }, [selectedCourseId, selectedCourseRunId, dateMode]);
 
   const attendanceSummary = useMemo(() => {
@@ -200,7 +236,13 @@ export default function DavomatPage() {
       await saveMutation.mutateAsync({
         customerId: student.id,
         courseRunId: student.courseRunId,
-        baseSlots: [{ date: dayDate, status: baseStatus }],
+        // note is sent only when edited, so an untouched izoh is never overwritten.
+        baseSlots: [{ date: dayDate, status: baseStatus, note: selectedDayNote[student.id] }],
+      });
+      setSelectedDayNote((prev) => {
+        const next = { ...prev };
+        delete next[student.id];
+        return next;
       });
       toast.show('Davomat saqlandi', 'success');
       await attendanceQuery.refetch();
@@ -219,6 +261,7 @@ export default function DavomatPage() {
         return {
           date: slot.date,
           status: selectedAllBase[keyForSlot] ?? slot.status,
+          note: selectedAllNote[keyForSlot],
         };
       });
 
@@ -226,6 +269,11 @@ export default function DavomatPage() {
         customerId: student.id,
         courseRunId: student.courseRunId,
         baseSlots,
+      });
+      setSelectedAllNote((prev) => {
+        const next = { ...prev };
+        for (const slot of student.baseSlots ?? []) delete next[slotKey(student.id, slot.date)];
+        return next;
       });
       toast.show('Davomat saqlandi', 'success');
       await attendanceQuery.refetch();
@@ -384,8 +432,12 @@ export default function DavomatPage() {
                                   isEdited={selectedAllBase[key] !== undefined && selectedAllBase[key] !== slot.status}
                                   source={slot.source}
                                   markedAt={slot.markedAt}
+                                  note={selectedAllNote[key] ?? slot.note ?? ''}
                                   onChange={(nextStatus) =>
                                     setSelectedAllBase((prev) => ({ ...prev, [key]: nextStatus }))
+                                  }
+                                  onNoteChange={(nextNote) =>
+                                    setSelectedAllNote((prev) => ({ ...prev, [key]: nextNote }))
                                   }
                                 />
                               );
@@ -425,6 +477,15 @@ export default function DavomatPage() {
                       >
                         {busySaveKey === busyKey ? '...' : 'Saqlash'}
                       </button>
+                      <div className="md:col-span-2">
+                        <NoteInput
+                          value={selectedDayNote[student.id] ?? student.dayNote ?? ''}
+                          disabled={!student.isLessonDay || busySaveKey === busyKey}
+                          onChange={(nextNote) =>
+                            setSelectedDayNote((prev) => ({ ...prev, [student.id]: nextNote }))
+                          }
+                        />
+                      </div>
                     </div>
                   )}
 
